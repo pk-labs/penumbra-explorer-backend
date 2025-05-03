@@ -586,6 +586,31 @@ impl AppView for Explorer {
             .execute(dbtx.as_mut())
             .await?;
 
+        sqlx::query(
+            r"
+    CREATE TABLE IF NOT EXISTS asset_prices (
+        asset_id BYTEA PRIMARY KEY,
+        price_usd DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+        last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
+        symbol TEXT
+    )
+    ",
+        )
+            .execute(dbtx.as_mut())
+            .await?;
+
+        // Insert default USDC price (1.0)
+        sqlx::query(
+            r"
+    INSERT INTO asset_prices (asset_id, price_usd, last_updated, symbol)
+    VALUES ($1, 1.0, NOW(), 'USDC')
+    ON CONFLICT (asset_id) DO NOTHING
+    ",
+        )
+            .bind(hex::decode("75736463").unwrap_or_default()) // 'usdc' in hex
+            .execute(dbtx.as_mut())
+            .await?;
+
         Ok(())
     }
 
