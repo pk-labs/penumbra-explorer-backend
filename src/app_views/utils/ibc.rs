@@ -45,6 +45,258 @@ impl std::fmt::Display for TransactionStatus {
     }
 }
 
+// Add this constant for the USDC asset ID
+const USDC_ASSET_ID: &[u8] = &[0x75, 0x73, 0x64, 0x63]; // "usdc" in hex
+
+// Helper function - move to top to ensure it's in scope for all functions that use it
+fn find_attribute_value<'a>(event: &'a ContextualizedEvent<'_>, key: &str) -> Option<&'a str> {
+    for attr in &event.event.attributes {
+        if let Ok(attr_key) = attr.key_str() {
+            if attr_key == key {
+                if let Ok(attr_value) = attr.value_str() {
+                    return Some(attr_value);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract any error information from the acknowledgment packet data
+/// Returns true if an error is detected, false otherwise
+fn extract_error_from_ack(ack_data: &str) -> bool {
+    let error_patterns = [
+        "\"error\":",
+        "\"Error\":",
+        "\"ERROR\":",
+        "failed",
+        "Failed",
+        "FAILED",
+        "reject",
+        "Reject",
+        "REJECT",
+        "insufficient",
+        "Insufficient",
+        "invalid",
+        "Invalid",
+        "INVALID",
+        "REASON_ERROR",
+        "reason error",
+        "Reason Error",
+        "timeout",
+        "Timeout",
+        "TIMEOUT",
+    ];
+
+    for pattern in error_patterns {
+        if ack_data.contains(pattern) {
+            return true;
+        }
+    }
+
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(ack_data) {
+        if json.get("error").is_some() || json.get("Error").is_some() || json.get("ERROR").is_some()
+        {
+            return true;
+        }
+
+        if let Some(result) = json.get("result") {
+            if result.get("error").is_some()
+                || result.is_string() && result.as_str().unwrap_or("").contains("error")
+            {
+                return true;
+            }
+        }
+
+        if let Some(code) = json.get("code") {
+            if let Some(code_num) = code.as_u64() {
+                if code_num != 0 {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Update asset price from candlestick data
+///
+/// # Errors
+/// Returns an error if database operations fail
+async fn update_asset_price(
+    dbtx: &mut PgTransaction<'_>,
+    asset_id: &[u8],
+    price_usd: f64,
+    timestamp: DateTime<Utc>,
+) -> Result<(), anyhow::Error> {
+    // Update current price
+    sqlx::query(
+        r"
+        INSERT INTO asset_prices (asset_id, price_usd, last_updated)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (asset_id)
+        DO UPDATE SET
+            price_usd = $2,
+            last_updated = $3
+        ",
+    )
+        .bind(asset_id)
+        .bind(price_usd)
+        .bind(timestamp)
+        .execute(dbtx.as_mut())
+        .await?;
+
+    debug!(
+        "Updated price for asset {}: ${}",
+        hex::encode(asset_id),
+        price_usd
+    );
+
+    Ok(())
+}
+
+/// Get the latest price for an asset
+///
+/// # Errors
+/// Returns an error if database operations fail
+async fn get_asset_price(
+    dbtx: &mut PgTransaction<'_>,
+    asset_id: &[u8],
+) -> Result<f64, anyhow::Error> {
+    // If asset is USDC, return 1.0 directly
+    if asset_id == USDC_ASSET_ID {
+        return Ok(1.0);
+    }
+
+    // Query the latest price
+    let price: Option<f64> = sqlx::query_scalar(
+        "SELECT price_usd FROM asset_prices WHERE asset_id = $1"
+    )
+        .bind(asset_id)
+        .fetch_optional(dbtx.as_mut())
+        .await?;
+
+    Ok(price.unwrap_or(0.0))
+}
+
+/// Extract asset ID from event metadata and value
+fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
+    // Try to get from value.asset_id
+    if let Some(asset_id) = value.get("asset_id") {
+        if let Some(asset_id_str) = asset_id.as_str() {
+            return Some(hex::decode(asset_id_str).unwrap_or_default());
+        }
+    }
+
+    // Try to get from value.value.asset_id
+    if let Some(value_inner) = value.get("value") {
+        if let Some(asset_id) = value_inner.get("asset_id") {
+            if let Some(asset_id_str) = asset_id.as_str() {
+                return Some(hex::decode(asset_id_str).unwrap_or_default());
+            }
+        }
+    }
+
+    // Try to get from meta
+    if let Some(asset_id) = meta.get("asset_id") {
+        if let Some(asset_id_str) = asset_id.as_str() {
+            return Some(hex::decode(asset_id_str).unwrap_or_default());
+        }
+    }
+
+    // Try to get from meta.denom
+    if let Some(denom) = meta.get("denom") {
+        if let Some(denom_str) = denom.as_str() {
+            // This is a simplified approach - in practice you might need
+            // more sophisticated parsing depending on your denom format
+            return Some(denom_str.as_bytes().to_vec());
+        }
+    }
+
+    None
+}
+
+/// Process candlestick data to update asset prices
+async fn process_candlestick_data(
+    dbtx: &mut PgTransaction<'_>,
+    event: &ContextualizedEvent<'_>,
+    timestamp: DateTime<Utc>,
+) -> Result<(), anyhow::Error> {
+    if event.event.kind.as_str() != "penumbra.core.component.dex.v1.EventCandlestickData" {
+        return Ok(());
+    }
+
+    debug!("Processing candlestick data from event at height {}", event.block_height);
+
+    // Extract candlestick data from event attributes
+    let mut base_asset_id: Option<Vec<u8>> = None;
+    let mut quote_asset_id: Option<Vec<u8>> = None;
+    let mut close_price: Option<f64> = None;
+
+    for attr in &event.event.attributes {
+        if let (Ok(key), Ok(value)) = (attr.key_str(), attr.value_str()) {
+            match key {
+                "pair.base" => {
+                    base_asset_id = Some(hex::decode(value).unwrap_or_default());
+                    debug!("Found base asset ID: {}", value);
+                },
+                "pair.quote" => {
+                    quote_asset_id = Some(hex::decode(value).unwrap_or_default());
+                    debug!("Found quote asset ID: {}", value);
+                },
+                "stick.close" => {
+                    close_price = value.parse::<f64>().ok();
+                    debug!("Found close price: {}", value);
+                },
+                _ => {}
+            }
+        }
+    }
+
+    // Process the candlestick data if we have all components
+    // Clone the values to avoid moving them
+    let base_asset_id_clone = base_asset_id.clone();
+    let quote_asset_id_clone = quote_asset_id.clone();
+    let close_price_clone = close_price;
+
+    if let (Some(base), Some(quote), Some(price)) = (base_asset_id_clone, quote_asset_id_clone, close_price_clone) {
+        debug!(
+            "Processing candlestick with base={}, quote={}, price={}",
+            hex::encode(&base),
+            hex::encode(&quote),
+            price
+        );
+
+        if quote == USDC_ASSET_ID {
+            // This is a direct USDC pair, so we have USD price directly
+            update_asset_price(dbtx, &base, price, timestamp).await?;
+            debug!("Updated price for asset {} against USDC: ${}", hex::encode(&base), price);
+        } else if base == USDC_ASSET_ID {
+            // This is an inverse USDC pair, calculate USD price as 1/price
+            if price > 0.0 {
+                let inverse_price = 1.0 / price;
+                update_asset_price(dbtx, &quote, inverse_price, timestamp).await?;
+                debug!("Updated price for asset {} (inverse USDC pair): ${}",
+                       hex::encode(&quote), inverse_price);
+            }
+        } else {
+            debug!(
+                "Skipping non-USDC candlestick: {} / {}",
+                hex::encode(&base),
+                hex::encode(&quote)
+            );
+        }
+    } else {
+        debug!("Incomplete candlestick data: base={:?}, quote={:?}, price={:?}",
+               base_asset_id.as_ref().map(|v| hex::encode(v)),
+               quote_asset_id.as_ref().map(|v| hex::encode(v)),
+               close_price);
+    }
+
+    Ok(())
+}
+
 /// Extract numeric portion from channel ID (e.g., "channel-42" -> 42)
 fn extract_number_from_channel(channel_id: &str) -> Option<u64> {
     let parts: Vec<&str> = channel_id.split('-').collect();
@@ -54,104 +306,6 @@ fn extract_number_from_channel(channel_id: &str) -> Option<u64> {
         }
     }
     None
-}
-
-/// Record an individual IBC transfer in the time series table
-///
-/// # Errors
-/// Returns an error if database operations fail
-#[allow(clippy::too_many_arguments)]
-pub async fn record_transfer(
-    dbtx: &mut PgTransaction<'_>,
-    client_id: &str,
-    channel_id: &str,
-    direction: Direction,
-    amount: &str,
-    timestamp: DateTime<Utc>,
-    tx_hash: Option<Vec<u8>>,
-    status: TransactionStatus,
-) -> Result<(), anyhow::Error> {
-    // Try to parse the amount as numeric - DIRECTLY bind as numeric instead of string
-    let amount_value = amount.parse::<i64>().unwrap_or_default();
-
-    let tx_status = status.to_string();
-
-    match sqlx::query(
-        r"
-        INSERT INTO ibc_transfers (
-            client_id,
-            channel_id,
-            direction,
-            amount,
-            timestamp,
-            tx_hash,
-            status
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ",
-    )
-    .bind(client_id)
-    .bind(channel_id)
-    .bind(direction.to_string())
-    .bind(amount_value) // Bind as numeric i64 value directly
-    .bind(timestamp)
-    .bind(tx_hash)
-    .bind(&tx_status)
-    .execute(dbtx.as_mut())
-    .await
-    {
-        Ok(_) => {
-            debug!(
-                "Recorded {} IBC transfer: client={}, channel={}, amount={}, status={}",
-                direction, client_id, channel_id, amount_value, tx_status
-            );
-            Ok(())
-        }
-        Err(e) => {
-            error!("Failed to record {} IBC transfer: {}", direction, e);
-            Err(e.into())
-        }
-    }
-}
-
-/// Update the status of an IBC transfer
-///
-/// # Errors
-/// Returns an error if database operations fail
-pub async fn update_transfer_status(
-    dbtx: &mut PgTransaction<'_>,
-    tx_hash: &[u8],
-    status: TransactionStatus,
-) -> Result<(), anyhow::Error> {
-    match sqlx::query(
-        r"
-        UPDATE ibc_transfers
-        SET status = $2
-        WHERE tx_hash = $1
-        ",
-    )
-    .bind(tx_hash)
-    .bind(status.to_string())
-    .execute(dbtx.as_mut())
-    .await
-    {
-        Ok(result) => {
-            if result.rows_affected() > 0 {
-                debug!(
-                    "Updated transfer status for tx hash: {}, new status: {}",
-                    hex::encode(tx_hash),
-                    status
-                );
-            } else {
-                debug!("No transfer found with tx hash: {}", hex::encode(tx_hash));
-            }
-            Ok(())
-        }
-        Err(e) => {
-            error!("Failed to update transfer status: {}", e);
-            Err(e.into())
-        }
-    }
 }
 
 /// Checks if a specific sequence has a refund event in the event list
@@ -226,6 +380,233 @@ fn is_error_acknowledgment(event: &ContextualizedEvent<'_>) -> bool {
     false
 }
 
+/// Record an individual IBC transfer in the time series table
+///
+/// # Errors
+/// Returns an error if database operations fail
+#[allow(clippy::too_many_arguments)]
+pub async fn record_transfer(
+    dbtx: &mut PgTransaction<'_>,
+    client_id: &str,
+    channel_id: &str,
+    direction: Direction,
+    amount: &str,
+    timestamp: DateTime<Utc>,
+    tx_hash: Option<Vec<u8>>,
+    status: TransactionStatus,
+) -> Result<(), anyhow::Error> {
+    // Try to parse the amount as numeric - DIRECTLY bind as numeric instead of string
+    let amount_value = amount.parse::<i64>().unwrap_or_default();
+
+    let tx_status = status.to_string();
+
+    match sqlx::query(
+        r"
+        INSERT INTO ibc_transfers (
+            client_id,
+            channel_id,
+            direction,
+            amount,
+            timestamp,
+            tx_hash,
+            status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ",
+    )
+        .bind(client_id)
+        .bind(channel_id)
+        .bind(direction.to_string())
+        .bind(amount_value) // Bind as numeric i64 value directly
+        .bind(timestamp)
+        .bind(tx_hash)
+        .bind(&tx_status)
+        .execute(dbtx.as_mut())
+        .await
+    {
+        Ok(_) => {
+            debug!(
+                "Recorded {} IBC transfer: client={}, channel={}, amount={}, status={}",
+                direction, client_id, channel_id, amount_value, tx_status
+            );
+            Ok(())
+        }
+        Err(e) => {
+            error!("Failed to record {} IBC transfer: {}", direction, e);
+            Err(e.into())
+        }
+    }
+}
+
+/// Update the status of an IBC transfer
+///
+/// # Errors
+/// Returns an error if database operations fail
+pub async fn update_transfer_status(
+    dbtx: &mut PgTransaction<'_>,
+    tx_hash: &[u8],
+    status: TransactionStatus,
+) -> Result<(), anyhow::Error> {
+    match sqlx::query(
+        r"
+        UPDATE ibc_transfers
+        SET status = $2
+        WHERE tx_hash = $1
+        ",
+    )
+        .bind(tx_hash)
+        .bind(status.to_string())
+        .execute(dbtx.as_mut())
+        .await
+    {
+        Ok(result) => {
+            if result.rows_affected() > 0 {
+                debug!(
+                    "Updated transfer status for tx hash: {}, new status: {}",
+                    hex::encode(tx_hash),
+                    status
+                );
+            } else {
+                debug!("No transfer found with tx hash: {}", hex::encode(tx_hash));
+            }
+            Ok(())
+        }
+        Err(e) => {
+            error!("Failed to update transfer status: {}", e);
+            Err(e.into())
+        }
+    }
+}
+
+/// Update client statistics with USD-denominated volume
+async fn update_client_stats_with_usd(
+    dbtx: &mut PgTransaction<'_>,
+    client_id: &str,
+    direction: Direction,
+    amount: &str,
+    asset_id: &[u8],
+    timestamp: DateTime<Utc>,
+) -> Result<(), anyhow::Error> {
+    // Parse the amount
+    let amount_value = amount.parse::<i64>().unwrap_or_default();
+
+    // Get USD price and calculate USD amount
+    let price = get_asset_price(dbtx, asset_id).await?;
+    let usd_amount = if price > 0.0 {
+        amount_value as f64 * price
+    } else {
+        0.0
+    };
+
+    // Use separate queries based on direction instead of dynamic SQL
+    match direction {
+        Direction::Inbound => {
+            match sqlx::query(
+                r"
+                UPDATE ibc_stats
+                SET
+                    shielded_volume = shielded_volume + $2,
+                    shielded_tx_count = shielded_tx_count + 1,
+                    last_updated = $3
+                WHERE client_id = $1
+                ",
+            )
+                .bind(client_id)
+                .bind(usd_amount)
+                .bind(timestamp)
+                .execute(dbtx.as_mut())
+                .await
+            {
+                Ok(_) => {
+                    debug!(
+                        "Updated USD stats for inbound transfer: client={}, amount=${:.2} (raw amount={}, price=${:.4})",
+                        client_id, usd_amount, amount_value, price
+                    );
+                    Ok(())
+                }
+                Err(e) => {
+                    error!(
+                        "Error updating USD stats for inbound transfer: {}",
+                        e
+                    );
+
+                    // Fallback to just incrementing tx count if USD update fails
+                    if let Err(e) = sqlx::query(
+                        r"
+                        UPDATE ibc_stats
+                        SET
+                            shielded_tx_count = shielded_tx_count + 1,
+                            last_updated = $2
+                        WHERE client_id = $1
+                        ",
+                    )
+                        .bind(client_id)
+                        .bind(timestamp)
+                        .execute(dbtx.as_mut())
+                        .await
+                    {
+                        error!("Failed to update fallback stats for inbound transfer: {}", e);
+                    }
+
+                    Err(e.into())
+                }
+            }
+        }
+        Direction::Outbound => {
+            match sqlx::query(
+                r"
+                UPDATE ibc_stats
+                SET
+                    unshielded_volume = unshielded_volume + $2,
+                    unshielded_tx_count = unshielded_tx_count + 1,
+                    last_updated = $3
+                WHERE client_id = $1
+                ",
+            )
+                .bind(client_id)
+                .bind(usd_amount)
+                .bind(timestamp)
+                .execute(dbtx.as_mut())
+                .await
+            {
+                Ok(_) => {
+                    debug!(
+                        "Updated USD stats for outbound transfer: client={}, amount=${:.2} (raw amount={}, price=${:.4})",
+                        client_id, usd_amount, amount_value, price
+                    );
+                    Ok(())
+                }
+                Err(e) => {
+                    error!(
+                        "Error updating USD stats for outbound transfer: {}",
+                        e
+                    );
+
+                    // Fallback to just incrementing tx count if USD update fails
+                    if let Err(e) = sqlx::query(
+                        r"
+                        UPDATE ibc_stats
+                        SET
+                            unshielded_tx_count = unshielded_tx_count + 1,
+                            last_updated = $2
+                        WHERE client_id = $1
+                        ",
+                    )
+                        .bind(client_id)
+                        .bind(timestamp)
+                        .execute(dbtx.as_mut())
+                        .await
+                    {
+                        error!("Failed to update fallback stats for outbound transfer: {}", e);
+                    }
+
+                    Err(e.into())
+                }
+            }
+        }
+    }
+}
+
 /// Process IBC events from a block
 ///
 /// # Errors
@@ -246,6 +627,17 @@ pub async fn process_events(
         height,
         events.len()
     );
+
+    // First, process candlestick events to update asset prices
+    for event in events {
+        if event.event.kind.as_str() == "penumbra.core.component.dex.v1.EventCandlestickData" {
+            debug!("Found candlestick event in block {}", height);
+            if let Err(e) = process_candlestick_data(dbtx, event, timestamp).await {
+                error!("Failed to process candlestick data: {}", e);
+            }
+        }
+    }
+
     let mut client_connections: HashMap<String, String> = HashMap::new();
     let mut connection_channels: HashMap<String, String> = HashMap::new();
 
@@ -332,11 +724,11 @@ pub async fn process_events(
                             last_active_time = $3
                         ",
                     )
-                    .bind(client_id)
-                    .bind(height as i64)
-                    .bind(timestamp)
-                    .execute(dbtx.as_mut())
-                    .await?;
+                        .bind(client_id)
+                        .bind(height as i64)
+                        .bind(timestamp)
+                        .execute(dbtx.as_mut())
+                        .await?;
 
                     sqlx::query(
                         r"
@@ -351,10 +743,10 @@ pub async fn process_events(
                         ON CONFLICT (client_id) DO NOTHING
                         ",
                     )
-                    .bind(client_id)
-                    .bind(timestamp)
-                    .execute(dbtx.as_mut())
-                    .await?;
+                        .bind(client_id)
+                        .bind(timestamp)
+                        .execute(dbtx.as_mut())
+                        .await?;
 
                     if !known_clients.contains(&client_id.to_string()) {
                         known_clients.push(client_id.to_string());
@@ -377,11 +769,11 @@ pub async fn process_events(
                         ON CONFLICT (client_id) DO NOTHING
                         ",
                     )
-                    .bind(client_id)
-                    .bind(height as i64)
-                    .bind(timestamp)
-                    .execute(dbtx.as_mut())
-                    .await?;
+                        .bind(client_id)
+                        .bind(height as i64)
+                        .bind(timestamp)
+                        .execute(dbtx.as_mut())
+                        .await?;
 
                     if !known_clients.contains(&client_id.to_string()) {
                         known_clients.push(client_id.to_string());
@@ -410,10 +802,10 @@ pub async fn process_events(
                         WHERE channel_id = $1
                         ",
                     )
-                    .bind(channel_id)
-                    .bind(counterparty_channel_id)
-                    .execute(dbtx.as_mut())
-                    .await?;
+                        .bind(channel_id)
+                        .bind(counterparty_channel_id)
+                        .execute(dbtx.as_mut())
+                        .await?;
                 }
             }
             "channel_open_init" => {
@@ -436,11 +828,11 @@ pub async fn process_events(
                                 connection_id = $3
                             ",
                         )
-                        .bind(channel_id)
-                        .bind(&client_id)
-                        .bind(connection_id)
-                        .execute(dbtx.as_mut())
-                        .await?;
+                            .bind(channel_id)
+                            .bind(&client_id)
+                            .bind(connection_id)
+                            .execute(dbtx.as_mut())
+                            .await?;
 
                         debug!(
                             "Processed channel_open_init: {} -> {}",
@@ -467,11 +859,11 @@ pub async fn process_events(
                                     connection_id = $3
                                 ",
                             )
-                            .bind(channel_id)
-                            .bind(selected_client)
-                            .bind(connection_id)
-                            .execute(dbtx.as_mut())
-                            .await?;
+                                .bind(channel_id)
+                                .bind(selected_client)
+                                .bind(connection_id)
+                                .execute(dbtx.as_mut())
+                                .await?;
 
                             debug!(
                                 "Associated channel {} with client {} (deterministic mapping)",
@@ -491,11 +883,11 @@ pub async fn process_events(
                                 connection_id = $3
                             ",
                         )
-                        .bind(channel_id)
-                        .bind(default_client)
-                        .bind(connection_id)
-                        .execute(dbtx.as_mut())
-                        .await?;
+                            .bind(channel_id)
+                            .bind(default_client)
+                            .bind(connection_id)
+                            .execute(dbtx.as_mut())
+                            .await?;
 
                         debug!(
                             "Associated channel {} with first available client {}",
@@ -557,10 +949,10 @@ pub async fn process_events(
                     WHERE channel_id = $1
                     ",
                 )
-                .bind(our_channel)
-                .bind(counterparty_channel)
-                .execute(dbtx.as_mut())
-                .await?;
+                    .bind(our_channel)
+                    .bind(counterparty_channel)
+                    .execute(dbtx.as_mut())
+                    .await?;
 
                 if let Some(rows_affected) = sqlx::query(
                     r"
@@ -571,12 +963,12 @@ pub async fn process_events(
                     AND (counterparty_channel_id IS NULL OR counterparty_channel_id = '')
                     ",
                 )
-                .bind(counterparty_channel)
-                .bind(our_channel)
-                .execute(dbtx.as_mut())
-                .await
-                .ok()
-                .map(|r| r.rows_affected())
+                    .bind(counterparty_channel)
+                    .bind(our_channel)
+                    .execute(dbtx.as_mut())
+                    .await
+                    .ok()
+                    .map(|r| r.rows_affected())
                 {
                     if rows_affected > 0 {
                         debug!(
@@ -591,13 +983,14 @@ pub async fn process_events(
                 let db_client_id = sqlx::query_scalar::<_, Option<String>>(
                     "SELECT client_id FROM ibc_channels WHERE channel_id = $1",
                 )
-                .bind(our_channel)
-                .fetch_optional(dbtx.as_mut())
-                .await?;
+                    .bind(our_channel)
+                    .fetch_optional(dbtx.as_mut())
+                    .await?;
 
-                if let Some(client) = db_client_id {
-                    final_client_id = client;
-                } else if our_channel.starts_with("channel-") {
+                // FIX #1: Properly handle Option<String>
+                final_client_id = db_client_id.flatten();
+
+                if final_client_id.is_none() && our_channel.starts_with("channel-") {
                     let available_clients: Vec<String> = known_clients.clone();
 
                     if available_clients.is_empty() {
@@ -672,14 +1065,14 @@ pub async fn process_events(
                         WHERE tx_hash = $1
                         ",
                     )
-                    .bind(tx_hash)
-                    .bind(our_channel)
-                    .bind(&client_id)
-                    .bind(TransactionStatus::Pending.to_string())
-                    .bind(direction.to_string())
-                    .bind(sequence)
-                    .execute(dbtx.as_mut())
-                    .await?;
+                        .bind(tx_hash)
+                        .bind(our_channel)
+                        .bind(&client_id)
+                        .bind(TransactionStatus::Pending.to_string())
+                        .bind(direction.to_string())
+                        .bind(sequence)
+                        .execute(dbtx.as_mut())
+                        .await?;
 
                     sqlx::query(
                         r"
@@ -690,10 +1083,10 @@ pub async fn process_events(
                         WHERE client_id = $1
                         ",
                     )
-                    .bind(&client_id)
-                    .bind(timestamp)
-                    .execute(dbtx.as_mut())
-                    .await?;
+                        .bind(&client_id)
+                        .bind(timestamp)
+                        .execute(dbtx.as_mut())
+                        .await?;
 
                     if let Err(e) = record_transfer(
                         dbtx,
@@ -705,7 +1098,7 @@ pub async fn process_events(
                         Some(tx_hash.to_vec()),
                         TransactionStatus::Pending,
                     )
-                    .await
+                        .await
                     {
                         error!("Failed to record pending transfer: {}", e);
                     }
@@ -769,12 +1162,12 @@ pub async fn process_events(
                     SELECT ibc_client_id, tx_hash FROM updated_tx
                     ",
                 )
-                .bind(status.to_string())
-                .bind(sequence)
-                .bind(dst_channel)
-                .bind(src_channel)
-                .fetch_all(dbtx.as_mut())
-                .await?;
+                    .bind(status.to_string())
+                    .bind(sequence)
+                    .bind(dst_channel)
+                    .bind(src_channel)
+                    .fetch_all(dbtx.as_mut())
+                    .await?;
 
                 for row in updated_rows {
                     let client_id: String = row.get(0);
@@ -789,10 +1182,10 @@ pub async fn process_events(
                         WHERE client_id = $1
                         ",
                     )
-                    .bind(&client_id)
-                    .bind(timestamp)
-                    .execute(dbtx.as_mut())
-                    .await?;
+                        .bind(&client_id)
+                        .bind(timestamp)
+                        .execute(dbtx.as_mut())
+                        .await?;
 
                     if let Err(e) = update_transfer_status(dbtx, &tx_hash, status).await {
                         error!("Failed to update transfer status: {}", e);
@@ -836,12 +1229,12 @@ pub async fn process_events(
                     SELECT ibc_client_id, tx_hash FROM updated_tx
                     ",
                 )
-                .bind(TransactionStatus::Expired.to_string())
-                .bind(sequence)
-                .bind(dst_channel)
-                .bind(src_channel)
-                .fetch_all(dbtx.as_mut())
-                .await?;
+                    .bind(TransactionStatus::Expired.to_string())
+                    .bind(sequence)
+                    .bind(dst_channel)
+                    .bind(src_channel)
+                    .fetch_all(dbtx.as_mut())
+                    .await?;
 
                 for row in updated_rows {
                     let client_id: String = row.get(0);
@@ -857,10 +1250,10 @@ pub async fn process_events(
                         WHERE client_id = $1
                         ",
                     )
-                    .bind(&client_id)
-                    .bind(timestamp)
-                    .execute(dbtx.as_mut())
-                    .await?;
+                        .bind(&client_id)
+                        .bind(timestamp)
+                        .execute(dbtx.as_mut())
+                        .await?;
 
                     if let Err(e) =
                         update_transfer_status(dbtx, &tx_hash, TransactionStatus::Expired).await
@@ -913,10 +1306,10 @@ pub async fn process_events(
                             SELECT ibc_client_id, tx_hash, ibc_status FROM updated_tx
                             ",
                         )
-                        .bind(TransactionStatus::Error.to_string())
-                        .bind(&seq)
-                        .fetch_all(dbtx.as_mut())
-                        .await?;
+                            .bind(TransactionStatus::Error.to_string())
+                            .bind(&seq)
+                            .fetch_all(dbtx.as_mut())
+                            .await?;
 
                         for row in updated_rows {
                             let client_id: String = row.get(0);
@@ -933,10 +1326,10 @@ pub async fn process_events(
                                     WHERE client_id = $1
                                     ",
                                 )
-                                .bind(&client_id)
-                                .bind(timestamp)
-                                .execute(dbtx.as_mut())
-                                .await?;
+                                    .bind(&client_id)
+                                    .bind(timestamp)
+                                    .execute(dbtx.as_mut())
+                                    .await?;
                             }
 
                             if let Err(e) =
@@ -979,26 +1372,60 @@ pub async fn process_events(
                         None => continue,
                     };
 
+                    // Extract asset ID for USD conversion
+                    let asset_id = extract_asset_id(&meta, &value);
+
+                    if asset_id.is_none() {
+                        debug!("Could not extract asset ID for inbound transfer");
+                    } else {
+                        debug!("Found asset ID for inbound transfer: {}",
+                               hex::encode(asset_id.as_ref().unwrap()));
+                    }
+
                     let mut resolved_client_id: Option<String> = None;
 
                     let db_client_id = sqlx::query_scalar::<_, Option<String>>(
                         "SELECT client_id FROM ibc_channels WHERE channel_id = $1",
                     )
-                    .bind(channel_id)
-                    .fetch_optional(dbtx.as_mut())
-                    .await?;
+                        .bind(channel_id)
+                        .fetch_optional(dbtx.as_mut())
+                        .await?;
 
-                    if let Some(client) = db_client_id {
-                        resolved_client_id = client;
-                    } else if let Some(channel_num) = extract_number_from_channel(channel_id) {
-                        let all_clients: Vec<String> = known_clients.clone();
+                    // FIX #2: Properly handle Option<String>
+                    resolved_client_id = db_client_id.flatten();
 
-                        if !all_clients.is_empty() {
-                            let idx = usize::try_from(channel_num).unwrap_or(0) % all_clients.len();
-                            let selected_client = all_clients[idx].clone();
+                    if resolved_client_id.is_none() {
+                        if let Some(channel_num) = extract_number_from_channel(channel_id) {
+                            let all_clients: Vec<String> = known_clients.clone();
+
+                            if !all_clients.is_empty() {
+                                let idx = usize::try_from(channel_num).unwrap_or(0) % all_clients.len();
+                                let selected_client = all_clients[idx].clone();
+
+                                info!(
+                                    "Associating channel {} with client {} via deterministic mapping",
+                                    channel_id, selected_client
+                                );
+
+                                sqlx::query(
+                                    r"
+                                    INSERT INTO ibc_channels (channel_id, client_id, connection_id)
+                                    VALUES ($1, $2, 'auto-connection')
+                                    ON CONFLICT (channel_id) DO NOTHING
+                                    ",
+                                )
+                                    .bind(channel_id)
+                                    .bind(&selected_client)
+                                    .execute(dbtx.as_mut())
+                                    .await?;
+
+                                resolved_client_id = Some(selected_client);
+                            }
+                        } else if !known_clients.is_empty() {
+                            let selected_client = known_clients[0].clone();
 
                             info!(
-                                "Associating channel {} with client {} via deterministic mapping",
+                                "Associating unnumbered channel {} with first available client {}",
                                 channel_id, selected_client
                             );
 
@@ -1009,96 +1436,22 @@ pub async fn process_events(
                                 ON CONFLICT (channel_id) DO NOTHING
                                 ",
                             )
-                            .bind(channel_id)
-                            .bind(&selected_client)
-                            .execute(dbtx.as_mut())
-                            .await?;
+                                .bind(channel_id)
+                                .bind(&selected_client)
+                                .execute(dbtx.as_mut())
+                                .await?;
 
                             resolved_client_id = Some(selected_client);
+                        } else {
+                            warn!(
+                                "Cannot attribute transfer: no client found for channel {}",
+                                channel_id
+                            );
                         }
-                    } else if !known_clients.is_empty() {
-                        let selected_client = known_clients[0].clone();
-
-                        info!(
-                            "Associating unnumbered channel {} with first available client {}",
-                            channel_id, selected_client
-                        );
-
-                        sqlx::query(
-                            r"
-                            INSERT INTO ibc_channels (channel_id, client_id, connection_id)
-                            VALUES ($1, $2, 'auto-connection')
-                            ON CONFLICT (channel_id) DO NOTHING
-                            ",
-                        )
-                        .bind(channel_id)
-                        .bind(&selected_client)
-                        .execute(dbtx.as_mut())
-                        .await?;
-
-                        resolved_client_id = Some(selected_client);
-                    } else {
-                        warn!(
-                            "Cannot associate channel {}: no clients available",
-                            channel_id
-                        );
                     }
 
                     if let Some(client_id) = resolved_client_id {
-                        match sqlx::query(
-                            r"
-                            UPDATE ibc_stats
-                            SET
-                                -- Convert to NUMERIC first, then add safely
-                                shielded_volume =
-                                    CASE
-                                        WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
-                                            COALESCE(shielded_volume, 0) +
-                                            CASE
-                                                WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
-                                                ELSE CAST($2 AS NUMERIC)
-                                            END
-                                        ELSE shielded_volume -- If not valid, don't change
-                                    END,
-                                shielded_tx_count = shielded_tx_count + 1,
-                                last_updated = $3
-                            WHERE client_id = $1
-                            ",
-                        )
-                        .bind(&client_id)
-                        .bind(&amount_raw)
-                        .bind(timestamp)
-                        .execute(dbtx.as_mut())
-                        .await
-                        {
-                            Ok(_) => {
-                                debug!(
-                                    "Updated legacy stats for inbound transfer: client={}, amount={}",
-                                    client_id, amount_raw
-                                );
-                            }
-                            Err(e) => {
-                                error!("Error updating legacy stats for inbound transfer: {}", e);
-
-                                if let Err(e) = sqlx::query(
-                                    r"
-                                    UPDATE ibc_stats
-                                    SET
-                                        shielded_tx_count = shielded_tx_count + 1,
-                                        last_updated = $2
-                                    WHERE client_id = $1
-                                    ",
-                                )
-                                .bind(&client_id)
-                                .bind(timestamp)
-                                .execute(dbtx.as_mut())
-                                .await
-                                {
-                                    error!("Failed to update legacy stats (fallback) for inbound transfer: {}", e);
-                                }
-                            }
-                        }
-
+                        // First, record the transfer in the standard way
                         if let Err(e) = record_transfer(
                             dbtx,
                             &client_id,
@@ -1109,9 +1462,85 @@ pub async fn process_events(
                             event.tx_hash().map(|tx| tx.to_vec()),
                             TransactionStatus::Completed,
                         )
-                        .await
+                            .await
                         {
                             error!("Failed to record inbound transfer: {}", e);
+                        }
+
+                        // Then update the stats with USD amounts if we have an asset ID
+                        if let Some(ref asset_id) = asset_id {
+                            if let Err(e) = update_client_stats_with_usd(
+                                dbtx,
+                                &client_id,
+                                Direction::Inbound,
+                                &amount_raw,
+                                asset_id,
+                                timestamp,
+                            )
+                                .await
+                            {
+                                error!("Failed to update USD stats for inbound transfer: {}", e);
+
+                                // Fall back to legacy update if USD conversion fails
+                                if let Err(e) = sqlx::query(
+                                    r"
+                                    UPDATE ibc_stats
+                                    SET
+                                        -- Convert to NUMERIC first, then add safely
+                                        shielded_volume =
+                                            CASE
+                                                WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
+                                                    COALESCE(shielded_volume, 0) +
+                                                    CASE
+                                                        WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
+                                                        ELSE CAST($2 AS NUMERIC)
+                                                    END
+                                                ELSE shielded_volume -- If not valid, don't change
+                                            END,
+                                        shielded_tx_count = shielded_tx_count + 1,
+                                        last_updated = $3
+                                    WHERE client_id = $1
+                                    ",
+                                )
+                                    .bind(&client_id)
+                                    .bind(&amount_raw)
+                                    .bind(timestamp)
+                                    .execute(dbtx.as_mut())
+                                    .await
+                                {
+                                    error!("Failed to update legacy stats (fallback) for inbound transfer: {}", e);
+                                }
+                            }
+                        } else {
+                            // Use legacy update mechanism if we couldn't extract asset ID
+                            if let Err(e) = sqlx::query(
+                                r"
+                                UPDATE ibc_stats
+                                SET
+                                    -- Convert to NUMERIC first, then add safely
+                                    shielded_volume =
+                                        CASE
+                                            WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
+                                                COALESCE(shielded_volume, 0) +
+                                                CASE
+                                                    WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
+                                                    ELSE CAST($2 AS NUMERIC)
+                                                END
+                                            ELSE shielded_volume -- If not valid, don't change
+                                        END,
+                                    shielded_tx_count = shielded_tx_count + 1,
+                                    last_updated = $3
+                                WHERE client_id = $1
+                                ",
+                            )
+                                .bind(&client_id)
+                                .bind(&amount_raw)
+                                .bind(timestamp)
+                                .execute(dbtx.as_mut())
+                                .await
+                            {
+                                error!("Error updating legacy stats for inbound transfer: {}", e);
+                            }
                         }
                     } else {
                         warn!(
@@ -1146,26 +1575,60 @@ pub async fn process_events(
                         None => continue,
                     };
 
+                    // Extract asset ID for USD conversion
+                    let asset_id = extract_asset_id(&meta, &value);
+
+                    if asset_id.is_none() {
+                        debug!("Could not extract asset ID for outbound transfer");
+                    } else {
+                        debug!("Found asset ID for outbound transfer: {}",
+                               hex::encode(asset_id.as_ref().unwrap()));
+                    }
+
                     let mut resolved_client_id: Option<String> = None;
 
                     let db_client_id = sqlx::query_scalar::<_, Option<String>>(
                         "SELECT client_id FROM ibc_channels WHERE channel_id = $1",
                     )
-                    .bind(channel_id)
-                    .fetch_optional(dbtx.as_mut())
-                    .await?;
+                        .bind(channel_id)
+                        .fetch_optional(dbtx.as_mut())
+                        .await?;
 
-                    if let Some(client) = db_client_id {
-                        resolved_client_id = client;
-                    } else if let Some(channel_num) = extract_number_from_channel(channel_id) {
-                        let all_clients: Vec<String> = known_clients.clone();
+                    // FIX #3: Properly handle Option<String>
+                    resolved_client_id = db_client_id.flatten();
 
-                        if !all_clients.is_empty() {
-                            let idx = usize::try_from(channel_num).unwrap_or(0) % all_clients.len();
-                            let selected_client = all_clients[idx].clone();
+                    if resolved_client_id.is_none() {
+                        if let Some(channel_num) = extract_number_from_channel(channel_id) {
+                            let all_clients: Vec<String> = known_clients.clone();
+
+                            if !all_clients.is_empty() {
+                                let idx = usize::try_from(channel_num).unwrap_or(0) % all_clients.len();
+                                let selected_client = all_clients[idx].clone();
+
+                                info!(
+                                    "Associating channel {} with client {} via deterministic mapping",
+                                    channel_id, selected_client
+                                );
+
+                                sqlx::query(
+                                    r"
+                                    INSERT INTO ibc_channels (channel_id, client_id, connection_id)
+                                    VALUES ($1, $2, 'auto-connection')
+                                    ON CONFLICT (channel_id) DO NOTHING
+                                    ",
+                                )
+                                    .bind(channel_id)
+                                    .bind(&selected_client)
+                                    .execute(dbtx.as_mut())
+                                    .await?;
+
+                                resolved_client_id = Some(selected_client);
+                            }
+                        } else if !known_clients.is_empty() {
+                            let selected_client = known_clients[0].clone();
 
                             info!(
-                                "Associating channel {} with client {} via deterministic mapping",
+                                "Associating unnumbered channel {} with first available client {}",
                                 channel_id, selected_client
                             );
 
@@ -1176,96 +1639,22 @@ pub async fn process_events(
                                 ON CONFLICT (channel_id) DO NOTHING
                                 ",
                             )
-                            .bind(channel_id)
-                            .bind(&selected_client)
-                            .execute(dbtx.as_mut())
-                            .await?;
+                                .bind(channel_id)
+                                .bind(&selected_client)
+                                .execute(dbtx.as_mut())
+                                .await?;
 
                             resolved_client_id = Some(selected_client);
+                        } else {
+                            warn!(
+                                "Cannot associate channel {}: no clients available",
+                                channel_id
+                            );
                         }
-                    } else if !known_clients.is_empty() {
-                        let selected_client = known_clients[0].clone();
-
-                        info!(
-                            "Associating unnumbered channel {} with first available client {}",
-                            channel_id, selected_client
-                        );
-
-                        sqlx::query(
-                            r"
-                            INSERT INTO ibc_channels (channel_id, client_id, connection_id)
-                            VALUES ($1, $2, 'auto-connection')
-                            ON CONFLICT (channel_id) DO NOTHING
-                            ",
-                        )
-                        .bind(channel_id)
-                        .bind(&selected_client)
-                        .execute(dbtx.as_mut())
-                        .await?;
-
-                        resolved_client_id = Some(selected_client);
-                    } else {
-                        warn!(
-                            "Cannot associate channel {}: no clients available",
-                            channel_id
-                        );
                     }
 
                     if let Some(client_id) = resolved_client_id {
-                        match sqlx::query(
-                            r#"
-                            UPDATE ibc_stats
-                            SET
-                                -- Convert to NUMERIC first, then add safely
-                                unshielded_volume =
-                                    CASE
-                                        WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
-                                            COALESCE(unshielded_volume, 0) +
-                                            CASE
-                                                WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
-                                                ELSE CAST($2 AS NUMERIC)
-                                            END
-                                        ELSE unshielded_volume -- If not valid, don't change
-                                    END,
-                                unshielded_tx_count = unshielded_tx_count + 1,
-                                last_updated = $3
-                            WHERE client_id = $1
-                            "#,
-                        )
-                        .bind(&client_id)
-                        .bind(&amount_raw)
-                        .bind(timestamp)
-                        .execute(dbtx.as_mut())
-                        .await
-                        {
-                            Ok(_) => {
-                                debug!(
-                                    "Updated legacy stats for outbound transfer: client={}, amount={}",
-                                    client_id, amount_raw
-                                );
-                            }
-                            Err(e) => {
-                                error!("Error updating legacy stats for outbound transfer: {}", e);
-
-                                if let Err(e) = sqlx::query(
-                                    r"
-                                    UPDATE ibc_stats
-                                    SET
-                                        unshielded_tx_count = unshielded_tx_count + 1,
-                                        last_updated = $2
-                                    WHERE client_id = $1
-                                    ",
-                                )
-                                .bind(&client_id)
-                                .bind(timestamp)
-                                .execute(dbtx.as_mut())
-                                .await
-                                {
-                                    error!("Failed to update legacy stats (fallback) for outbound transfer: {}", e);
-                                }
-                            }
-                        }
-
+                        // First, record the transfer in the standard way
                         if let Err(e) = record_transfer(
                             dbtx,
                             &client_id,
@@ -1276,9 +1665,91 @@ pub async fn process_events(
                             event.tx_hash().map(|tx| tx.to_vec()),
                             TransactionStatus::Completed,
                         )
-                        .await
+                            .await
                         {
                             error!("Failed to record outbound transfer: {}", e);
+                        }
+
+                        // Then update the stats with USD amounts if we have an asset ID
+                        if let Some(ref asset_id) = asset_id {
+                            if let Err(e) = update_client_stats_with_usd(
+                                dbtx,
+                                &client_id,
+                                Direction::Outbound,
+                                &amount_raw,
+                                asset_id,
+                                timestamp,
+                            )
+                                .await
+                            {
+                                error!("Failed to update USD stats for outbound transfer: {}", e);
+
+                                // Fall back to legacy update if USD conversion fails
+                                if let Err(e) = sqlx::query(
+                                    r#"
+                                    UPDATE ibc_stats
+                                    SET
+                                        -- Convert to NUMERIC first, then add safely
+                                        unshielded_volume =
+                                            CASE
+                                                WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
+                                                    COALESCE(unshielded_volume, 0) +
+                                                    CASE
+                                                        WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
+                                                        ELSE CAST($2 AS NUMERIC)
+                                                    END
+                                                ELSE unshielded_volume -- If not valid, don't change
+                                            END,
+                                        unshielded_tx_count = unshielded_tx_count + 1,
+                                        last_updated = $3
+                                    WHERE client_id = $1
+                                    "#,
+                                )
+                                    .bind(&client_id)
+                                    .bind(&amount_raw)
+                                    .bind(timestamp)
+                                    .execute(dbtx.as_mut())
+                                    .await
+                                {
+                                    error!("Failed to update legacy stats (fallback) for outbound transfer: {}", e);
+                                }
+                            }
+                        } else {
+                            // Use legacy update mechanism if we couldn't extract asset ID
+                            if let Err(e) = sqlx::query(
+                                r#"
+                                UPDATE ibc_stats
+                                SET
+                                    -- Convert to NUMERIC first, then add safely
+                                    unshielded_volume =
+                                        CASE
+                                            WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's
+                                            UPDATE ibc_stats
+                                SET
+                                    -- Convert to NUMERIC first, then add safely
+                                    unshielded_volume =
+                                        CASE
+                                            WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
+                                                COALESCE(unshielded_volume, 0) +
+                                                CASE
+                                                    WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
+                                                    ELSE CAST($2 AS NUMERIC)
+                                                END
+                                            ELSE unshielded_volume -- If not valid, don't change
+                                        END,
+                                    unshielded_tx_count = unshielded_tx_count + 1,
+                                    last_updated = $3
+                                WHERE client_id = $1
+                                "#,
+                            )
+                                .bind(&client_id)
+                                .bind(&amount_raw)
+                                .bind(timestamp)
+                                .execute(dbtx.as_mut())
+                                .await
+                            {
+                                error!("Error updating legacy stats for outbound transfer: {}", e);
+                            }
                         }
                     } else {
                         warn!(
@@ -1333,10 +1804,10 @@ pub async fn update_old_pending_transactions(
         WHERE ibc_client_id IS NOT NULL
         ",
     )
-    .bind(TransactionStatus::Error.to_string())
-    .bind(day_ago)
-    .fetch_all(dbtx.as_mut())
-    .await?;
+        .bind(TransactionStatus::Error.to_string())
+        .bind(day_ago)
+        .fetch_all(dbtx.as_mut())
+        .await?;
 
     let updated_count = updated_rows.len();
     if updated_count > 0 {
@@ -1359,10 +1830,10 @@ pub async fn update_old_pending_transactions(
             WHERE client_id = $2
             ",
         )
-        .bind(Utc::now())
-        .bind(&client_id)
-        .execute(dbtx.as_mut())
-        .await;
+            .bind(Utc::now())
+            .bind(&client_id)
+            .execute(dbtx.as_mut())
+            .await;
 
         if let Err(e) = result {
             warn!(
@@ -1394,76 +1865,4 @@ pub async fn update_old_pending_transactions(
     );
 
     Ok(())
-}
-
-/// Helper function to find an attribute value in a contextualized event
-fn find_attribute_value<'a>(event: &'a ContextualizedEvent, key: &str) -> Option<&'a str> {
-    for attr in &event.event.attributes {
-        if let Ok(attr_key) = attr.key_str() {
-            if attr_key == key {
-                if let Ok(attr_value) = attr.value_str() {
-                    return Some(attr_value);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Extract any error information from the acknowledgment packet data
-/// Returns true if an error is detected, false otherwise
-fn extract_error_from_ack(ack_data: &str) -> bool {
-    let error_patterns = [
-        "\"error\":",
-        "\"Error\":",
-        "\"ERROR\":",
-        "failed",
-        "Failed",
-        "FAILED",
-        "reject",
-        "Reject",
-        "REJECT",
-        "insufficient",
-        "Insufficient",
-        "invalid",
-        "Invalid",
-        "INVALID",
-        "REASON_ERROR",
-        "reason error",
-        "Reason Error",
-        "timeout",
-        "Timeout",
-        "TIMEOUT",
-    ];
-
-    for pattern in error_patterns {
-        if ack_data.contains(pattern) {
-            return true;
-        }
-    }
-
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(ack_data) {
-        if json.get("error").is_some() || json.get("Error").is_some() || json.get("ERROR").is_some()
-        {
-            return true;
-        }
-
-        if let Some(result) = json.get("result") {
-            if result.get("error").is_some()
-                || result.is_string() && result.as_str().unwrap_or("").contains("error")
-            {
-                return true;
-            }
-        }
-
-        if let Some(code) = json.get("code") {
-            if let Some(code_num) = code.as_u64() {
-                if code_num != 0 {
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
 }
