@@ -54,7 +54,7 @@ impl Explorer {
         self
     }
 
-    /// Attempts to read the `chain_id` from the genesis.json file
+    
     fn read_chain_id_from_genesis() -> Option<String> {
         let file = match File::open("genesis.json") {
             Ok(f) => f,
@@ -86,7 +86,7 @@ impl Explorer {
         chain_id
     }
 
-    /// Returns the chain ID, using "unknown" if not available
+    
     fn get_chain_id(&self) -> &str {
         self.chain_id.as_deref().unwrap_or("unknown")
     }
@@ -257,7 +257,7 @@ impl AppView for Explorer {
         .execute(dbtx.as_mut())
         .await?;
 
-        // Create asset_prices table BEFORE ibc_transfers to ensure it exists
+        
         sqlx::query(
             r"
     CREATE TABLE IF NOT EXISTS asset_prices (
@@ -290,7 +290,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             .execute(dbtx.as_mut())
             .await?;
 
-        // Create indices for efficient querying
+        
         sqlx::query(
             r"
             CREATE INDEX IF NOT EXISTS idx_ibc_transfers_client_id
@@ -327,7 +327,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
 
-        // Keep the legacy tables for backward compatibility
+        
         sqlx::query(
             r"
             CREATE TABLE IF NOT EXISTS ibc_stats (
@@ -369,7 +369,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             .execute(dbtx.as_mut())
             .await?;
 
-        // Create a view that shows all time stats calculated from ibc_transfers
+        
         sqlx::query(
             r"
             CREATE OR REPLACE VIEW ibc_client_summary AS
@@ -650,9 +650,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             .execute(dbtx.as_mut())
             .await?;
 
-        // Asset_prices table already created earlier, skipping...
+        
 
-        // No default asset prices - let the system automatically detect and add them from candlestick events
+        
 
         Ok(())
     }
