@@ -322,8 +322,8 @@ async fn update_client_stats_with_usd(
             // Use separate queries based on direction instead of dynamic SQL
             match direction {
                 Direction::Inbound => {
-                    info!("Updating USD stats for inbound transfer: client={}, amount=${:.2} (raw amount={}, price=${:.4})",
-                         client_id, usd_amount, amount_value, price);
+                    info!("Updating USD stats for inbound transfer: client={}, amount=${:.2} (raw amount={}, adjusted_amount={:.8}, price=${:.4})",
+                         client_id, usd_amount, amount_value, decimal_adjusted_amount, price);
 
                     sqlx::query(
                         r"
