@@ -4,7 +4,7 @@ use cometindex::ContextualizedEvent;
 use serde_json::{json, Value};
 use std::fmt::Write;
 
-/// Helper function to convert bytes to a hexadecimal string
+
 #[must_use]
 pub fn encode_to_hex<T: AsRef<[u8]>>(data: T) -> String {
     let bytes = data.as_ref();
@@ -17,14 +17,14 @@ pub fn encode_to_hex<T: AsRef<[u8]>>(data: T) -> String {
     hex_string
 }
 
-/// Helper function to convert bytes to a base64 string
+
 #[must_use]
 pub fn encode_to_base64<T: AsRef<[u8]>>(data: T) -> String {
     let bytes = data.as_ref();
     BASE64.encode(bytes)
 }
 
-/// Parse attribute string from an event
+
 #[must_use]
 pub fn parse_attribute_string(attr_str: &str) -> Option<(String, String)> {
     if attr_str.contains("EventAttribute")
@@ -119,10 +119,10 @@ pub fn parse_attribute_string(attr_str: &str) -> Option<(String, String)> {
     None
 }
 
-/// Converts a Penumbra event to JSON format
-///
-/// # Errors
-/// Returns an error if JSON serialization fails, or if attribute conversion fails
+
+
+
+
 pub fn event_to_json(
     event: ContextualizedEvent<'_>,
     tx_hash: Option<[u8; 32]>,
