@@ -25,11 +25,11 @@ impl IbcTransactionTracker {
         }
     }
 
-    // Returns true if this is a status update for an existing transaction
+    
     fn check_and_update(&mut self, tx_hash: &Vec<u8>, status: &str) -> bool {
-        // Check if we need to prune the cache
+        
         if self.seen_transactions.len() >= self.max_entries {
-            // Simple pruning strategy: clear half the cache when full
+            
             let keys_to_remove: Vec<Vec<u8>> = self
                 .seen_transactions
                 .keys()
@@ -46,7 +46,7 @@ impl IbcTransactionTracker {
             );
         }
 
-        // Check if this is a status update or a new transaction
+        
         let is_status_update = match self.seen_transactions.get(tx_hash) {
             Some(old_status) => old_status != status,
             None => false,
@@ -122,10 +122,10 @@ async fn get_recent_ibc_transactions(
     .await
 }
 
-/// Returns IBC transactions for a specific client ID with pagination
-///
-/// # Errors
-/// Returns a `sqlx::Error` if the database query fails
+
+
+
+
 pub async fn get_ibc_transactions_by_client(
     pool: &Pool<Postgres>,
     client_id: &str,
@@ -177,10 +177,10 @@ pub async fn get_ibc_transactions_by_client(
     .await
 }
 
-/// Returns all IBC transactions with pagination
-///
-/// # Errors
-/// Returns a `sqlx::Error` if the database query fails
+
+
+
+
 pub async fn get_all_ibc_transactions(
     pool: &Pool<Postgres>,
     limit: i32,
@@ -230,10 +230,10 @@ pub async fn get_all_ibc_transactions(
     .await
 }
 
-/// Returns details for a specific transaction by hash
-///
-/// # Errors
-/// Returns a `sqlx::Error` if the database query fails
+
+
+
+
 pub async fn get_transaction_details(
     pool: &Pool<Postgres>,
     tx_hash: &[u8],
