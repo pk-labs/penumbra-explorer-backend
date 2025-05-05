@@ -5,10 +5,10 @@ use crate::api::graphql::{
 use async_graphql::Result;
 use sqlx::Row;
 
-/// Resolves a block by its height
-///
-/// # Errors
-/// Returns an error if the database query fails
+
+
+
+
 pub async fn get(ctx: &async_graphql::Context<'_>, height: i32) -> Result<Option<Block>> {
     let db = &ctx.data_unchecked::<ApiContext>().db;
     let row = sqlx::query(
@@ -29,11 +29,11 @@ pub async fn get(ctx: &async_graphql::Context<'_>, height: i32) -> Result<Option
 
     Ok(row.map(|r| {
         let raw_json_str: String = r.get("raw_json");
-        // Pass the raw JSON string directly without parsing
+        
         let raw_json = if raw_json_str.is_empty() {
             None
         } else {
-            // Store the raw JSON string in a serde_json::Value
+            
             Some(serde_json::Value::String(raw_json_str))
         };
 
@@ -45,10 +45,10 @@ pub async fn get(ctx: &async_graphql::Context<'_>, height: i32) -> Result<Option
     }))
 }
 
-/// Resolves multiple blocks based on the provided selector
-///
-/// # Errors
-/// Returns an error if the database query fails
+
+
+
+
 pub async fn resolve_blocks(
     ctx: &async_graphql::Context<'_>,
     selector: BlocksSelector,
@@ -84,10 +84,10 @@ pub async fn resolve_blocks(
     Ok(blocks)
 }
 
-/// Resolves blocks with pagination and optional filtering
-///
-/// # Errors
-/// Returns an error if the database query fails
+
+
+
+
 pub async fn resolve_blocks_collection(
     ctx: &async_graphql::Context<'_>,
     limit: CollectionLimit,
