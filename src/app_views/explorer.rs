@@ -424,22 +424,14 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             WITH client_stats AS (
                 SELECT
                     t.client_id,
-                    SUM(CASE WHEN t.direction = 'inbound' THEN 
-                        CASE 
-                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                            THEN t.amount * p.price_usd 
-                            ELSE t.amount 
-                        END 
-                        ELSE 0 
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                        THEN t.amount * p.price_usd 
+                        ELSE 0 -- Only calculate USD when price is available
                     END) as shielded_volume,
                     COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN t.direction = 'outbound' THEN 
-                        CASE 
-                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                            THEN t.amount * p.price_usd 
-                            ELSE t.amount 
-                        END 
-                        ELSE 0 
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                        THEN t.amount * p.price_usd 
+                        ELSE 0 -- Only calculate USD when price is available
                     END) as unshielded_volume,
                     COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
