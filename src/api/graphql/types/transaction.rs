@@ -1,4 +1,4 @@
-// src/api/graphql/types/transaction.rs
+
 use crate::api::graphql::{
     context::ApiContext,
     types::{Action, Block, Event, NotYetSupportedAction},
@@ -222,10 +222,10 @@ pub struct DbRawTransaction {
 }
 
 impl DbRawTransaction {
-    /// Gets a transaction by its hash
-    ///
-    /// # Errors
-    /// Returns an error if the database query fails
+    
+    
+    
+    
     pub async fn get_by_hash(ctx: &Context<'_>, tx_hash_hex: String) -> Result<Option<Self>> {
         let db = &ctx.data_unchecked::<ApiContext>().db;
 
@@ -265,7 +265,7 @@ impl DbRawTransaction {
             let json_value = if raw_json_str.is_empty() {
                 None
             } else {
-                // Store raw JSON string without parsing
+                
                 Some(serde_json::Value::String(raw_json_str))
             };
 
@@ -285,10 +285,10 @@ impl DbRawTransaction {
         }
     }
 
-    /// Gets all transactions with pagination
-    ///
-    /// # Errors
-    /// Returns an error if the database query fails
+    
+    
+    
+    
     pub async fn get_all(
         ctx: &Context<'_>,
         limit: Option<i64>,
