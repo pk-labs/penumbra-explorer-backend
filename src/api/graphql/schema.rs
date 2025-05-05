@@ -4,7 +4,7 @@ use crate::api::graphql::{
     resolvers::{QueryRoot, SubscriptionRoot},
     scalars,
     types::{
-        ibc::{ChannelPair, TotalShieldedVolume}, // Added TotalShieldedVolume
+        ibc::{ChannelPair, TotalShieldedVolume}, 
         Action,
         Block,
         BlockCollection,
@@ -63,7 +63,7 @@ pub fn create_schema(db_pool: PgPool) -> PenumbraSchema {
         .register_output_type::<TransactionCollection>()
         .register_output_type::<IbcStats>()
         .register_output_type::<ChannelPair>()
-        .register_output_type::<TotalShieldedVolume>(); // Added this line
+        .register_output_type::<TotalShieldedVolume>(); 
 
     builder.finish()
 }
