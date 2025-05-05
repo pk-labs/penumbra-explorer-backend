@@ -257,22 +257,38 @@ impl AppView for Explorer {
         .execute(dbtx.as_mut())
         .await?;
 
+        // Create asset_prices table BEFORE ibc_transfers to ensure it exists
         sqlx::query(
             r"
-    CREATE TABLE IF NOT EXISTS ibc_transfers (
-        id SERIAL PRIMARY KEY,
-        client_id TEXT NOT NULL REFERENCES ibc_clients(client_id),
-        channel_id TEXT NOT NULL,
-        direction TEXT NOT NULL,
-        amount NUMERIC NOT NULL DEFAULT 0,
-        timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-        tx_hash BYTEA,
-        status TEXT
+    CREATE TABLE IF NOT EXISTS asset_prices (
+        asset_id BYTEA PRIMARY KEY,
+        price_usd DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+        last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
+        symbol TEXT
     )
     ",
         )
         .execute(dbtx.as_mut())
         .await?;
+
+        sqlx::query(
+            r"
+CREATE TABLE IF NOT EXISTS ibc_transfers (
+    id SERIAL PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES ibc_clients(client_id),
+    channel_id TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    amount NUMERIC NOT NULL DEFAULT 0,
+    asset_id BYTEA,
+    usd_amount DOUBLE PRECISION, -- New field for storing USD amount
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    tx_hash BYTEA,
+    status TEXT
+)
+"
+        )
+            .execute(dbtx.as_mut())
+            .await?;
 
         // Create indices for efficient querying
         sqlx::query(
@@ -359,18 +375,34 @@ impl AppView for Explorer {
             CREATE OR REPLACE VIEW ibc_client_summary AS
             WITH client_stats AS (
                 SELECT
-                    client_id,
-                    SUM(CASE WHEN direction = 'inbound' THEN amount ELSE 0 END) as shielded_volume,
-                    COUNT(CASE WHEN direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN direction = 'outbound' THEN amount ELSE 0 END) as unshielded_volume,
-                    COUNT(CASE WHEN direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
-                    COUNT(CASE WHEN status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
-                    COUNT(CASE WHEN status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
-                    MAX(timestamp) as last_updated
+                    t.client_id,
+                    SUM(CASE WHEN t.direction = 'inbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
+                    COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
+                    MAX(t.timestamp) as last_updated
                 FROM
-                    ibc_transfers
+                    ibc_transfers t
+                LEFT JOIN
+                    asset_prices p ON t.asset_id = p.asset_id
                 GROUP BY
-                    client_id
+                    t.client_id
             )
             SELECT
                 c.client_id,
@@ -399,20 +431,36 @@ impl AppView for Explorer {
             CREATE OR REPLACE VIEW ibc_client_summary_24h AS
             WITH client_stats AS (
                 SELECT
-                    client_id,
-                    SUM(CASE WHEN direction = 'inbound' THEN amount ELSE 0 END) as shielded_volume,
-                    COUNT(CASE WHEN direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN direction = 'outbound' THEN amount ELSE 0 END) as unshielded_volume,
-                    COUNT(CASE WHEN direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
-                    COUNT(CASE WHEN status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
-                    COUNT(CASE WHEN status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
-                    MAX(timestamp) as last_updated
+                    t.client_id,
+                    SUM(CASE WHEN t.direction = 'inbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
+                    COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
+                    MAX(t.timestamp) as last_updated
                 FROM
-                    ibc_transfers
+                    ibc_transfers t
+                LEFT JOIN
+                    asset_prices p ON t.asset_id = p.asset_id
                 WHERE
-                    timestamp > NOW() - INTERVAL '24 hours'
+                    t.timestamp > NOW() - INTERVAL '24 hours'
                 GROUP BY
-                    client_id
+                    t.client_id
             )
             SELECT
                 c.client_id,
@@ -441,20 +489,36 @@ impl AppView for Explorer {
             CREATE OR REPLACE VIEW ibc_client_summary_30d AS
             WITH client_stats AS (
                 SELECT
-                    client_id,
-                    SUM(CASE WHEN direction = 'inbound' THEN amount ELSE 0 END) as shielded_volume,
-                    COUNT(CASE WHEN direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN direction = 'outbound' THEN amount ELSE 0 END) as unshielded_volume,
-                    COUNT(CASE WHEN direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
-                    COUNT(CASE WHEN status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
-                    COUNT(CASE WHEN status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
-                    MAX(timestamp) as last_updated
+                    t.client_id,
+                    SUM(CASE WHEN t.direction = 'inbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
+                    COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
+                    MAX(t.timestamp) as last_updated
                 FROM
-                    ibc_transfers
+                    ibc_transfers t
+                LEFT JOIN
+                    asset_prices p ON t.asset_id = p.asset_id
                 WHERE
-                    timestamp > NOW() - INTERVAL '30 days'
+                    t.timestamp > NOW() - INTERVAL '30 days'
                 GROUP BY
-                    client_id
+                    t.client_id
             )
             SELECT
                 c.client_id,
@@ -498,18 +562,34 @@ impl AppView for Explorer {
                 ibc_clients c
             LEFT JOIN (
                 SELECT
-                    client_id,
-                    SUM(CASE WHEN direction = 'inbound' THEN amount ELSE 0 END) as shielded_volume,
-                    COUNT(CASE WHEN direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN direction = 'outbound' THEN amount ELSE 0 END) as unshielded_volume,
-                    COUNT(CASE WHEN direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
-                    COUNT(CASE WHEN status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
-                    COUNT(CASE WHEN status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
-                    MAX(timestamp) as last_updated
+                    t.client_id,
+                    SUM(CASE WHEN t.direction = 'inbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
+                    COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
+                    MAX(t.timestamp) as last_updated
                 FROM
-                    ibc_transfers
+                    ibc_transfers t
+                LEFT JOIN
+                    asset_prices p ON t.asset_id = p.asset_id
                 GROUP BY
-                    client_id
+                    t.client_id
             ) s ON c.client_id = s.client_id
 
             UNION ALL
@@ -531,20 +611,36 @@ impl AppView for Explorer {
                 ibc_clients c
             LEFT JOIN (
                 SELECT
-                    client_id,
-                    SUM(CASE WHEN direction = 'inbound' THEN amount ELSE 0 END) as shielded_volume,
-                    COUNT(CASE WHEN direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN direction = 'outbound' THEN amount ELSE 0 END) as unshielded_volume,
-                    COUNT(CASE WHEN direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
-                    COUNT(CASE WHEN status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
-                    COUNT(CASE WHEN status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
-                    MAX(timestamp) as last_updated
+                    t.client_id,
+                    SUM(CASE WHEN t.direction = 'inbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
+                    COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
+                    MAX(t.timestamp) as last_updated
                 FROM
-                    ibc_transfers
+                    ibc_transfers t
+                LEFT JOIN
+                    asset_prices p ON t.asset_id = p.asset_id
                 WHERE
-                    timestamp > NOW() - INTERVAL '24 hours'
+                    t.timestamp > NOW() - INTERVAL '24 hours'
                 GROUP BY
-                    client_id
+                    t.client_id
             ) s ON c.client_id = s.client_id
 
             UNION ALL
@@ -566,40 +662,46 @@ impl AppView for Explorer {
                 ibc_clients c
             LEFT JOIN (
                 SELECT
-                    client_id,
-                    SUM(CASE WHEN direction = 'inbound' THEN amount ELSE 0 END) as shielded_volume,
-                    COUNT(CASE WHEN direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN direction = 'outbound' THEN amount ELSE 0 END) as unshielded_volume,
-                    COUNT(CASE WHEN direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
-                    COUNT(CASE WHEN status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
-                    COUNT(CASE WHEN status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
-                    MAX(timestamp) as last_updated
+                    t.client_id,
+                    SUM(CASE WHEN t.direction = 'inbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' THEN 
+                        CASE 
+                            WHEN t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
+                            THEN t.amount * p.price_usd 
+                            ELSE t.amount 
+                        END 
+                        ELSE 0 
+                    END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
+                    COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
+                    MAX(t.timestamp) as last_updated
                 FROM
-                    ibc_transfers
+                    ibc_transfers t
+                LEFT JOIN
+                    asset_prices p ON t.asset_id = p.asset_id
                 WHERE
-                    timestamp > NOW() - INTERVAL '30 days'
+                    t.timestamp > NOW() - INTERVAL '30 days'
                 GROUP BY
-                    client_id
+                    t.client_id
             ) s ON c.client_id = s.client_id
             ",
         )
             .execute(dbtx.as_mut())
             .await?;
 
-        sqlx::query(
-            r"
-    CREATE TABLE IF NOT EXISTS asset_prices (
-        asset_id BYTEA PRIMARY KEY,
-        price_usd DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-        last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
-        symbol TEXT
-    )
-    ",
-        )
-            .execute(dbtx.as_mut())
-            .await?;
+        // Asset_prices table already created earlier, skipping...
 
-        // Insert default USDC price (1.0)
+        // Insert default prices for common assets
+        // USDC price (1.0)
         sqlx::query(
             r"
     INSERT INTO asset_prices (asset_id, price_usd, last_updated, symbol)
@@ -608,6 +710,43 @@ impl AppView for Explorer {
     ",
         )
             .bind(hex::decode("75736463").unwrap_or_default()) // 'usdc' in hex
+            .execute(dbtx.as_mut())
+            .await?;
+            
+        // Default prices for other common assets
+        // USDT (1.0)
+        sqlx::query(
+            r"
+    INSERT INTO asset_prices (asset_id, price_usd, last_updated, symbol)
+    VALUES ($1, 1.0, NOW(), 'USDT')
+    ON CONFLICT (asset_id) DO NOTHING
+    ",
+        )
+            .bind(hex::decode("75736474").unwrap_or_default()) // 'usdt' in hex
+            .execute(dbtx.as_mut())
+            .await?;
+            
+        // Penumbra native token (approximate initial price)
+        sqlx::query(
+            r"
+    INSERT INTO asset_prices (asset_id, price_usd, last_updated, symbol)
+    VALUES ($1, 0.1, NOW(), 'PNB')
+    ON CONFLICT (asset_id) DO NOTHING
+    ",
+        )
+            .bind(hex::decode("706e62").unwrap_or_default()) // 'pnb' in hex
+            .execute(dbtx.as_mut())
+            .await?;
+            
+        // ATOM (approximate default price)
+        sqlx::query(
+            r"
+    INSERT INTO asset_prices (asset_id, price_usd, last_updated, symbol)
+    VALUES ($1, 7.5, NOW(), 'ATOM')
+    ON CONFLICT (asset_id) DO NOTHING
+    ",
+        )
+            .bind(hex::decode("61746f6d").unwrap_or_default()) // 'atom' in hex
             .execute(dbtx.as_mut())
             .await?;
 
