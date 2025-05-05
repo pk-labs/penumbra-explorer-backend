@@ -174,7 +174,7 @@ async fn update_asset_price(
             .await?;
     }
 
-    info!(
+    debug!(
         "🟢 PRICE STORED: Updated price for asset {} (hex: {}): ${:.8} with symbol {:?}",
         String::from_utf8_lossy(asset_id),
         hex::encode(asset_id),
@@ -236,7 +236,7 @@ async fn get_asset_price(
                 asset_hex.contains("dai"));
 
         if is_likely_stablecoin {
-            info!("Identified stablecoin: {}", asset_hex);
+            debug!("Identified stablecoin: {}", asset_hex);
             
             let symbol = if asset_symbol.is_some() {
                 asset_symbol.clone()
@@ -262,7 +262,7 @@ async fn get_asset_price(
 
     
     if let Some(price) = price {
-        info!("Found existing price for asset {}: ${:.8}",
+        debug!("Found existing price for asset {}: ${:.8}",
                hex::encode(asset_id), price);
         return Ok(Some(price));
     }
@@ -281,13 +281,13 @@ async fn get_asset_price(
     
     
     if let Some((first_price, _)) = first_price {
-        info!("Using earliest known price for asset {}: ${:.8}",
+        debug!("Using earliest known price for asset {}: ${:.8}",
               hex::encode(asset_id), first_price);
         return Ok(Some(first_price));
     }
 
     
-    info!("No price data available for asset {}", hex::encode(asset_id));
+    debug!("No price data available for asset {}", hex::encode(asset_id));
     Ok(None)
 }
 
@@ -304,7 +304,7 @@ async fn update_client_stats_with_usd(
     
     let amount_value = amount.parse::<i64>().unwrap_or_default();
     if amount_value <= 0 {
-        info!("Skipping USD stats update for invalid amount: {}", amount);
+        debug!("Skipping USD stats update for invalid amount: {}", amount);
         return Ok(());
     }
 
@@ -319,7 +319,7 @@ async fn update_client_stats_with_usd(
             
             match direction {
                 Direction::Inbound => {
-                    info!("Updating USD stats for inbound transfer: client={}, amount=${:.2} (raw amount={}, adjusted_amount={:.8}, price=${:.4})",
+                    debug!("Updating USD stats for inbound transfer: client={}, amount=${:.2} (raw amount={}, adjusted_amount={:.8}, price=${:.4})",
                          client_id, usd_amount, amount_value, decimal_adjusted_amount, price);
 
                     sqlx::query(
@@ -338,13 +338,13 @@ async fn update_client_stats_with_usd(
                         .execute(dbtx.as_mut())
                         .await?;
 
-                    info!(
+                    debug!(
                         "✅ Updated USD stats for inbound transfer: client={}, amount=${:.2}",
                         client_id, usd_amount
                     );
                 }
                 Direction::Outbound => {
-                    info!("Updating USD stats for outbound transfer: client={}, amount=${:.2} (raw amount={}, adjusted_amount={:.8}, price=${:.4})",
+                    debug!("Updating USD stats for outbound transfer: client={}, amount=${:.2} (raw amount={}, adjusted_amount={:.8}, price=${:.4})",
                          client_id, usd_amount, amount_value, decimal_adjusted_amount, price);
 
                     sqlx::query(
@@ -363,7 +363,7 @@ async fn update_client_stats_with_usd(
                         .execute(dbtx.as_mut())
                         .await?;
 
-                    info!(
+                    debug!(
                         "✅ Updated USD stats for outbound transfer: client={}, amount=${:.2}",
                         client_id, usd_amount
                     );
@@ -376,7 +376,7 @@ async fn update_client_stats_with_usd(
             
             match direction {
                 Direction::Inbound => {
-                    info!("No valid price for asset {}. Updating only tx count for inbound transfer",
+                    debug!("No valid price for asset {}. Updating only tx count for inbound transfer",
                           hex::encode(asset_id));
 
                     sqlx::query(
@@ -394,7 +394,7 @@ async fn update_client_stats_with_usd(
                         .await?;
                 },
                 Direction::Outbound => {
-                    info!("No valid price for asset {}. Updating only tx count for outbound transfer",
+                    debug!("No valid price for asset {}. Updating only tx count for outbound transfer",
                           hex::encode(asset_id));
 
                     sqlx::query(
@@ -446,14 +446,14 @@ pub async fn record_transfer(
                 
                 let decimal_adjusted_amount = amount_value as f64 / 1_000_000.0;
                 let amount_usd = decimal_adjusted_amount * price;
-                info!(
+                debug!(
                     "Calculated USD amount for transfer: ${:.2} (raw_amount={}, adjusted_amount={:.8}, price=${:.8})",
                     amount_usd, amount_value, decimal_adjusted_amount, price
                 );
                 Some(amount_usd)
             },
             _ => {
-                info!("No valid price for asset {}, not calculating USD amount", hex::encode(asset));
+                debug!("No valid price for asset {}, not calculating USD amount", hex::encode(asset));
                 None
             }
         }
@@ -504,13 +504,13 @@ async fn process_candlestick_data(
     timestamp: DateTime<Utc>,
 ) -> Result<(), anyhow::Error> {
     
-    info!("Event kind: {} at height {}", event.event.kind.as_str(), event.block_height);
+    debug!("Event kind: {} at height {}", event.event.kind.as_str(), event.block_height);
 
     if event.event.kind.as_str() != "penumbra.core.component.dex.v1.EventCandlestickData" {
         return Ok(());
     }
 
-    info!("Processing candlestick data from event at height {}", event.block_height);
+    debug!("Processing candlestick data from event at height {}", event.block_height);
 
     
     let mut base_asset_id: Option<Vec<u8>> = None;
@@ -525,7 +525,7 @@ async fn process_candlestick_data(
     
     for attr in &event.event.attributes {
         if let (Ok(key), Ok(value)) = (attr.key_str(), attr.value_str()) {
-            info!("Candlestick attribute: {}={}", key, value);
+            debug!("Candlestick attribute: {}={}", key, value);
 
             
             if key == "pair" && !value.is_empty() {
@@ -538,11 +538,11 @@ async fn process_candlestick_data(
                     if let Some(close) = json_data.get("close") {
                         if let Some(close_val) = close.as_f64() {
                             close_price = Some(close_val);
-                            info!("Found close price: {}", close_val);
+                            debug!("Found close price: {}", close_val);
                         } else if let Some(close_val) = close.as_str() {
                             if let Ok(parsed_price) = close_val.parse::<f64>() {
                                 close_price = Some(parsed_price);
-                                info!("Found close price (string): {}", parsed_price);
+                                debug!("Found close price (string): {}", parsed_price);
                             }
                         }
                     }
@@ -559,12 +559,12 @@ async fn process_candlestick_data(
                 
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(start_inner) {
                     base_asset_id = Some(decoded);
-                    info!("Decoded base asset ID: {}", hex::encode(base_asset_id.as_ref().unwrap()));
+                    debug!("Decoded base asset ID: {}", hex::encode(base_asset_id.as_ref().unwrap()));
 
                     
                     if base_asset_id.as_ref().unwrap() == USDC_ASSET_ID {
                         base_symbol = Some("USDC".to_string());
-                        info!("Identified base asset as USDC");
+                        debug!("Identified base asset as USDC");
                     }
                 }
             }
@@ -573,12 +573,12 @@ async fn process_candlestick_data(
                 
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(end_inner) {
                     quote_asset_id = Some(decoded);
-                    info!("Decoded quote asset ID: {}", hex::encode(quote_asset_id.as_ref().unwrap()));
+                    debug!("Decoded quote asset ID: {}", hex::encode(quote_asset_id.as_ref().unwrap()));
 
                     
                     if quote_asset_id.as_ref().unwrap() == USDC_ASSET_ID {
                         quote_symbol = Some("USDC".to_string());
-                        info!("Identified quote asset as USDC");
+                        debug!("Identified quote asset as USDC");
                     }
                 }
             }
@@ -587,41 +587,41 @@ async fn process_candlestick_data(
 
     
     if base_asset_id.is_none() || quote_asset_id.is_none() || close_price.is_none() {
-        info!("Trying legacy attribute parsing method for candlestick data");
+        debug!("Trying legacy attribute parsing method for candlestick data");
         for attr in &event.event.attributes {
             if let (Ok(key), Ok(value)) = (attr.key_str(), attr.value_str()) {
                 match key {
                     "pair.base" => {
                         base_asset_id = Some(hex::decode(value).unwrap_or_default());
-                        info!("Found base asset ID from legacy attribute: {}", value);
+                        debug!("Found base asset ID from legacy attribute: {}", value);
 
                         
                         if let Ok(bytes) = hex::decode(value) {
                             if let Ok(s) = std::str::from_utf8(&bytes) {
                                 if s.chars().all(|c| c.is_ascii_alphabetic()) {
                                     base_symbol = Some(s.to_uppercase());
-                                    info!("Extracted base symbol from legacy: {}", s.to_uppercase());
+                                    debug!("Extracted base symbol from legacy: {}", s.to_uppercase());
                                 }
                             }
                         }
                     },
                     "pair.quote" => {
                         quote_asset_id = Some(hex::decode(value).unwrap_or_default());
-                        info!("Found quote asset ID from legacy attribute: {}", value);
+                        debug!("Found quote asset ID from legacy attribute: {}", value);
 
                         
                         if let Ok(bytes) = hex::decode(value) {
                             if let Ok(s) = std::str::from_utf8(&bytes) {
                                 if s.chars().all(|c| c.is_ascii_alphabetic()) {
                                     quote_symbol = Some(s.to_uppercase());
-                                    info!("Extracted quote symbol from legacy: {}", s.to_uppercase());
+                                    debug!("Extracted quote symbol from legacy: {}", s.to_uppercase());
                                 }
                             }
                         }
                     },
                     "stick.close" => {
                         close_price = value.parse::<f64>().ok();
-                        info!("Found close price from legacy attribute: {}", value);
+                        debug!("Found close price from legacy attribute: {}", value);
                     },
                     _ => {}
                 }
@@ -632,11 +632,11 @@ async fn process_candlestick_data(
     
     if let (Some(base), Some(quote), Some(price)) = (&base_asset_id, &quote_asset_id, &close_price) {
         if *price <= 0.0 {
-            info!("Skipping invalid non-positive price: {}", price);
+            debug!("Skipping invalid non-positive price: {}", price);
             return Ok(());
         }
 
-        info!(
+        debug!(
             "Processing candlestick with base={}, quote={}, price={}",
             hex::encode(base),
             hex::encode(quote),
@@ -652,13 +652,13 @@ async fn process_candlestick_data(
 
         if is_usdc(quote) {
             
-            info!("💰 USDC DIRECT PAIR: base={} quote=USDC price=${}", hex::encode(base), price);
+            debug!("💰 USDC DIRECT PAIR: base={} quote=USDC price=${}", hex::encode(base), price);
             update_asset_price(dbtx, base, *price, timestamp, base_symbol).await?;
         } else if is_usdc(base) {
             
             if *price > 0.0 {
                 let inverse_price = 1.0 / *price;
-                info!("💰 USDC INVERSE PAIR: base=USDC quote={} price=${:.8}",
+                debug!("💰 USDC INVERSE PAIR: base=USDC quote={} price=${:.8}",
                       hex::encode(quote), inverse_price);
                 update_asset_price(dbtx, quote, inverse_price, timestamp, quote_symbol).await?;
             }
@@ -669,7 +669,7 @@ async fn process_candlestick_data(
             let symbol_to_use = base_symbol.clone();
             let price_to_store = *price;
 
-            info!("📊 NON-USDC PAIR: Storing direct price data for {} at price {}",
+            debug!("📊 NON-USDC PAIR: Storing direct price data for {} at price {}",
                   hex::encode(asset_id_to_store), price_to_store);
             update_asset_price(dbtx, asset_id_to_store, price_to_store, timestamp, symbol_to_use).await?;
 
@@ -678,13 +678,13 @@ async fn process_candlestick_data(
             let inverse_symbol = quote_symbol.clone();
             if *price > 0.0 {
                 let inverse_price = 1.0 / *price;
-                info!("📊 NON-USDC PAIR: Storing inverse price data for {} at price {:.8}",
+                debug!("📊 NON-USDC PAIR: Storing inverse price data for {} at price {:.8}",
                       hex::encode(inverse_asset_id), inverse_price);
                 update_asset_price(dbtx, inverse_asset_id, inverse_price, timestamp, inverse_symbol).await?;
             }
         }
     } else {
-        info!("Incomplete candlestick data: base={:?}, quote={:?}, price={:?}",
+        debug!("Incomplete candlestick data: base={:?}, quote={:?}, price={:?}",
                base_asset_id.as_ref().map(|v| hex::encode(v)),
                quote_asset_id.as_ref().map(|v| hex::encode(v)),
                close_price);
@@ -696,16 +696,16 @@ async fn process_candlestick_data(
 
 fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
     
-    info!("Extracting asset ID from meta: {}, value: {}", meta, value);
+    debug!("Extracting asset ID from meta: {}, value: {}", meta, value);
 
     
     if let Some(asset_id) = value.get("assetId") {
         if let Some(inner) = asset_id.get("inner") {
             if let Some(inner_str) = inner.as_str() {
-                info!("Found assetId.inner: {}", inner_str);
+                debug!("Found assetId.inner: {}", inner_str);
                 
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(inner_str) {
-                    info!("Successfully decoded assetId.inner from base64: {}", hex::encode(&decoded));
+                    debug!("Successfully decoded assetId.inner from base64: {}", hex::encode(&decoded));
                     return Some(decoded);
                 }
             }
@@ -715,7 +715,7 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
     
     if let Some(asset_id) = value.get("asset_id") {
         if let Some(asset_id_str) = asset_id.as_str() {
-            info!("Found asset_id directly: {}", asset_id_str);
+            debug!("Found asset_id directly: {}", asset_id_str);
             return Some(hex::decode(asset_id_str).unwrap_or_default());
         }
     }
@@ -724,7 +724,7 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
     if let Some(value_inner) = value.get("value") {
         if let Some(asset_id) = value_inner.get("asset_id") {
             if let Some(asset_id_str) = asset_id.as_str() {
-                info!("Found asset_id in value.value: {}", asset_id_str);
+                debug!("Found asset_id in value.value: {}", asset_id_str);
                 return Some(hex::decode(asset_id_str).unwrap_or_default());
             }
         }
@@ -734,15 +734,15 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
     if let Some(asset) = value.get("asset") {
         if let Some(asset_inner) = asset.get("inner") {
             if let Some(asset_inner_str) = asset_inner.as_str() {
-                info!("Found asset.inner: {}", asset_inner_str);
+                debug!("Found asset.inner: {}", asset_inner_str);
                 
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(asset_inner_str) {
-                    info!("Decoded asset.inner as base64: {}", hex::encode(&decoded));
+                    debug!("Decoded asset.inner as base64: {}", hex::encode(&decoded));
                     return Some(decoded);
                 }
                 
                 if let Ok(decoded) = hex::decode(asset_inner_str) {
-                    info!("Decoded asset.inner as hex: {}", hex::encode(&decoded));
+                    debug!("Decoded asset.inner as hex: {}", hex::encode(&decoded));
                     return Some(decoded);
                 }
             }
@@ -752,7 +752,7 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
     
     if let Some(asset_id) = meta.get("asset_id") {
         if let Some(asset_id_str) = asset_id.as_str() {
-            info!("Found asset_id in meta: {}", asset_id_str);
+            debug!("Found asset_id in meta: {}", asset_id_str);
             return Some(hex::decode(asset_id_str).unwrap_or_default());
         }
     }
@@ -760,7 +760,7 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
     
     if let Some(denom) = meta.get("denom") {
         if let Some(denom_str) = denom.as_str() {
-            info!("Found denom in meta: {}", denom_str);
+            debug!("Found denom in meta: {}", denom_str);
             return Some(denom_str.as_bytes().to_vec());
         }
     }
@@ -769,21 +769,21 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
     if let Some(metadata) = meta.get("metadata") {
         if let Some(denom) = metadata.get("denom") {
             if let Some(denom_str) = denom.as_str() {
-                info!("Found denom in meta.metadata: {}", denom_str);
+                debug!("Found denom in meta.metadata: {}", denom_str);
                 return Some(denom_str.as_bytes().to_vec());
             }
         }
 
         if let Some(asset_id) = metadata.get("asset_id") {
             if let Some(asset_id_str) = asset_id.as_str() {
-                info!("Found asset_id in meta.metadata: {}", asset_id_str);
+                debug!("Found asset_id in meta.metadata: {}", asset_id_str);
                 return Some(hex::decode(asset_id_str).unwrap_or_default());
             }
         }
     }
 
     
-    info!("Could not extract asset_id from metadata and value");
+    debug!("Could not extract asset_id from metadata and value");
     None
 }
 
@@ -929,7 +929,7 @@ pub async fn process_events(
     height: u64,
     timestamp: DateTime<Utc>,
 ) -> Result<(), anyhow::Error> {
-    info!(
+    debug!(
         "Processing IBC events for block {} with {} events",
         height,
         events.len()
@@ -941,7 +941,7 @@ pub async fn process_events(
     let mut candlestick_count = 0;
     for event in events {
         if event.event.kind.as_str() == "penumbra.core.component.dex.v1.EventCandlestickData" {
-            info!("Found candlestick event in block {}", height);
+            debug!("Found candlestick event in block {}", height);
             candlestick_count += 1;
             if let Err(e) = process_candlestick_data(dbtx, event, timestamp).await {
                 error!("Failed to process candlestick data: {}", e);
@@ -950,7 +950,7 @@ pub async fn process_events(
     }
 
     if candlestick_count > 0 {
-        info!("Processed {} candlestick events in block {}", candlestick_count, height);
+        debug!("Processed {} candlestick events in block {}", candlestick_count, height);
     }
 
     let mut client_connections: HashMap<String, String> = HashMap::new();
@@ -1020,7 +1020,7 @@ pub async fn process_events(
     }
 
     if known_clients.is_empty() {
-        info!("No clients found in database");
+        debug!("No clients found in database");
     } else {
         debug!("Found {} existing clients in database", known_clients.len());
     }
@@ -1318,7 +1318,7 @@ pub async fn process_events(
                             usize::try_from(channel_num).unwrap_or(0) % available_clients.len();
                         let selected_client = available_clients[idx].clone();
 
-                        info!(
+                        debug!(
                             "Associating channel {} with client {} via deterministic mapping",
                             our_channel, selected_client
                         );
@@ -1342,7 +1342,7 @@ pub async fn process_events(
                     } else {
                         let selected_client = available_clients[0].clone();
 
-                        info!(
+                        debug!(
                             "Associating unnumbered channel {} with default client {}",
                             our_channel, selected_client
                         );
@@ -1697,10 +1697,10 @@ pub async fn process_events(
                         if let Some(channel_num) = extract_number_from_channel(channel_id) {
                             
                             let channel_based_asset = format!("ibc_channel_{}", channel_num);
-                            info!("Using channel-based fallback asset ID: {}", channel_based_asset);
+                            debug!("Using channel-based fallback asset ID: {}", channel_based_asset);
                             Some(channel_based_asset.as_bytes().to_vec())
                         } else {
-                            info!("Could not extract channel number from {}", channel_id);
+                            debug!("Could not extract channel number from {}", channel_id);
                             Some(channel_id.as_bytes().to_vec())
                         }
                     } else {
@@ -1708,12 +1708,12 @@ pub async fn process_events(
                     };
 
                     if asset_id.is_none() {
-                        info!("Could not extract asset ID for inbound transfer, using fallback");
+                        debug!("Could not extract asset ID for inbound transfer, using fallback");
                         asset_id = fallback_asset_id;
                     }
 
                     if let Some(asset_id_ref) = asset_id.as_ref() {
-                        info!("Using asset ID for inbound transfer: {}",
+                        debug!("Using asset ID for inbound transfer: {}",
                               hex::encode(asset_id_ref));
 
                         
@@ -1721,7 +1721,7 @@ pub async fn process_events(
                         if let Ok(s) = std::str::from_utf8(asset_id_ref) {
                             if s.chars().all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '_') {
                                 symbol = Some(s.to_uppercase());
-                                info!("Extracted asset symbol for inbound transfer: {}", s.to_uppercase());
+                                debug!("Extracted asset symbol for inbound transfer: {}", s.to_uppercase());
                             }
                         }
 
@@ -1735,7 +1735,7 @@ pub async fn process_events(
 
                         if existing_price.is_err() || existing_price.as_ref().unwrap().is_none() {
                             
-                            info!("No existing price for asset {}, getting fallback price", hex::encode(asset_id_ref));
+                            debug!("No existing price for asset {}, getting fallback price", hex::encode(asset_id_ref));
                             if let Err(e) = get_asset_price(dbtx, asset_id_ref).await {
                                 error!("Failed to get and store price for asset {}: {}",
                                       hex::encode(asset_id_ref), e);
@@ -1763,7 +1763,7 @@ pub async fn process_events(
                                 let idx = usize::try_from(channel_num).unwrap_or(0) % all_clients.len();
                                 let selected_client = all_clients[idx].clone();
 
-                                info!(
+                                debug!(
                                     "Associating channel {} with client {} via deterministic mapping",
                                     channel_id, selected_client
                                 );
@@ -1785,7 +1785,7 @@ pub async fn process_events(
                         } else if !known_clients.is_empty() {
                             let selected_client = known_clients[0].clone();
 
-                            info!(
+                            debug!(
                                 "Associating unnumbered channel {} with first available client {}",
                                 channel_id, selected_client
                             );
@@ -1946,10 +1946,10 @@ pub async fn process_events(
                         if let Some(channel_num) = extract_number_from_channel(channel_id) {
                             
                             let channel_based_asset = format!("ibc_channel_{}", channel_num);
-                            info!("Using channel-based fallback asset ID: {}", channel_based_asset);
+                            debug!("Using channel-based fallback asset ID: {}", channel_based_asset);
                             Some(channel_based_asset.as_bytes().to_vec())
                         } else {
-                            info!("Could not extract channel number from {}", channel_id);
+                            debug!("Could not extract channel number from {}", channel_id);
                             Some(channel_id.as_bytes().to_vec())
                         }
                     } else {
@@ -1957,12 +1957,12 @@ pub async fn process_events(
                     };
 
                     if asset_id.is_none() {
-                        info!("Could not extract asset ID for outbound transfer, using fallback");
+                        debug!("Could not extract asset ID for outbound transfer, using fallback");
                         asset_id = fallback_asset_id;
                     }
 
                     if let Some(asset_id_ref) = asset_id.as_ref() {
-                        info!("Using asset ID for outbound transfer: {}",
+                        debug!("Using asset ID for outbound transfer: {}",
                               hex::encode(asset_id_ref));
 
                         
@@ -1970,7 +1970,7 @@ pub async fn process_events(
                         if let Ok(s) = std::str::from_utf8(asset_id_ref) {
                             if s.chars().all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '_') {
                                 symbol = Some(s.to_uppercase());
-                                info!("Extracted asset symbol for outbound transfer: {}", s.to_uppercase());
+                                debug!("Extracted asset symbol for outbound transfer: {}", s.to_uppercase());
                             }
                         }
 
@@ -1984,7 +1984,7 @@ pub async fn process_events(
 
                         if existing_price.is_err() || existing_price.as_ref().unwrap().is_none() {
                             
-                            info!("No existing price for asset {}, getting fallback price", hex::encode(asset_id_ref));
+                            debug!("No existing price for asset {}, getting fallback price", hex::encode(asset_id_ref));
                             if let Err(e) = get_asset_price(dbtx, asset_id_ref).await {
                                 error!("Failed to get and store price for asset {}: {}",
                                       hex::encode(asset_id_ref), e);
@@ -2012,7 +2012,7 @@ pub async fn process_events(
                                 let idx = usize::try_from(channel_num).unwrap_or(0) % all_clients.len();
                                 let selected_client = all_clients[idx].clone();
 
-                                info!(
+                                debug!(
                                     "Associating channel {} with client {} via deterministic mapping",
                                     channel_id, selected_client
                                 );
@@ -2034,7 +2034,7 @@ pub async fn process_events(
                         } else if !known_clients.is_empty() {
                             let selected_client = known_clients[0].clone();
 
-                            info!(
+                            debug!(
                                 "Associating unnumbered channel {} with first available client {}",
                                 channel_id, selected_client
                             );
@@ -2213,7 +2213,7 @@ pub async fn update_old_pending_transactions(
 
     let updated_count = updated_rows.len();
     if updated_count > 0 {
-        info!(
+        debug!(
             "Updated {} IBC transactions from pending to error status",
             updated_count
         );
