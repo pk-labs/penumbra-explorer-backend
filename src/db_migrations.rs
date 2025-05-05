@@ -6,18 +6,18 @@ use tracing::{info, warn};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
-/// Define queryable struct for EXISTS query
+
 #[derive(QueryableByName)]
 struct Exists {
     #[diesel(sql_type = diesel::sql_types::Bool)]
     exists: bool,
 }
 
-/// Run database migrations to set up the schema
-///
-/// # Errors
-/// Returns an error if database connection fails, if tables can't be checked,
-/// or if migrations can't be executed successfully
+
+
+
+
+
 pub fn run_migrations(database_url: &str) -> Result<()> {
     info!("Connecting to database");
     let mut conn =
