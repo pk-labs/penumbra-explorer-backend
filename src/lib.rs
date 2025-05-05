@@ -32,14 +32,14 @@ impl Explorer {
         Self { options }
     }
 
-    /// Starts the explorer service
-    ///
-    /// # Errors
-    /// Returns an error if database migrations fail, if database connections can't be established,
-    /// or if the server fails to start
-    ///
-    /// # Panics
-    /// Panics if CORS origin URLs cannot be parsed
+    
+    
+    
+    
+    
+    
+    
+    
     pub async fn run(&self) -> Result<()> {
         db_migrations::run_migrations(&self.options.dest_db_url)
             .context("Failed to run database migrations")?;
