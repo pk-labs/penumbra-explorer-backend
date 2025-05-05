@@ -382,8 +382,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     END) as shielded_volume,
                     COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
                     SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN t.amount * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available
+                        THEN (t.amount / 1000000.0) * p.price_usd 
+                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
                     END) as unshielded_volume,
                     COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
@@ -430,8 +430,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     END) as shielded_volume,
                     COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
                     SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN t.amount * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available
+                        THEN (t.amount / 1000000.0) * p.price_usd 
+                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
                     END) as unshielded_volume,
                     COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
@@ -480,8 +480,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     END) as shielded_volume,
                     COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
                     SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN t.amount * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available
+                        THEN (t.amount / 1000000.0) * p.price_usd 
+                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
                     END) as unshielded_volume,
                     COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
@@ -545,8 +545,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     END) as shielded_volume,
                     COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
                     SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN t.amount * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available
+                        THEN (t.amount / 1000000.0) * p.price_usd 
+                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
                     END) as unshielded_volume,
                     COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
@@ -586,8 +586,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     END) as shielded_volume,
                     COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
                     SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN t.amount * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available
+                        THEN (t.amount / 1000000.0) * p.price_usd 
+                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
                     END) as unshielded_volume,
                     COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
@@ -629,8 +629,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     END) as shielded_volume,
                     COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
                     SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN t.amount * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available
+                        THEN (t.amount / 1000000.0) * p.price_usd 
+                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
                     END) as unshielded_volume,
                     COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
