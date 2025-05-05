@@ -50,6 +50,9 @@ impl std::fmt::Display for TransactionStatus {
 // Add this constant for the USDC asset ID
 const USDC_ASSET_ID: &[u8] = &[0x75, 0x73, 0x64, 0x63]; // "usdc" in hex
 
+// Standard token decimal places - most tokens use 6 decimals like USDC
+const DEFAULT_TOKEN_DECIMALS: u32 = 6;
+
 // Helper function - move to top to ensure it's in scope for all functions that use it
 fn find_attribute_value<'a>(event: &'a ContextualizedEvent<'_>, key: &str) -> Option<&'a str> {
     for attr in &event.event.attributes {
@@ -311,7 +314,10 @@ async fn update_client_stats_with_usd(
     // Get USD price and calculate USD amount
     match get_asset_price(dbtx, asset_id).await? {
         Some(price) if price > 0.0 => {
-            let usd_amount = amount_value as f64 * price;
+            // Tokens typically use 6 decimal places (like USDC), so divide by 1,000,000
+            // This converts raw amounts to actual token amounts before multiplying by price
+            let decimal_adjusted_amount = amount_value as f64 / 1_000_000.0;
+            let usd_amount = decimal_adjusted_amount * price;
 
             // Use separate queries based on direction instead of dynamic SQL
             match direction {
@@ -439,10 +445,13 @@ pub async fn record_transfer(
     let usd_amount: Option<f64> = if let Some(asset) = &asset_id {
         match get_asset_price(dbtx, asset).await? {
             Some(price) if price > 0.0 => {
-                let amount_usd = amount_value as f64 * price;
+                // Tokens typically use 6 decimal places (like USDC), so divide by 1,000,000
+                // This converts raw amounts to actual token amounts before multiplying by price
+                let decimal_adjusted_amount = amount_value as f64 / 1_000_000.0;
+                let amount_usd = decimal_adjusted_amount * price;
                 info!(
-                    "Calculated USD amount for transfer: ${:.2} (amount={}, price=${:.8})",
-                    amount_usd, amount_value, price
+                    "Calculated USD amount for transfer: ${:.2} (raw_amount={}, adjusted_amount={:.8}, price=${:.8})",
+                    amount_usd, amount_value, decimal_adjusted_amount, price
                 );
                 Some(amount_usd)
             },
