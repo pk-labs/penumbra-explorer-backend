@@ -5,17 +5,17 @@ use sqlx::Row;
 #[derive(SimpleObject)]
 #[graphql(rename_fields = "camelCase")]
 pub struct ChannelPair {
-    // Our local channel
+    
     pub channel_id: String,
-    // The channel ID on the counterparty chain
+    
     pub counterparty_channel_id: Option<String>,
-    // The client ID associated with this channel
+    
     pub client_id: String,
-    // The connection ID if available
+    
     pub connection_id: Option<String>,
-    // Count of pending transactions over this channel
+    
     pub pending_tx_count: i64,
-    // Count of completed transactions over this channel
+    
     pub completed_tx_count: i64,
 }
 
@@ -36,15 +36,15 @@ pub struct Stats {
 #[derive(SimpleObject)]
 #[graphql(rename_fields = "camelCase")]
 pub struct TotalShieldedVolume {
-    /// Total shielded volume across all IBC clients
+    
     pub value: String,
 }
 
 impl ChannelPair {
-    /// Gets channel pairs for a specific client ID
-    ///
-    /// # Errors
-    /// Returns an error if the database query fails
+    
+    
+    
+    
     pub async fn get_by_client_id(ctx: &Context<'_>, client_id: String) -> Result<Vec<Self>> {
         let db = &ctx
             .data_unchecked::<crate::api::graphql::context::ApiContext>()
@@ -88,10 +88,10 @@ impl ChannelPair {
             .collect())
     }
 
-    /// Gets all channel pairs with optional filtering
-    ///
-    /// # Errors
-    /// Returns an error if the database query fails
+    
+    
+    
+    
     pub async fn get_all(
         ctx: &Context<'_>,
         client_id: Option<String>,
@@ -154,7 +154,7 @@ impl ChannelPair {
 }
 
 impl Stats {
-    /// Gets the appropriate view name based on the time period
+    
     fn get_view_name(time_period: Option<&str>) -> &'static str {
         match time_period {
             Some("24h") => "ibc_client_summary_24h",
@@ -163,10 +163,10 @@ impl Stats {
         }
     }
 
-    /// Gets IBC stats with optional filtering
-    ///
-    /// # Errors
-    /// Returns an error if the database query fails
+    
+    
+    
+    
     pub async fn get_all(
         ctx: &Context<'_>,
         client_id: Option<String>,
@@ -228,10 +228,10 @@ impl Stats {
             .collect())
     }
 
-    /// Gets a specific IBC stats entry by `client_id`
-    ///
-    /// # Errors
-    /// Returns an error if the database query fails
+    
+    
+    
+    
     pub async fn get_by_client_id(
         ctx: &Context<'_>,
         client_id: String,
@@ -276,10 +276,10 @@ impl Stats {
 }
 
 impl TotalShieldedVolume {
-    /// Gets total shielded volume across all IBC clients
-    ///
-    /// # Errors
-    /// Returns an error if the database query fails
+    
+    
+    
+    
     pub async fn get(ctx: &Context<'_>) -> Result<Self> {
         let db = &ctx
             .data_unchecked::<crate::api::graphql::context::ApiContext>()
