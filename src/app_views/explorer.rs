@@ -376,23 +376,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             WITH client_stats AS (
                 SELECT
                     t.client_id,
-                    SUM(CASE WHEN t.direction = 'inbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as shielded_volume,
-                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as unshielded_volume,
-                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
                     COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
                     MAX(t.timestamp) as last_updated
                 FROM
                     ibc_transfers t
-                LEFT JOIN
-                    asset_prices p ON t.asset_id = p.asset_id
                 GROUP BY
                     t.client_id
             )
@@ -424,23 +416,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             WITH client_stats AS (
                 SELECT
                     t.client_id,
-                    SUM(CASE WHEN t.direction = 'inbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as shielded_volume,
-                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as unshielded_volume,
-                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
                     COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
                     MAX(t.timestamp) as last_updated
                 FROM
                     ibc_transfers t
-                LEFT JOIN
-                    asset_prices p ON t.asset_id = p.asset_id
                 WHERE
                     t.timestamp > NOW() - INTERVAL '24 hours'
                 GROUP BY
@@ -474,23 +458,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             WITH client_stats AS (
                 SELECT
                     t.client_id,
-                    SUM(CASE WHEN t.direction = 'inbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as shielded_volume,
-                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as unshielded_volume,
-                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
                     COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
                     MAX(t.timestamp) as last_updated
                 FROM
                     ibc_transfers t
-                LEFT JOIN
-                    asset_prices p ON t.asset_id = p.asset_id
                 WHERE
                     t.timestamp > NOW() - INTERVAL '30 days'
                 GROUP BY
@@ -539,23 +515,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             LEFT JOIN (
                 SELECT
                     t.client_id,
-                    SUM(CASE WHEN t.direction = 'inbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as shielded_volume,
-                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as unshielded_volume,
-                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
                     COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
                     MAX(t.timestamp) as last_updated
                 FROM
                     ibc_transfers t
-                LEFT JOIN
-                    asset_prices p ON t.asset_id = p.asset_id
                 GROUP BY
                     t.client_id
             ) s ON c.client_id = s.client_id
@@ -580,23 +548,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             LEFT JOIN (
                 SELECT
                     t.client_id,
-                    SUM(CASE WHEN t.direction = 'inbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as shielded_volume,
-                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as unshielded_volume,
-                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
                     COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
                     MAX(t.timestamp) as last_updated
                 FROM
                     ibc_transfers t
-                LEFT JOIN
-                    asset_prices p ON t.asset_id = p.asset_id
                 WHERE
                     t.timestamp > NOW() - INTERVAL '24 hours'
                 GROUP BY
@@ -623,23 +583,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             LEFT JOIN (
                 SELECT
                     t.client_id,
-                    SUM(CASE WHEN t.direction = 'inbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as shielded_volume,
-                    COUNT(CASE WHEN t.direction = 'inbound' THEN 1 ELSE NULL END) as shielded_tx_count,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.asset_id IS NOT NULL AND p.price_usd IS NOT NULL 
-                        THEN (t.amount / 1000000.0) * p.price_usd 
-                        ELSE 0 -- Only calculate USD when price is available, and apply 6 decimal places adjustment
-                    END) as unshielded_volume,
-                    COUNT(CASE WHEN t.direction = 'outbound' THEN 1 ELSE NULL END) as unshielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
+                    COUNT(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as shielded_tx_count,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume,
+                    COUNT(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN 1 ELSE NULL END) as unshielded_tx_count,
                     COUNT(CASE WHEN t.status = 'pending' THEN 1 ELSE NULL END) as pending_tx_count,
                     COUNT(CASE WHEN t.status = 'expired' THEN 1 ELSE NULL END) as expired_tx_count,
                     MAX(t.timestamp) as last_updated
                 FROM
                     ibc_transfers t
-                LEFT JOIN
-                    asset_prices p ON t.asset_id = p.asset_id
                 WHERE
                     t.timestamp > NOW() - INTERVAL '30 days'
                 GROUP BY
