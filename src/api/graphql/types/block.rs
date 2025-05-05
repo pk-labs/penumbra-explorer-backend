@@ -2,7 +2,7 @@
 use crate::api::graphql::{
     context::ApiContext,
     scalars::DateTime,
-    // Import the string_to_ibc_status function from the transaction module
+    
     types::transaction::string_to_ibc_status,
     types::{Event, Transaction},
 };
@@ -79,7 +79,7 @@ impl Block {
             let ibc_status = string_to_ibc_status(Some(&ibc_status_str));
 
             if !raw_json_str.is_empty() {
-                // First parse the JSON for metadata extraction, but use the original string for storage
+                
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw_json_str) {
                     let hash = hex::encode_upper(&tx_hash);
                     transactions.push(Transaction {
@@ -91,7 +91,7 @@ impl Block {
                         block: self.clone(),
                         body: crate::api::graphql::types::extract_transaction_body(&json),
                         raw_events: extract_events_from_json(&json),
-                        // Store the original string to preserve DB ordering
+                        
                         raw_json: serde_json::Value::String(raw_json_str.clone()),
                         client_id,
                         ibc_status,
@@ -157,10 +157,10 @@ pub struct DbBlock {
 }
 
 impl DbBlock {
-    /// Gets a block by its height
-    ///
-    /// # Errors
-    /// Returns an error if the database query fails
+    
+    
+    
+    
     pub async fn get_by_height(ctx: &Context<'_>, height: i64) -> Result<Option<Self>> {
         let db = &ctx.data_unchecked::<ApiContext>().db;
         let row_result = sqlx::query(
@@ -204,10 +204,10 @@ impl DbBlock {
         }
     }
 
-    /// Gets all blocks with pagination
-    ///
-    /// # Errors
-    /// Returns an error if the database query fails
+    
+    
+    
+    
     pub async fn get_all(
         ctx: &Context<'_>,
         limit: Option<i64>,
@@ -259,10 +259,10 @@ impl DbBlock {
         Ok(blocks)
     }
 
-    /// Gets the latest block
-    ///
-    /// # Errors
-    /// Returns an error if the database query fails
+    
+    
+    
+    
     pub async fn get_latest(ctx: &Context<'_>) -> Result<Option<Self>> {
         let db = &ctx.data_unchecked::<ApiContext>().db;
         let row_result = sqlx::query(
