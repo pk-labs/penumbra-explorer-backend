@@ -652,55 +652,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         // Asset_prices table already created earlier, skipping...
 
-        // Insert default prices for common assets
-        // USDC price (1.0)
-        sqlx::query(
-            r"
-    INSERT INTO asset_prices (asset_id, price_usd, last_updated, symbol)
-    VALUES ($1, 1.0, NOW(), 'USDC')
-    ON CONFLICT (asset_id) DO NOTHING
-    ",
-        )
-            .bind(hex::decode("75736463").unwrap_or_default()) // 'usdc' in hex
-            .execute(dbtx.as_mut())
-            .await?;
-            
-        // Default prices for other common assets
-        // USDT (1.0)
-        sqlx::query(
-            r"
-    INSERT INTO asset_prices (asset_id, price_usd, last_updated, symbol)
-    VALUES ($1, 1.0, NOW(), 'USDT')
-    ON CONFLICT (asset_id) DO NOTHING
-    ",
-        )
-            .bind(hex::decode("75736474").unwrap_or_default()) // 'usdt' in hex
-            .execute(dbtx.as_mut())
-            .await?;
-            
-        // Penumbra native token (approximate initial price)
-        sqlx::query(
-            r"
-    INSERT INTO asset_prices (asset_id, price_usd, last_updated, symbol)
-    VALUES ($1, 0.1, NOW(), 'PNB')
-    ON CONFLICT (asset_id) DO NOTHING
-    ",
-        )
-            .bind(hex::decode("706e62").unwrap_or_default()) // 'pnb' in hex
-            .execute(dbtx.as_mut())
-            .await?;
-            
-        // ATOM (approximate default price)
-        sqlx::query(
-            r"
-    INSERT INTO asset_prices (asset_id, price_usd, last_updated, symbol)
-    VALUES ($1, 7.5, NOW(), 'ATOM')
-    ON CONFLICT (asset_id) DO NOTHING
-    ",
-        )
-            .bind(hex::decode("61746f6d").unwrap_or_default()) // 'atom' in hex
-            .execute(dbtx.as_mut())
-            .await?;
+        // No default asset prices - let the system automatically detect and add them from candlestick events
 
         Ok(())
     }
