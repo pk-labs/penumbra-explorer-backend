@@ -17,10 +17,10 @@ pub struct Metadata<'a> {
     pub decoded_tx_json: String,
 }
 
-/// Insert transaction into database
-///
-/// # Errors
-/// Returns an error if the database query fails
+
+
+
+
 pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<(), sqlx::Error> {
     let Ok(height_i64) = i64::try_from(meta.height) else {
         return Err(sqlx::Error::Decode(Box::new(std::io::Error::new(
@@ -81,7 +81,7 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
     Ok(())
 }
 
-/// Decode transaction bytes to JSON
+
 #[must_use]
 pub fn decode(tx_hash: [u8; 32], tx_bytes: &[u8]) -> Value {
     let start = Instant::now();
@@ -125,7 +125,7 @@ pub fn decode(tx_hash: [u8; 32], tx_bytes: &[u8]) -> Value {
     }
 }
 
-/// Create transaction JSON
+
 #[must_use]
 pub fn create_transaction_json(
     tx_hash: [u8; 32],
@@ -211,7 +211,7 @@ pub fn create_transaction_json(
     json_str
 }
 
-/// Extract fee amount from transaction result
+
 #[must_use]
 pub fn extract_fee_amount(tx_result: &Value) -> u64 {
     tx_result
@@ -225,7 +225,7 @@ pub fn extract_fee_amount(tx_result: &Value) -> u64 {
         .unwrap_or(0)
 }
 
-/// Extract chain ID from transaction result
+
 pub fn extract_chain_id(tx_result: &Value) -> Option<String> {
     tx_result
         .get("body")
@@ -235,7 +235,7 @@ pub fn extract_chain_id(tx_result: &Value) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-/// Extract chain ID from transaction bytes
+
 #[must_use]
 pub fn extract_chain_id_from_bytes(tx_bytes: &[u8]) -> Option<String> {
     match TransactionView::decode(tx_bytes) {
