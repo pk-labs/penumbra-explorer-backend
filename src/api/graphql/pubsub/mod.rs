@@ -4,7 +4,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 pub mod ibc;
-mod triggers; // Only define the module once, and make it public
+mod triggers; 
 use ibc::IbcTransactionEvent;
 pub use triggers::start;
 
@@ -14,7 +14,7 @@ pub struct PubSub {
     transactions_tx: broadcast::Sender<i64>,
     transaction_count_tx: broadcast::Sender<i64>,
     ibc_transactions_tx: broadcast::Sender<IbcTransactionEvent>,
-    // Add a new channel for total shielded volume updates
+    
     total_shielded_volume_tx: broadcast::Sender<String>,
 }
 
@@ -31,7 +31,7 @@ impl PubSub {
         let (transactions_tx, _) = broadcast::channel(1000);
         let (transaction_count_tx, _) = broadcast::channel(1000);
         let (ibc_transactions_tx, _) = broadcast::channel(1000);
-        // Create a new channel for total shielded volume updates
+        
         let (total_shielded_volume_tx, _) = broadcast::channel(1000);
         Self {
             blocks_tx,
@@ -62,7 +62,7 @@ impl PubSub {
         self.ibc_transactions_tx.subscribe()
     }
 
-    // Add a new subscription method for total shielded volume
+    
     #[must_use]
     pub fn total_shielded_volume_subscribe(&self) -> broadcast::Receiver<String> {
         self.total_shielded_volume_tx.subscribe()
@@ -72,7 +72,7 @@ impl PubSub {
         match self.blocks_tx.send(height) {
             Ok(_) => debug!("Published block update: {}", height),
             Err(e) => {
-                // Handle the error case
+                
                 let receiver_count = self.blocks_tx.receiver_count();
                 if receiver_count == 0 {
                     debug!("No receivers for block update");
@@ -87,7 +87,7 @@ impl PubSub {
         match self.transactions_tx.send(id) {
             Ok(_) => debug!("Published transaction update: {}", id),
             Err(e) => {
-                // Handle the error case
+                
                 let receiver_count = self.transactions_tx.receiver_count();
                 if receiver_count == 0 {
                     debug!("No receivers for transaction update");
@@ -102,7 +102,7 @@ impl PubSub {
         match self.transaction_count_tx.send(count) {
             Ok(_) => debug!("Published transaction count update: {}", count),
             Err(e) => {
-                // Handle the error case
+                
                 let receiver_count = self.transaction_count_tx.receiver_count();
                 if receiver_count == 0 {
                     debug!("No receivers for transaction count update");
@@ -117,7 +117,7 @@ impl PubSub {
         match self.ibc_transactions_tx.send(event) {
             Ok(_) => debug!("Published IBC transaction update"),
             Err(e) => {
-                // Handle the error case
+                
                 let receiver_count = self.ibc_transactions_tx.receiver_count();
                 if receiver_count == 0 {
                     debug!("No receivers for IBC transaction update");
@@ -128,13 +128,13 @@ impl PubSub {
         }
     }
 
-    // Fix: Clone the value before sending it to avoid the borrow-after-move error
+    
     pub fn publish_total_shielded_volume(&self, value: String) {
         let value_clone = value.clone();
         match self.total_shielded_volume_tx.send(value) {
             Ok(_) => debug!("Published total shielded volume update: {}", value_clone),
             Err(e) => {
-                // Handle the error case
+                
                 let receiver_count = self.total_shielded_volume_tx.receiver_count();
                 if receiver_count == 0 {
                     debug!("No receivers for total shielded volume update");
