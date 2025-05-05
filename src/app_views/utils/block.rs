@@ -18,10 +18,10 @@ pub struct Metadata<'a> {
     pub raw_json: String,
 }
 
-/// Process batch events to extract block data
-///
-/// # Errors
-/// Returns an error if there are issues processing the events
+
+
+
+
 #[allow(clippy::needless_lifetimes, clippy::unused_async)]
 pub async fn process_block_events<'a>(
     batch: &'a cometindex::index::EventBatch,
@@ -132,7 +132,7 @@ pub async fn process_block_events<'a>(
     Ok(results)
 }
 
-/// Create block JSON from block data
+
 #[must_use]
 pub fn create_block_json(
     height: u64,
@@ -169,10 +169,10 @@ pub fn create_block_json(
     json_str
 }
 
-/// Insert block into database
-///
-/// # Errors
-/// Returns an error if the database query fails
+
+
+
+
 pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<(), anyhow::Error> {
     let height_i64 = match i64::try_from(meta.height) {
         Ok(h) => h,
@@ -240,7 +240,7 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
     Ok(())
 }
 
-/// Collect transactions from block JSON
+
 #[must_use]
 pub fn collect_block_transactions(raw_json: &Value, timestamp: DateTime<Utc>) -> Vec<Value> {
     if let Some(block) = raw_json.get("block") {
@@ -262,7 +262,7 @@ pub fn collect_block_transactions(raw_json: &Value, timestamp: DateTime<Utc>) ->
     Vec::new()
 }
 
-/// Collect events from block JSON
+
 #[must_use]
 pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
     if let Some(block) = raw_json.get("block") {
@@ -325,7 +325,7 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
     Vec::new()
 }
 
-/// Clone a contextualized event to make it have a static lifetime
+
 #[must_use]
 pub fn clone_event(event: ContextualizedEvent<'_>) -> ContextualizedEvent<'static> {
     let event_clone = event.event.clone();
