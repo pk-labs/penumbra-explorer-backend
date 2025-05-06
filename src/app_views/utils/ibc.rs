@@ -312,26 +312,92 @@ async fn get_asset_price(
 
 /// Extracts and combines the hi and lo parts of a 128-bit amount
 fn extract_full_amount(value: &Value) -> u128 {
+    debug!("Extracting amount from JSON: {}", value);
+    
+    // Check if amount is present
+    let amount_value = value.get("amount");
+    debug!("Found amount in JSON: {:?}", amount_value);
+    
     // Try to extract both hi and lo parts
-    let hi = value
-        .get("amount")
-        .and_then(|a| a.get("hi"))
-        .and_then(|h| match h {
-            Value::String(s) => s.parse::<u64>().ok(),
-            Value::Number(n) => n.as_u64(),
-            _ => None,
-        })
-        .unwrap_or(0);
+    let hi = if let Some(amount) = amount_value {
+        if let Some(hi_val) = amount.get("hi") {
+            debug!("Found hi value: {:?} (type: {})", hi_val, hi_val.to_string());
+            match hi_val {
+                Value::String(s) => {
+                    debug!("Parsing hi from string: {}", s);
+                    match s.parse::<u64>() {
+                        Ok(val) => {
+                            debug!("Successfully parsed hi string to u64: {}", val);
+                            val
+                        },
+                        Err(e) => {
+                            debug!("Failed to parse hi string '{}' to u64: {}", s, e);
+                            0
+                        }
+                    }
+                },
+                Value::Number(n) => {
+                    if let Some(val) = n.as_u64() {
+                        debug!("Got hi as number: {}", val);
+                        val
+                    } else {
+                        debug!("Number hi value couldn't be converted to u64");
+                        0
+                    }
+                },
+                _ => {
+                    debug!("Hi value has unsupported type: {:?}", hi_val);
+                    0
+                }
+            }
+        } else {
+            debug!("No hi field found, using 0");
+            0
+        }
+    } else {
+        debug!("No amount field found in JSON, using 0 for hi");
+        0
+    };
 
-    let lo = value
-        .get("amount")
-        .and_then(|a| a.get("lo"))
-        .and_then(|l| match l {
-            Value::String(s) => s.parse::<u64>().ok(),
-            Value::Number(n) => n.as_u64(),
-            _ => None,
-        })
-        .unwrap_or(0);
+    let lo = if let Some(amount) = amount_value {
+        if let Some(lo_val) = amount.get("lo") {
+            debug!("Found lo value: {:?} (type: {})", lo_val, lo_val.to_string());
+            match lo_val {
+                Value::String(s) => {
+                    debug!("Parsing lo from string: {}", s);
+                    match s.parse::<u64>() {
+                        Ok(val) => {
+                            debug!("Successfully parsed lo string to u64: {}", val);
+                            val
+                        },
+                        Err(e) => {
+                            debug!("Failed to parse lo string '{}' to u64: {}", s, e);
+                            0
+                        }
+                    }
+                },
+                Value::Number(n) => {
+                    if let Some(val) = n.as_u64() {
+                        debug!("Got lo as number: {}", val);
+                        val
+                    } else {
+                        debug!("Number lo value couldn't be converted to u64");
+                        0
+                    }
+                },
+                _ => {
+                    debug!("Lo value has unsupported type: {:?}", lo_val);
+                    0
+                }
+            }
+        } else {
+            debug!("No lo field found, using 0");
+            0
+        }
+    } else {
+        debug!("No amount field found in JSON, using 0 for lo");
+        0
+    };
 
     // Combine into full 128-bit value
     let full_amount = (u128::from(hi) << 64) | u128::from(lo);
@@ -378,41 +444,46 @@ pub async fn record_transfer(
     status: TransactionStatus,
     asset_id: Option<Vec<u8>>,
 ) -> Result<(), anyhow::Error> {
-    // Try to parse as JSON first - this handles when we have the full value object
     let amount_value = if let Ok(value_json) = serde_json::from_str::<Value>(value_str) {
         extract_full_amount(&value_json)
     } else {
-        // Fall back to parsing as string for backward compatibility
-        // Convert i64 to u128 to match the return type of extract_full_amount
-        value_str.parse::<i64>().unwrap_or_default() as u128
+        match value_str.parse::<u128>() {
+            Ok(value) => {
+                debug!("Successfully parsed amount string '{}' as u128", value_str);
+                value
+            },
+            Err(e) => {
+                debug!("Failed to parse amount string '{}' as u128: {}", value_str, e);
+                0
+            }
+        }
     };
 
-    // Convert u128 to i64 if possible (for database compatibility)
-    // If the value is too large, cap it at i64::MAX to prevent overflow
-    let amount_numeric = if amount_value > i64::MAX as u128 {
-        debug!("Amount value {} exceeds i64::MAX, capping at maximum value", amount_value);
+    // Keep original amount value for storage
+    let amount_for_storage = amount_value;
+    
+    // Convert to i64 for database compatibility
+    let amount_numeric = if amount_for_storage > i64::MAX as u128 {
+        debug!("Amount {} exceeds i64::MAX, capping at maximum", amount_for_storage);
         i64::MAX
     } else {
-        amount_value as i64
+        amount_for_storage as i64
     };
+    debug!("Using amount for database storage: {}", amount_numeric);
 
     let tx_status = status.to_string();
 
-    // Calculate USD value if we have an asset ID
     let usd_amount: Option<f64> = if let Some(asset) = &asset_id {
         match get_asset_price(dbtx, asset).await? {
             Some(price) if price > 0.0 => {
-                // Apply price validation
                 let validated_price = validate_price(price);
 
-                // Use proper decimals for this asset
                 let decimals = get_asset_decimals(asset);
                 let decimal_divisor = 10u128.pow(decimals);
 
-                let decimal_adjusted_amount = amount_value as f64 / decimal_divisor as f64;
+                let decimal_adjusted_amount = amount_for_storage as f64 / decimal_divisor as f64;
                 let amount_usd = decimal_adjusted_amount * validated_price;
 
-                // Add logging if price was capped or adjusted
                 if (validated_price - price).abs() > f64::EPSILON {
                     debug!(
                         "Price validation applied: original=${:.8}, validated=${:.8} for asset {}",
@@ -435,7 +506,6 @@ pub async fn record_transfer(
         None
     };
 
-    // Insert transfer record into database
     sqlx::query(
         r"
         INSERT INTO ibc_transfers (
@@ -455,7 +525,7 @@ pub async fn record_transfer(
         .bind(client_id)
         .bind(channel_id)
         .bind(direction.to_string())
-        .bind(amount_numeric)  // Bind as numeric i64 value
+        .bind(amount_numeric)
         .bind(asset_id)
         .bind(usd_amount)
         .bind(timestamp)
@@ -465,8 +535,8 @@ pub async fn record_transfer(
         .await?;
 
     debug!(
-        "Recorded {} IBC transfer: client={}, channel={}, amount={}, usd_amount=${:?}, status={}",
-        direction, client_id, channel_id, amount_value, usd_amount, tx_status
+        "Recorded {} IBC transfer: client={}, channel={}, original_amount={}, stored_amount={} (db_value={}), usd_amount=${:?}, status={}",
+        direction, client_id, channel_id, amount_value, amount_for_storage, amount_numeric, usd_amount, tx_status
     );
 
     Ok(())
@@ -484,17 +554,29 @@ async fn update_client_stats_with_usd(
     asset_id: &[u8],
     timestamp: DateTime<Utc>,
 ) -> Result<(), anyhow::Error> {
-    // Try to parse as JSON first
     let amount_value = if let Ok(value_json) = serde_json::from_str::<Value>(value_str) {
         extract_full_amount(&value_json)
     } else {
-        // Fall back to parsing as string for backward compatibility
-        // Convert i64 to u128 to match the return type of extract_full_amount
-        value_str.parse::<i64>().unwrap_or_default() as u128
+        match value_str.parse::<u128>() {
+            Ok(value) => {
+                debug!("Successfully parsed amount string '{}' as u128", value_str);
+                value
+            },
+            Err(e) => {
+                debug!("Failed to parse amount string '{}' as u128: {}", value_str, e);
+                0
+            }
+        }
     };
 
+    debug!("Amount value for USD calculation: {}", amount_value);
+    
+    // Keep original amount value
+    let amount_for_calculation = amount_value;
+    
+    // Skip stats update if amount is 0
     if amount_value == 0 {
-        debug!("Skipping USD stats update for zero amount");
+        debug!("Amount is zero, skipping USD stats update");
         return Ok(());
     }
 
@@ -502,11 +584,10 @@ async fn update_client_stats_with_usd(
         Some(price) if price > 0.0 => {
             let validated_price = validate_price(price);
 
-            // Use proper decimals for this asset
             let decimals = get_asset_decimals(asset_id);
             let decimal_divisor = 10u128.pow(decimals);
 
-            let decimal_adjusted_amount = amount_value as f64 / decimal_divisor as f64;
+            let decimal_adjusted_amount = amount_for_calculation as f64 / decimal_divisor as f64;
             let usd_amount = decimal_adjusted_amount * validated_price;
 
             if (validated_price - price).abs() > f64::EPSILON {
@@ -572,7 +653,6 @@ async fn update_client_stats_with_usd(
             Ok(())
         },
         _ => {
-            // Fall back to just updating the count when no price is available
             match direction {
                 Direction::Inbound => {
                     debug!("No valid price for asset {}. Updating only tx count for inbound transfer",
@@ -1533,12 +1613,17 @@ pub async fn process_events(
                         .execute(dbtx.as_mut())
                         .await?;
 
+                    // Keep using "0" for pending transfers as before
+                    let packet_amount = "0".to_string();
+                    
+                    debug!("Using packet amount for pending transfer: {}", packet_amount);
+                    
                     if let Err(e) = record_transfer(
                         dbtx,
                         &client_id,
                         our_channel,
                         direction,
-                        "0",
+                        &packet_amount,
                         timestamp,
                         Some(tx_hash.to_vec()),
                         TransactionStatus::Pending,
