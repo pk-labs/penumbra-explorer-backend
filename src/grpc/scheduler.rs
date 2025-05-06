@@ -2,12 +2,14 @@ use super::client::{
     query_all_client_channels, query_all_clients, GrpcClient, CLIENT_STATUS_ACTIVE,
     CLIENT_STATUS_EXPIRED, CLIENT_STATUS_FROZEN, CLIENT_STATUS_UNKNOWN,
 };
+use sqlx;
 use std::time::Duration;
 use tokio::time;
 use tracing::{error, info};
-use sqlx;
 
-async fn check_client_statuses(client: &GrpcClient) -> Result<Vec<(String, String)>, anyhow::Error> {
+async fn check_client_statuses(
+    client: &GrpcClient,
+) -> Result<Vec<(String, String)>, anyhow::Error> {
     match query_all_clients(client).await {
         Ok(statuses) => {
             info!("Retrieved {} IBC client statuses", statuses.len());
@@ -42,7 +44,7 @@ async fn check_client_statuses(client: &GrpcClient) -> Result<Vec<(String, Strin
                 info!("Client: {}, Status: {}", client_id, status);
             }
             info!("================================");
-            
+
             Ok(statuses)
         }
         Err(e) => {
@@ -52,13 +54,15 @@ async fn check_client_statuses(client: &GrpcClient) -> Result<Vec<(String, Strin
     }
 }
 
-async fn check_client_channels(client: &GrpcClient) -> Result<Vec<(String, Option<String>, Option<String>)>, anyhow::Error> {
+async fn check_client_channels(
+    client: &GrpcClient,
+) -> Result<Vec<(String, Option<String>, Option<String>)>, anyhow::Error> {
     match query_all_client_channels(client).await {
         Ok(client_channels) => {
             info!("=== IBC Client Open Channels Summary ===");
-            
+
             let mut results = Vec::with_capacity(client_channels.len());
-            
+
             for (client_id, channels) in &client_channels {
                 if channels.is_empty() {
                     info!("Client: {} - No open channels found", client_id);
@@ -70,7 +74,7 @@ async fn check_client_channels(client: &GrpcClient) -> Result<Vec<(String, Optio
                         client_id,
                         channels.len()
                     );
-                    
+
                     // For now, we'll just use the first channel for each client
                     // We can later enhance this to handle multiple channels if needed
                     if let Some((_, channel_id, counterparty_channel_id)) = channels.first() {
@@ -79,14 +83,14 @@ async fn check_client_channels(client: &GrpcClient) -> Result<Vec<(String, Optio
                             channel_id, counterparty_channel_id
                         );
                         results.push((
-                            client_id.clone(), 
-                            Some(channel_id.clone()), 
-                            Some(counterparty_channel_id.clone())
+                            client_id.clone(),
+                            Some(channel_id.clone()),
+                            Some(counterparty_channel_id.clone()),
                         ));
                     } else {
                         results.push((client_id.clone(), None, None));
                     }
-                    
+
                     // Log all channels
                     for (port_id, channel_id, counterparty_channel_id) in channels {
                         info!(
@@ -97,12 +101,15 @@ async fn check_client_channels(client: &GrpcClient) -> Result<Vec<(String, Optio
                 }
             }
             info!("=====================================");
-            
+
             Ok(results)
         }
         Err(e) => {
             error!("Failed to query IBC client channels: {}", e);
-            Err(anyhow::anyhow!("Failed to query IBC client channels: {}", e))
+            Err(anyhow::anyhow!(
+                "Failed to query IBC client channels: {}",
+                e
+            ))
         }
     }
 }
@@ -133,7 +140,7 @@ async fn check_ibc_clients(pool: &sqlx::PgPool) {
                     error!("Failed to update client status in database: {}", e);
                 }
             }
-            
+
             statuses
         }
         Err(e) => {
