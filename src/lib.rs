@@ -32,6 +32,26 @@ impl Explorer {
     pub fn new(options: ExplorerOptions) -> Self {
         Self { options }
     }
+    
+    /// Returns the destination database URL
+    #[must_use]
+    pub fn get_dest_db_url(&self) -> &str {
+        &self.options.dest_db_url
+    }
+    
+    /// Returns a connection pool to the destination database
+    ///
+    /// # Errors
+    /// Returns an error if the database connection cannot be established
+    pub async fn get_dest_pool(&self) -> Result<sqlx::PgPool> {
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&self.options.dest_db_url)
+            .await
+            .context("Failed to connect to destination database")?;
+            
+        Ok(pool)
+    }
 
     /// Starts the explorer service
     ///
