@@ -4,7 +4,6 @@ mod datetime;
 use crate::api::graphql::resolvers::{QueryRoot, SubscriptionRoot};
 use async_graphql::{EmptyMutation, SchemaBuilder};
 
-
 #[must_use]
 #[allow(clippy::module_name_repetitions)]
 pub fn register_scalars(
@@ -15,4 +14,4 @@ pub fn register_scalars(
 }
 
 pub use bigdecimal::Decimal;
-pub use datetime::DateTime; 
+pub use datetime::DateTime;
