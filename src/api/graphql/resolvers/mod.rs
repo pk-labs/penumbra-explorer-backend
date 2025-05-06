@@ -11,18 +11,16 @@ pub use block::{get as resolve_block, resolve_blocks, resolve_blocks_collection}
 pub use ibc::{
     resolve_ibc_channel_pairs, resolve_ibc_channel_pairs_by_client_id, resolve_ibc_stats,
     resolve_ibc_stats_by_client_id, resolve_total_shielded_volume,
-}; 
+};
 pub use search::resolve_search;
 pub use stats::resolve_stats;
 pub use subscription::Root as SubscriptionRoot;
 pub use transaction::{resolve_transaction, resolve_transactions, resolve_transactions_collection};
 
-
 pub struct QueryRoot;
 
 #[Object]
 impl QueryRoot {
-    
     async fn block(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -31,7 +29,6 @@ impl QueryRoot {
         resolve_block(ctx, height).await
     }
 
-    
     async fn blocks(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -40,7 +37,6 @@ impl QueryRoot {
         resolve_blocks(ctx, selector).await
     }
 
-    
     async fn blocks_collection(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -50,7 +46,6 @@ impl QueryRoot {
         resolve_blocks_collection(ctx, limit, filter).await
     }
 
-    
     async fn transaction(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -59,7 +54,6 @@ impl QueryRoot {
         resolve_transaction(ctx, hash).await
     }
 
-    
     async fn transactions(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -68,7 +62,6 @@ impl QueryRoot {
         resolve_transactions(ctx, selector).await
     }
 
-    
     async fn transactions_collection(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -78,7 +71,6 @@ impl QueryRoot {
         resolve_transactions_collection(ctx, limit, filter).await
     }
 
-    
     async fn search(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -87,7 +79,6 @@ impl QueryRoot {
         resolve_search(ctx, slug).await
     }
 
-    
     async fn stats(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -95,8 +86,6 @@ impl QueryRoot {
         resolve_stats(ctx).await
     }
 
-    
-    
     async fn db_block(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -105,7 +94,6 @@ impl QueryRoot {
         crate::api::graphql::types::DbBlock::get_by_height(ctx, height).await
     }
 
-    
     async fn db_blocks(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -115,7 +103,6 @@ impl QueryRoot {
         crate::api::graphql::types::DbBlock::get_all(ctx, limit, offset).await
     }
 
-    
     async fn db_latest_block(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -123,7 +110,6 @@ impl QueryRoot {
         crate::api::graphql::types::DbBlock::get_latest(ctx).await
     }
 
-    
     async fn db_raw_transaction(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -132,7 +118,6 @@ impl QueryRoot {
         crate::api::graphql::types::DbRawTransaction::get_by_hash(ctx, tx_hash_hex).await
     }
 
-    
     async fn db_raw_transactions(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -142,7 +127,6 @@ impl QueryRoot {
         crate::api::graphql::types::DbRawTransaction::get_all(ctx, limit, offset, None).await
     }
 
-    
     async fn ibc_stats(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -154,7 +138,6 @@ impl QueryRoot {
         resolve_ibc_stats(ctx, client_id, time_period, limit, offset).await
     }
 
-    
     async fn ibc_stats_by_client_id(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -164,7 +147,6 @@ impl QueryRoot {
         resolve_ibc_stats_by_client_id(ctx, client_id, time_period).await
     }
 
-    
     async fn ibc_channel_pairs(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -175,7 +157,6 @@ impl QueryRoot {
         resolve_ibc_channel_pairs(ctx, client_id, limit, offset).await
     }
 
-    
     async fn ibc_channel_pairs_by_client_id(
         &self,
         ctx: &async_graphql::Context<'_>,
@@ -184,7 +165,6 @@ impl QueryRoot {
         resolve_ibc_channel_pairs_by_client_id(ctx, client_id).await
     }
 
-    
     async fn ibc_total_shielded_volume(
         &self,
         ctx: &async_graphql::Context<'_>,
