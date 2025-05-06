@@ -118,8 +118,8 @@ async fn get_recent_ibc_transactions(
         LIMIT 100
         ",
     )
-        .fetch_all(pool)
-        .await
+    .fetch_all(pool)
+    .await
 }
 
 /// Returns IBC transactions for a specific client ID with pagination
@@ -170,11 +170,11 @@ pub async fn get_ibc_transactions_by_client(
         LIMIT $2 OFFSET $3
         ",
     )
-        .bind(client_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(pool)
-        .await
+    .bind(client_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
 }
 
 /// Returns all IBC transactions with pagination
@@ -224,10 +224,10 @@ pub async fn get_all_ibc_transactions(
         LIMIT $1 OFFSET $2
         ",
     )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(pool)
-        .await
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
 }
 
 /// Returns details for a specific transaction by hash
@@ -251,9 +251,9 @@ pub async fn get_transaction_details(
             tx_hash = $1
         ",
     )
-        .bind(tx_hash)
-        .fetch_one(pool)
-        .await?;
+    .bind(tx_hash)
+    .fetch_one(pool)
+    .await?;
 
     Ok((row.0, row.1, row.2, row.3))
 }
