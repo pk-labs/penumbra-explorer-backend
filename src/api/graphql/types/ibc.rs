@@ -256,9 +256,9 @@ impl Stats {
             FROM {view_name}
             WHERE client_id = $1"
         ))
-            .bind(client_id)
-            .fetch_optional(db)
-            .await?;
+        .bind(client_id)
+        .fetch_optional(db)
+        .await?;
 
         Ok(row.map(|row| Stats {
             client_id: row.get("client_id"),
@@ -293,8 +293,8 @@ impl TotalShieldedVolume {
                 ibc_client_summary
             ",
         )
-            .fetch_one(db)
-            .await?;
+        .fetch_one(db)
+        .await?;
 
         Ok(Self { value: total })
     }
