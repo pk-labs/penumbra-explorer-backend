@@ -32,9 +32,9 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
     let exists = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM explorer_transactions WHERE tx_hash = $1)",
     )
-        .bind(meta.tx_hash.as_ref())
-        .fetch_one(dbtx.as_mut())
-        .await?;
+    .bind(meta.tx_hash.as_ref())
+    .fetch_one(dbtx.as_mut())
+    .await?;
 
     if exists {
         sqlx::query(
@@ -50,15 +50,15 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
         WHERE tx_hash = $1
         ",
         )
-            .bind(meta.tx_hash.as_ref())
-            .bind(height_i64)
-            .bind(meta.timestamp)
-            .bind(i64::try_from(meta.fee_amount).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(&meta.tx_bytes_base64)
-            .bind(&meta.decoded_tx_json)
-            .execute(dbtx.as_mut())
-            .await?;
+        .bind(meta.tx_hash.as_ref())
+        .bind(height_i64)
+        .bind(meta.timestamp)
+        .bind(i64::try_from(meta.fee_amount).unwrap_or(0))
+        .bind(meta.chain_id)
+        .bind(&meta.tx_bytes_base64)
+        .bind(&meta.decoded_tx_json)
+        .execute(dbtx.as_mut())
+        .await?;
     } else {
         sqlx::query(
             r"
@@ -67,15 +67,15 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
         VALUES ($1, $2, $3, $4, $5, $6, $7)
         ",
         )
-            .bind(meta.tx_hash.as_ref())
-            .bind(height_i64)
-            .bind(meta.timestamp)
-            .bind(i64::try_from(meta.fee_amount).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(&meta.tx_bytes_base64)
-            .bind(&meta.decoded_tx_json)
-            .execute(dbtx.as_mut())
-            .await?;
+        .bind(meta.tx_hash.as_ref())
+        .bind(height_i64)
+        .bind(meta.timestamp)
+        .bind(i64::try_from(meta.fee_amount).unwrap_or(0))
+        .bind(meta.chain_id)
+        .bind(&meta.tx_bytes_base64)
+        .bind(&meta.decoded_tx_json)
+        .execute(dbtx.as_mut())
+        .await?;
     }
 
     Ok(())
