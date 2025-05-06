@@ -33,9 +33,9 @@ impl Block {
         let result = sqlx::query_as::<_, (i32,)>(
             "SELECT num_transactions FROM explorer_block_details WHERE height = $1",
         )
-            .bind(i64::from(self.height))
-            .fetch_one(db)
-            .await?;
+        .bind(i64::from(self.height))
+        .fetch_one(db)
+        .await?;
         Ok(result.0)
     }
 
@@ -61,9 +61,9 @@ impl Block {
             timestamp ASC
         ",
         )
-            .bind(i64::from(self.height))
-            .fetch_all(db)
-            .await?;
+        .bind(i64::from(self.height))
+        .fetch_all(db)
+        .await?;
 
         let mut transactions = Vec::with_capacity(rows.len());
 
@@ -133,9 +133,9 @@ impl Block {
         let chain_id = sqlx::query_scalar::<_, Option<String>>(
             "SELECT chain_id FROM explorer_block_details WHERE height = $1",
         )
-            .bind(i64::from(self.height))
-            .fetch_one(db)
-            .await?;
+        .bind(i64::from(self.height))
+        .fetch_one(db)
+        .await?;
         Ok(chain_id)
     }
 }
@@ -181,9 +181,9 @@ impl DbBlock {
                 height = $1
             ",
         )
-            .bind(height)
-            .fetch_optional(db)
-            .await?;
+        .bind(height)
+        .fetch_optional(db)
+        .await?;
         if let Some(row) = row_result {
             let root: Vec<u8> = row.get("root");
             let previous_block_hash: Option<Vec<u8>> = row.get("previous_block_hash");
@@ -235,10 +235,10 @@ impl DbBlock {
             LIMIT $1 OFFSET $2
             ",
         )
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(db)
-            .await?;
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(db)
+        .await?;
         let mut blocks = Vec::with_capacity(rows.len());
         for row in rows {
             let root: Vec<u8> = row.get("root");
@@ -284,8 +284,8 @@ impl DbBlock {
             LIMIT 1
             ",
         )
-            .fetch_optional(db)
-            .await?;
+        .fetch_optional(db)
+        .await?;
         if let Some(row) = row_result {
             let root: Vec<u8> = row.get("root");
             let previous_block_hash: Option<Vec<u8>> = row.get("previous_block_hash");
