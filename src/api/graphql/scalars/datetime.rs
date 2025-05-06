@@ -4,7 +4,6 @@ use async_graphql::{
 };
 use sqlx::types::chrono::{DateTime as ChronoDateTime, Utc};
 
-
 #[derive(Clone, Debug)]
 pub struct DateTime(pub ChronoDateTime<Utc>);
 
@@ -37,7 +36,6 @@ impl From<DateTime> for ChronoDateTime<Utc> {
         dt.0
     }
 }
-
 
 pub fn register(
     builder: SchemaBuilder<QueryRoot, EmptyMutation, SubscriptionRoot>,
