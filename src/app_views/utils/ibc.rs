@@ -13,7 +13,7 @@ use regex::Regex;
 use serde_json::Value;
 use sqlx::{
     types::chrono::{DateTime, Utc},
-    Row,
+    Row, postgres::PgQueryResult,
 };
 use std::collections::HashMap;
 use std::cmp::min;
@@ -319,15 +319,12 @@ fn extract_full_amount(value: &Value) -> u128 {
     if let Some(amount_obj) = value.get("amount") {
         // Case 1: {"amount":{"lo":"123456"}} - nested lo object
         if let Some(lo) = amount_obj.get("lo") {
-            let lo_str = match lo {
-                Value::String(s) => {
-                    debug!("Found amount.lo as string: {}", s);
-                    s.to_string()
-                },
-                _ => {
-                    debug!("Found amount.lo as non-string: {}", lo);
-                    lo.to_string().trim_matches('"').to_string()
-                }
+            let lo_str = if let Value::String(s) = lo {
+                debug!("Found amount.lo as string: {}", s);
+                s.to_string()
+            } else {
+                debug!("Found amount.lo as non-string: {}", lo);
+                lo.to_string().trim_matches('"').to_string()
             };
             
             if let Ok(amount) = lo_str.parse::<u128>() {
@@ -2005,7 +2002,7 @@ pub async fn process_events(
                                     .await
                                     .unwrap_or_else(|e| {
                                         error!("Failed to update explorer_transactions for inbound IBC transfer: {}", e);
-                                        Default::default()
+                                        PgQueryResult::default()
                                     });
                             } else {
                                 debug!("Transaction not found in explorer_transactions, inserting new record for IBC relay");
@@ -2041,7 +2038,7 @@ pub async fn process_events(
                                     .await
                                     .unwrap_or_else(|e| {
                                         error!("Failed to insert transaction for inbound IBC transfer: {}", e);
-                                        Default::default()
+                                        PgQueryResult::default()
                                     });
                             }
                         }
