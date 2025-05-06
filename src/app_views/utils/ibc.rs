@@ -124,7 +124,16 @@ fn extract_error_from_ack(ack_data: &str) -> bool {
 
 
 
+fn validate_price(price: f64) -> f64 {
+    const MIN_PRICE: f64 = 0.000001;
+    const MAX_PRICE: f64 = 1_000.0;
 
+    if !price.is_finite() || price <= 0.0 {
+        return 1.0;
+    }
+
+    price.max(MIN_PRICE).min(MAX_PRICE)
+}
 
 
 
