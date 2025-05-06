@@ -1,3 +1,12 @@
+#![allow(
+    unused_variables,
+    unused_assignments,
+    clippy::uninlined_format_args,
+    clippy::cast_precision_loss,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
+
 use anyhow::Result;
 use cometindex::{ContextualizedEvent, PgTransaction};
 use regex::Regex;
@@ -8,7 +17,7 @@ use sqlx::{
 };
 use std::collections::HashMap;
 use std::cmp::min;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use base64::Engine;
 
 
@@ -49,6 +58,7 @@ impl std::fmt::Display for TransactionStatus {
 
 const USDC_ASSET_ID: &[u8] = &[0x75, 0x73, 0x64, 0x63];
 
+#[allow(dead_code)]
 const DEFAULT_TOKEN_DECIMALS: u32 = 6;
 
 fn find_attribute_value<'a>(event: &'a ContextualizedEvent<'_>, key: &str) -> Option<&'a str> {
@@ -125,14 +135,14 @@ fn extract_error_from_ack(ack_data: &str) -> bool {
 
 
 fn validate_price(price: f64) -> f64 {
-    const MIN_PRICE: f64 = 0.000001;
+    const MIN_PRICE: f64 = 0.000_001;
     const MAX_PRICE: f64 = 1_000.0;
 
     if !price.is_finite() || price <= 0.0 {
         return 1.0;
     }
 
-    price.max(MIN_PRICE).min(MAX_PRICE)
+    price.clamp(MIN_PRICE, MAX_PRICE)
 }
 
 
@@ -300,29 +310,206 @@ async fn get_asset_price(
 
 
 
+/// Extracts and combines the hi and lo parts of a 128-bit amount
+fn extract_full_amount(value: &Value) -> u128 {
+    // Try to extract both hi and lo parts
+    let hi = value
+        .get("amount")
+        .and_then(|a| a.get("hi"))
+        .and_then(|h| match h {
+            Value::String(s) => s.parse::<u64>().ok(),
+            Value::Number(n) => n.as_u64(),
+            _ => None,
+        })
+        .unwrap_or(0);
+
+    let lo = value
+        .get("amount")
+        .and_then(|a| a.get("lo"))
+        .and_then(|l| match l {
+            Value::String(s) => s.parse::<u64>().ok(),
+            Value::Number(n) => n.as_u64(),
+            _ => None,
+        })
+        .unwrap_or(0);
+
+    // Combine into full 128-bit value
+    let full_amount = (u128::from(hi) << 64) | u128::from(lo);
+
+    debug!(
+        "Extracted 128-bit amount: hi={}, lo={}, combined={}",
+        hi, lo, full_amount
+    );
+
+    full_amount
+}
+
+/// Gets the appropriate decimal places for an asset
+fn get_asset_decimals(asset_id: &[u8]) -> u32 {
+    let asset_hex = hex::encode(asset_id);
+
+    // USDY - identified by known asset ID
+    if asset_hex == "cc0d3c9eef0c7ff4e225eca85a3094603691d289aeaf428ab0d87319ad93a302" {
+        debug!("Identified USDY with 12 decimals: {}", asset_hex);
+        return 12;
+    }
+
+    // USDC - standard 6 decimals
+    if asset_id == USDC_ASSET_ID || asset_hex.contains("75736463") {
+        debug!("Identified USDC with 6 decimals: {}", asset_hex);
+        return 6;
+    }
+
+    // Default to standard IBC token decimals
+    DEFAULT_TOKEN_DECIMALS
+}
+/// Records an IBC transfer in the database
+///
+/// # Errors
+/// Returns an error if the database operation fails
+pub async fn record_transfer(
+    dbtx: &mut PgTransaction<'_>,
+    client_id: &str,
+    channel_id: &str,
+    direction: Direction,
+    value_str: &str,
+    timestamp: DateTime<Utc>,
+    tx_hash: Option<Vec<u8>>,
+    status: TransactionStatus,
+    asset_id: Option<Vec<u8>>,
+) -> Result<(), anyhow::Error> {
+    // Try to parse as JSON first - this handles when we have the full value object
+    let amount_value = if let Ok(value_json) = serde_json::from_str::<Value>(value_str) {
+        extract_full_amount(&value_json)
+    } else {
+        // Fall back to parsing as string for backward compatibility
+        // Convert i64 to u128 to match the return type of extract_full_amount
+        value_str.parse::<i64>().unwrap_or_default() as u128
+    };
+
+    // Convert u128 to i64 if possible (for database compatibility)
+    // If the value is too large, cap it at i64::MAX to prevent overflow
+    let amount_numeric = if amount_value > i64::MAX as u128 {
+        debug!("Amount value {} exceeds i64::MAX, capping at maximum value", amount_value);
+        i64::MAX
+    } else {
+        amount_value as i64
+    };
+
+    let tx_status = status.to_string();
+
+    // Calculate USD value if we have an asset ID
+    let usd_amount: Option<f64> = if let Some(asset) = &asset_id {
+        match get_asset_price(dbtx, asset).await? {
+            Some(price) if price > 0.0 => {
+                // Apply price validation
+                let validated_price = validate_price(price);
+
+                // Use proper decimals for this asset
+                let decimals = get_asset_decimals(asset);
+                let decimal_divisor = 10u128.pow(decimals);
+
+                let decimal_adjusted_amount = amount_value as f64 / decimal_divisor as f64;
+                let amount_usd = decimal_adjusted_amount * validated_price;
+
+                // Add logging if price was capped or adjusted
+                if (validated_price - price).abs() > f64::EPSILON {
+                    debug!(
+                        "Price validation applied: original=${:.8}, validated=${:.8} for asset {}",
+                        price, validated_price, hex::encode(asset)
+                    );
+                }
+
+                debug!(
+                    "Calculated USD amount for transfer: ${:.2} (raw_amount={}, decimals={}, adjusted_amount={:.8}, price=${:.8})",
+                    amount_usd, amount_value, decimals, decimal_adjusted_amount, validated_price
+                );
+                Some(amount_usd)
+            },
+            _ => {
+                debug!("No valid price for asset {}, not calculating USD amount", hex::encode(asset));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Insert transfer record into database
+    sqlx::query(
+        r"
+        INSERT INTO ibc_transfers (
+            client_id,
+            channel_id,
+            direction,
+            amount,
+            asset_id,
+            usd_amount,
+            timestamp,
+            tx_hash,
+            status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ",
+    )
+        .bind(client_id)
+        .bind(channel_id)
+        .bind(direction.to_string())
+        .bind(amount_numeric)  // Bind as numeric i64 value
+        .bind(asset_id)
+        .bind(usd_amount)
+        .bind(timestamp)
+        .bind(tx_hash)
+        .bind(&tx_status)
+        .execute(dbtx.as_mut())
+        .await?;
+
+    debug!(
+        "Recorded {} IBC transfer: client={}, channel={}, amount={}, usd_amount=${:?}, status={}",
+        direction, client_id, channel_id, amount_value, usd_amount, tx_status
+    );
+
+    Ok(())
+}
+
+/// Updates the client stats with USD amount
+///
+/// # Errors
+/// Returns an error if the database operation fails
 async fn update_client_stats_with_usd(
     dbtx: &mut PgTransaction<'_>,
     client_id: &str,
     direction: Direction,
-    amount: &str,
+    value_str: &str,
     asset_id: &[u8],
     timestamp: DateTime<Utc>,
 ) -> Result<(), anyhow::Error> {
+    // Try to parse as JSON first
+    let amount_value = if let Ok(value_json) = serde_json::from_str::<Value>(value_str) {
+        extract_full_amount(&value_json)
+    } else {
+        // Fall back to parsing as string for backward compatibility
+        // Convert i64 to u128 to match the return type of extract_full_amount
+        value_str.parse::<i64>().unwrap_or_default() as u128
+    };
 
-    let amount_value = amount.parse::<i64>().unwrap_or_default();
-    if amount_value <= 0 {
-        debug!("Skipping USD stats update for invalid amount: {}", amount);
+    if amount_value == 0 {
+        debug!("Skipping USD stats update for zero amount");
         return Ok(());
     }
-
 
     match get_asset_price(dbtx, asset_id).await? {
         Some(price) if price > 0.0 => {
             let validated_price = validate_price(price);
-            let decimal_adjusted_amount = amount_value as f64 / 1_000_000.0;
+
+            // Use proper decimals for this asset
+            let decimals = get_asset_decimals(asset_id);
+            let decimal_divisor = 10u128.pow(decimals);
+
+            let decimal_adjusted_amount = amount_value as f64 / decimal_divisor as f64;
             let usd_amount = decimal_adjusted_amount * validated_price;
 
-            if validated_price != price {
+            if (validated_price - price).abs() > f64::EPSILON {
                 debug!(
                     "Price validation applied: original=${:.8}, validated=${:.8}",
                     price, validated_price
@@ -331,8 +518,8 @@ async fn update_client_stats_with_usd(
 
             match direction {
                 Direction::Inbound => {
-                    debug!("Updating USD stats for inbound transfer: client={}, amount=${:.2} (raw amount={}, adjusted_amount={:.8}, price=${:.4})",
-                         client_id, usd_amount, amount_value, decimal_adjusted_amount, price);
+                    debug!("Updating USD stats for inbound transfer: client={}, amount=${:.2} (raw amount={}, decimals={}, adjusted_amount={:.8}, price=${:.4})",
+                         client_id, usd_amount, amount_value, decimals, decimal_adjusted_amount, validated_price);
 
                     sqlx::query(
                         r"
@@ -356,8 +543,8 @@ async fn update_client_stats_with_usd(
                     );
                 }
                 Direction::Outbound => {
-                    debug!("Updating USD stats for outbound transfer: client={}, amount=${:.2} (raw amount={}, adjusted_amount={:.8}, price=${:.4})",
-                         client_id, usd_amount, amount_value, decimal_adjusted_amount, price);
+                    debug!("Updating USD stats for outbound transfer: client={}, amount=${:.2} (raw amount={}, decimals={}, adjusted_amount={:.8}, price=${:.4})",
+                         client_id, usd_amount, amount_value, decimals, decimal_adjusted_amount, validated_price);
 
                     sqlx::query(
                         r"
@@ -385,7 +572,7 @@ async fn update_client_stats_with_usd(
             Ok(())
         },
         _ => {
-
+            // Fall back to just updating the count when no price is available
             match direction {
                 Direction::Inbound => {
                     debug!("No valid price for asset {}. Updating only tx count for inbound transfer",
@@ -429,96 +616,6 @@ async fn update_client_stats_with_usd(
         }
     }
 }
-
-
-
-
-
-
-pub async fn record_transfer(
-    dbtx: &mut PgTransaction<'_>,
-    client_id: &str,
-    channel_id: &str,
-    direction: Direction,
-    amount: &str,
-    timestamp: DateTime<Utc>,
-    tx_hash: Option<Vec<u8>>,
-    status: TransactionStatus,
-    asset_id: Option<Vec<u8>>,
-) -> Result<(), anyhow::Error> {
-    // Parse amount string to numeric value
-    let amount_value = amount.parse::<i64>().unwrap_or_default();
-    let tx_status = status.to_string();
-
-    // Calculate USD value if we have an asset ID
-    let usd_amount: Option<f64> = if let Some(asset) = &asset_id {
-        match get_asset_price(dbtx, asset).await? {
-            Some(price) if price > 0.0 => {
-                // Apply price validation
-                let validated_price = validate_price(price);
-                let decimal_adjusted_amount = amount_value as f64 / 1_000_000.0;
-                let amount_usd = decimal_adjusted_amount * validated_price;
-
-                // Add logging if price was capped or adjusted
-                if validated_price != price {
-                    debug!(
-                        "Price validation applied: original=${:.8}, validated=${:.8} for asset {}",
-                        price, validated_price, hex::encode(asset)
-                    );
-                }
-
-                debug!(
-                    "Calculated USD amount for transfer: ${:.2} (raw_amount={}, adjusted_amount={:.8}, price=${:.8})",
-                    amount_usd, amount_value, decimal_adjusted_amount, validated_price
-                );
-                Some(amount_usd)
-            },
-            _ => {
-                debug!("No valid price for asset {}, not calculating USD amount", hex::encode(asset));
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Insert transfer record into database
-    sqlx::query(
-        r"
-        INSERT INTO ibc_transfers (
-            client_id,
-            channel_id,
-            direction,
-            amount,
-            asset_id,
-            usd_amount,
-            timestamp,
-            tx_hash,
-            status
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ",
-    )
-        .bind(client_id)
-        .bind(channel_id)
-        .bind(direction.to_string())
-        .bind(amount_value)
-        .bind(asset_id)
-        .bind(usd_amount)
-        .bind(timestamp)
-        .bind(tx_hash)
-        .bind(&tx_status)
-        .execute(dbtx.as_mut())
-        .await?;
-
-    debug!(
-        "Recorded {} IBC transfer: client={}, channel={}, amount={}, usd_amount=${:?}, status={}",
-        direction, client_id, channel_id, amount_value, usd_amount, tx_status
-    );
-
-    Ok(())
-}
-
 
 async fn process_candlestick_data(
     dbtx: &mut PgTransaction<'_>,
@@ -707,8 +804,8 @@ async fn process_candlestick_data(
         }
     } else {
         debug!("Incomplete candlestick data: base={:?}, quote={:?}, price={:?}",
-               base_asset_id.as_ref().map(|v| hex::encode(v)),
-               quote_asset_id.as_ref().map(|v| hex::encode(v)),
+               base_asset_id.as_ref().map(hex::encode),
+               quote_asset_id.as_ref().map(hex::encode),
                close_price);
     }
 
@@ -898,6 +995,10 @@ fn is_error_acknowledgment(event: &ContextualizedEvent<'_>) -> bool {
 
 
 
+/// Updates the status of an IBC transfer
+///
+/// # Errors
+/// Returns an error if the database operation fails
 pub async fn update_transfer_status(
     dbtx: &mut PgTransaction<'_>,
     tx_hash: &[u8],
@@ -945,6 +1046,13 @@ pub async fn update_transfer_status(
     clippy::cast_possible_wrap,
     clippy::needless_raw_string_hashes
 )]
+/// Process IBC events from a block
+///
+/// # Errors
+/// Returns an error if any database operation fails
+///
+/// # Panics
+/// May panic if the JSON processing of event attributes has errors
 pub async fn process_events(
     dbtx: &mut PgTransaction<'_>,
     events: &[ContextualizedEvent<'_>],
@@ -1895,36 +2003,33 @@ pub async fn process_events(
                                     error!("Failed to update legacy stats (fallback) for inbound transfer: {}", e);
                                 }
                             }
-                        } else {
-                            
-                            if let Err(e) = sqlx::query(
-                                r"
-                                UPDATE ibc_stats
-                                SET
-                                    -- Convert to NUMERIC first, then add safely
-                                    shielded_volume =
-                                        CASE
-                                            WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
-                                                COALESCE(shielded_volume, 0) +
-                                                CASE
-                                                    WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
-                                                    ELSE CAST($2 AS NUMERIC)
-                                                END
-                                            ELSE shielded_volume -- If not valid, don't change
-                                        END,
-                                    shielded_tx_count = shielded_tx_count + 1,
-                                    last_updated = $3
-                                WHERE client_id = $1
-                                ",
-                            )
-                                .bind(&client_id)
-                                .bind(&amount_raw)
-                                .bind(timestamp)
-                                .execute(dbtx.as_mut())
-                                .await
-                            {
-                                error!("Error updating legacy stats for inbound transfer: {}", e);
-                            }
+                        } else if let Err(e) = sqlx::query(
+                            r"
+                            UPDATE ibc_stats
+                            SET
+                                -- Convert to NUMERIC first, then add safely
+                                shielded_volume =
+                                    CASE
+                                        WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
+                                            COALESCE(shielded_volume, 0) +
+                                            CASE
+                                                WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
+                                                ELSE CAST($2 AS NUMERIC)
+                                            END
+                                        ELSE shielded_volume -- If not valid, don't change
+                                    END,
+                                shielded_tx_count = shielded_tx_count + 1,
+                                last_updated = $3
+                            WHERE client_id = $1
+                            ",
+                        )
+                            .bind(&client_id)
+                            .bind(&amount_raw)
+                            .bind(timestamp)
+                            .execute(dbtx.as_mut())
+                            .await
+                        {
+                            error!("Error updating legacy stats for inbound transfer: {}", e);
                         }
                     } else {
                         warn!(
@@ -2144,36 +2249,33 @@ pub async fn process_events(
                                     error!("Failed to update legacy stats (fallback) for outbound transfer: {}", e);
                                 }
                             }
-                        } else {
-                            
-                            if let Err(e) = sqlx::query(
-                                r#"
-                                UPDATE ibc_stats
-                                SET
-                                    -- Convert to NUMERIC first, then add safely
-                                    unshielded_volume =
-                                        CASE
-                                            WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
-                                                COALESCE(unshielded_volume, 0) +
-                                                CASE
-                                                    WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
-                                                    ELSE CAST($2 AS NUMERIC)
-                                                END
-                                            ELSE unshielded_volume -- If not valid, don't change
-                                        END,
-                                    unshielded_tx_count = unshielded_tx_count + 1,
-                                    last_updated = $3
-                                WHERE client_id = $1
-                                "#,
-                            )
-                                .bind(&client_id)
-                                .bind(&amount_raw)
-                                .bind(timestamp)
-                                .execute(dbtx.as_mut())
-                                .await
-                            {
-                                error!("Error updating legacy stats for outbound transfer: {}", e);
-                            }
+                        } else if let Err(e) = sqlx::query(
+                            r#"
+                            UPDATE ibc_stats
+                            SET
+                                -- Convert to NUMERIC first, then add safely
+                                unshielded_volume =
+                                    CASE
+                                        WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
+                                            COALESCE(unshielded_volume, 0) +
+                                            CASE
+                                                WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
+                                                ELSE CAST($2 AS NUMERIC)
+                                            END
+                                        ELSE unshielded_volume -- If not valid, don't change
+                                    END,
+                                unshielded_tx_count = unshielded_tx_count + 1,
+                                last_updated = $3
+                            WHERE client_id = $1
+                            "#,
+                        )
+                            .bind(&client_id)
+                            .bind(&amount_raw)
+                            .bind(timestamp)
+                            .execute(dbtx.as_mut())
+                            .await
+                        {
+                            error!("Error updating legacy stats for outbound transfer: {}", e);
                         }
                     } else {
                         warn!(
@@ -2194,6 +2296,10 @@ pub async fn process_events(
 
 
 
+/// Updates old pending transactions to error status
+///
+/// # Errors
+/// Returns an error if the database operation fails
 pub async fn update_old_pending_transactions(
     dbtx: &mut PgTransaction<'_>,
 ) -> Result<(), anyhow::Error> {
