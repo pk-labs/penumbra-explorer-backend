@@ -3,7 +3,6 @@ use super::client::{
     CLIENT_STATUS_EXPIRED, CLIENT_STATUS_FROZEN, CLIENT_STATUS_UNKNOWN,
 };
 use std::time::Duration;
-use std::sync::Arc;
 use tokio::time;
 use tracing::{error, info};
 use sqlx;
@@ -113,17 +112,17 @@ async fn check_ibc_clients(pool: &sqlx::PgPool) {
     let client = GrpcClient::new("grpc.penumbra.silentvalidator.com", 443);
 
     // Check client statuses
-    let client_statuses = match check_client_statuses(&client).await {
+    let _client_statuses = match check_client_statuses(&client).await {
         Ok(statuses) => {
             // Update client statuses in the database
             for (client_id, status) in &statuses {
                 // We only update if the client ID already exists in the database
                 let result = sqlx::query(
-                    r#"
+                    r"
                     UPDATE ibc_clients 
                     SET status = $1 
                     WHERE client_id = $2
-                    "#,
+                    ",
                 )
                 .bind(status)
                 .bind(client_id)
@@ -150,13 +149,13 @@ async fn check_ibc_clients(pool: &sqlx::PgPool) {
             for (client_id, channel_id, counterparty_channel_id) in client_channels {
                 // We only update if the client ID already exists in the database
                 let result = sqlx::query(
-                    r#"
+                    r"
                     UPDATE ibc_clients 
                     SET 
                         channel_id = $1,
                         counterparty_channel_id = $2
                     WHERE client_id = $3
-                    "#,
+                    ",
                 )
                 .bind(channel_id)
                 .bind(counterparty_channel_id)
@@ -177,15 +176,12 @@ async fn check_ibc_clients(pool: &sqlx::PgPool) {
 
 #[allow(clippy::module_name_repetitions)]
 pub fn start_ibc_status_scheduler(pool: sqlx::PgPool) {
-    let pool = std::sync::Arc::new(pool);
-    
     tokio::spawn(async move {
-        let pool_ref = &*pool;
-        check_ibc_clients(pool_ref).await;
+        check_ibc_clients(&pool).await;
         let mut interval = time::interval(Duration::from_secs(3600));
         loop {
             interval.tick().await;
-            check_ibc_clients(pool_ref).await;
+            check_ibc_clients(&pool).await;
         }
     });
     info!("Started IBC client status scheduler (running hourly)");
