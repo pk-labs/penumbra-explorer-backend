@@ -1,7 +1,7 @@
 mod asset;
 mod block;
 mod event;
-pub mod ibc; 
+pub mod ibc;
 pub mod inputs;
 mod stats;
 #[allow(clippy::module_name_repetitions)]
