@@ -54,7 +54,6 @@ impl Explorer {
         self
     }
 
-    
     fn read_chain_id_from_genesis() -> Option<String> {
         let file = match File::open("genesis.json") {
             Ok(f) => f,
@@ -86,7 +85,6 @@ impl Explorer {
         chain_id
     }
 
-    
     fn get_chain_id(&self) -> &str {
         self.chain_id.as_deref().unwrap_or("unknown")
     }
@@ -257,7 +255,6 @@ impl AppView for Explorer {
         .execute(dbtx.as_mut())
         .await?;
 
-        
         sqlx::query(
             r"
     CREATE TABLE IF NOT EXISTS asset_prices (
@@ -285,12 +282,11 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
     tx_hash BYTEA,
     status TEXT
 )
-"
+",
         )
-            .execute(dbtx.as_mut())
-            .await?;
+        .execute(dbtx.as_mut())
+        .await?;
 
-        
         sqlx::query(
             r"
             CREATE INDEX IF NOT EXISTS idx_ibc_transfers_client_id
@@ -327,7 +323,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
 
-        
         sqlx::query(
             r"
             CREATE TABLE IF NOT EXISTS ibc_stats (
@@ -628,10 +623,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         )
             .execute(dbtx.as_mut())
             .await?;
-
-        
-
-        
 
         Ok(())
     }
