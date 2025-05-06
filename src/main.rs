@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
     // Create a pool for the IBC status scheduler
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&explorer.get_dest_db_url())
+        .connect(explorer.get_dest_db_url())
         .await?;
     
     // Start the IBC status scheduler with the database pool
