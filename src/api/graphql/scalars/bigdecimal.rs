@@ -7,7 +7,6 @@ use std::str::FromStr;
 use crate::api::graphql::resolvers::{QueryRoot, SubscriptionRoot};
 use async_graphql::{EmptyMutation, SchemaBuilder};
 
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Decimal(pub BigDecimal);
 
@@ -63,7 +62,6 @@ impl ScalarType for Decimal {
         Value::String(self.0.to_string())
     }
 }
-
 
 pub fn register(
     builder: SchemaBuilder<QueryRoot, EmptyMutation, SubscriptionRoot>,
