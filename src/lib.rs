@@ -1,6 +1,7 @@
 pub mod api;
 pub mod app_views;
 pub mod db_migrations;
+pub mod grpc;
 pub mod options;
 pub mod parsing;
 

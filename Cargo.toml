@@ -33,6 +33,11 @@ futures-util = "0.3"
 async-stream = "0.3"
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 regex = "1.11.1"
+hyper = { version = "0.14", features = ["http1", "http2", "client"] }
+hyper-rustls = { version = "0.23", features = ["http2"] }
+bytes = "1.0"
+http = "0.2"
+tonic = "0.9"
 
 [lib]
 path = "src/lib.rs"

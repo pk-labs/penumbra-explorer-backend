@@ -68,6 +68,7 @@ async fn main() -> Result<()> {
     tracing::info!("  Polling Interval (ms): {}", opts.polling_interval_ms);
 
     penumbra_explorer::db_migrations::run_migrations(&opts.dest_db_url)?;
+    penumbra_explorer::grpc::start_ibc_status_scheduler();
 
     let explorer = Explorer::new(opts);
     explorer.run().await?;
