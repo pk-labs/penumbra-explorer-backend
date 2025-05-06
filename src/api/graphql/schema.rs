@@ -4,21 +4,10 @@ use crate::api::graphql::{
     resolvers::{QueryRoot, SubscriptionRoot},
     scalars,
     types::{
-        ibc::{ChannelPair, TotalShieldedVolume}, 
-        Action,
-        Block,
-        BlockCollection,
-        BlockUpdate,
-        CollectionItem,
-        Event,
-        Fee,
-        IbcStats,
-        Transaction,
-        TransactionBody,
-        TransactionCollection,
-        TransactionCountUpdate,
-        TransactionParameters,
-        TransactionUpdate,
+        ibc::{ChannelPair, TotalShieldedVolume},
+        Action, Block, BlockCollection, BlockUpdate, CollectionItem, Event, Fee, IbcStats,
+        Transaction, TransactionBody, TransactionCollection, TransactionCountUpdate,
+        TransactionParameters, TransactionUpdate,
     },
 };
 use async_graphql::Schema as AsyncGraphQLSchema;
@@ -63,7 +52,7 @@ pub fn create_schema(db_pool: PgPool) -> PenumbraSchema {
         .register_output_type::<TransactionCollection>()
         .register_output_type::<IbcStats>()
         .register_output_type::<ChannelPair>()
-        .register_output_type::<TotalShieldedVolume>(); 
+        .register_output_type::<TotalShieldedVolume>();
 
     builder.finish()
 }
