@@ -234,6 +234,9 @@ impl AppView for Explorer {
             r"
             CREATE TABLE IF NOT EXISTS ibc_clients (
                 client_id TEXT PRIMARY KEY,
+                status TEXT DEFAULT 'Unknown',
+                channel_id TEXT,
+                counterparty_channel_id TEXT,
                 last_active_height BIGINT,
                 last_active_time TIMESTAMP WITH TIME ZONE
             )
@@ -394,6 +397,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         )
         SELECT
             c.client_id,
+            c.status,
+            c.channel_id,
+            c.counterparty_channel_id,
             COALESCE(s.shielded_volume, 0) as shielded_volume,
             COALESCE(s.shielded_tx_count, 0) as shielded_tx_count,
             COALESCE(s.unshielded_volume, 0) as unshielded_volume,
@@ -445,6 +451,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         )
         SELECT
             c.client_id,
+            c.status,
+            c.channel_id,
+            c.counterparty_channel_id,
             COALESCE(s.shielded_volume, 0) as shielded_volume,
             COALESCE(s.shielded_tx_count, 0) as shielded_tx_count,
             COALESCE(s.unshielded_volume, 0) as unshielded_volume,
@@ -496,6 +505,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         )
         SELECT
             c.client_id,
+            c.status,
+            c.channel_id,
+            c.counterparty_channel_id,
             COALESCE(s.shielded_volume, 0) as shielded_volume,
             COALESCE(s.shielded_tx_count, 0) as shielded_tx_count,
             COALESCE(s.unshielded_volume, 0) as unshielded_volume,
@@ -523,6 +535,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             SELECT
                 c.client_id,
                 'all_time' AS period,
+                c.status,
+                c.channel_id,
+                c.counterparty_channel_id,
                 COALESCE(s.shielded_volume, 0) as shielded_volume,
                 COALESCE(s.shielded_tx_count, 0) as shielded_tx_count,
                 COALESCE(s.unshielded_volume, 0) as unshielded_volume,
@@ -556,6 +571,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             SELECT
                 c.client_id,
                 '24h' AS period,
+                c.status,
+                c.channel_id,
+                c.counterparty_channel_id,
                 COALESCE(s.shielded_volume, 0) as shielded_volume,
                 COALESCE(s.shielded_tx_count, 0) as shielded_tx_count,
                 COALESCE(s.unshielded_volume, 0) as unshielded_volume,
@@ -591,6 +609,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             SELECT
                 c.client_id,
                 '30d' AS period,
+                c.status,
+                c.channel_id,
+                c.counterparty_channel_id,
                 COALESCE(s.shielded_volume, 0) as shielded_volume,
                 COALESCE(s.shielded_tx_count, 0) as shielded_tx_count,
                 COALESCE(s.unshielded_volume, 0) as unshielded_volume,
