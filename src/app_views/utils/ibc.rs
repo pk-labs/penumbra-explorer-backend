@@ -218,7 +218,7 @@ async fn get_asset_price(
 ) -> Result<Option<f64>, anyhow::Error> {
     let now = Utc::now();
 
-    
+
     let mut asset_symbol = None;
     if let Ok(s) = std::str::from_utf8(asset_id) {
         if s.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -226,25 +226,25 @@ async fn get_asset_price(
         }
     }
 
-    
-    
+
+
     if asset_id == USDC_ASSET_ID {
-        
+
         let _ = update_asset_price(dbtx, asset_id, 1.0, now, Some("USDC".to_string())).await;
         return Ok(Some(1.0));
     }
 
-    
+
     if asset_id == b"usdt" {
-        
+
         let _ = update_asset_price(dbtx, asset_id, 1.0, now, Some("USDT".to_string())).await;
         return Ok(Some(1.0));
     }
 
-    
+
     let asset_hex = hex::encode(asset_id);
     if asset_hex.contains("usd") || asset_hex.contains("dai") {
-        
+
         let is_likely_stablecoin = asset_hex.contains("usd") &&
             (asset_hex.contains("usdc") ||
                 asset_hex.contains("usdt") ||
@@ -254,7 +254,7 @@ async fn get_asset_price(
 
         if is_likely_stablecoin {
             debug!("Identified stablecoin: {}", asset_hex);
-            
+
             let symbol = if asset_symbol.is_some() {
                 asset_symbol.clone()
             } else if asset_hex.contains("dai") {
@@ -263,13 +263,13 @@ async fn get_asset_price(
                 Some(format!("USD_{}", &asset_hex[0..min(8, asset_hex.len())]))
             };
 
-            
+
             let _ = update_asset_price(dbtx, asset_id, 1.0, now, symbol).await;
             return Ok(Some(1.0));
         }
     }
 
-    
+
     let price: Option<f64> = sqlx::query_scalar(
         "SELECT price_usd FROM asset_prices WHERE asset_id = $1"
     )
@@ -277,14 +277,14 @@ async fn get_asset_price(
         .fetch_optional(dbtx.as_mut())
         .await?;
 
-    
+
     if let Some(price) = price {
         debug!("Found existing price for asset {}: ${:.8}",
                hex::encode(asset_id), price);
         return Ok(Some(price));
     }
 
-    
+
     let first_price: Option<(f64, DateTime<Utc>)> = sqlx::query_as(
         "SELECT price_usd, last_updated FROM asset_prices
          WHERE asset_id = $1
@@ -295,15 +295,15 @@ async fn get_asset_price(
         .fetch_optional(dbtx.as_mut())
         .await?;
 
-    
-    
+
+
     if let Some((first_price, _)) = first_price {
         debug!("Using earliest known price for asset {}: ${:.8}",
               hex::encode(asset_id), first_price);
         return Ok(Some(first_price));
     }
 
-    
+
     debug!("No price data available for asset {}", hex::encode(asset_id));
     Ok(None)
 }
@@ -622,7 +622,7 @@ async fn process_candlestick_data(
     event: &ContextualizedEvent<'_>,
     timestamp: DateTime<Utc>,
 ) -> Result<(), anyhow::Error> {
-    
+
     debug!("Event kind: {} at height {}", event.event.kind.as_str(), event.block_height);
 
     if event.event.kind.as_str() != "penumbra.core.component.dex.v1.EventCandlestickData" {
@@ -631,29 +631,29 @@ async fn process_candlestick_data(
 
     debug!("Processing candlestick data from event at height {}", event.block_height);
 
-    
+
     let mut base_asset_id: Option<Vec<u8>> = None;
     let mut quote_asset_id: Option<Vec<u8>> = None;
     let mut close_price: Option<f64> = None;
     let mut base_symbol: Option<String> = None;
     let mut quote_symbol: Option<String> = None;
 
-    
+
     let mut pair_data: Option<Value> = None;
 
-    
+
     for attr in &event.event.attributes {
         if let (Ok(key), Ok(value)) = (attr.key_str(), attr.value_str()) {
             debug!("Candlestick attribute: {}={}", key, value);
 
-            
+
             if key == "pair" && !value.is_empty() {
                 if let Ok(json_data) = serde_json::from_str::<Value>(value) {
                     pair_data = Some(json_data);
                 }
             } else if key == "stick" && !value.is_empty() {
                 if let Ok(json_data) = serde_json::from_str::<Value>(value) {
-                    
+
                     if let Some(close) = json_data.get("close") {
                         if let Some(close_val) = close.as_f64() {
                             close_price = Some(close_val);
@@ -670,17 +670,17 @@ async fn process_candlestick_data(
         }
     }
 
-    
+
     if let Some(pair) = pair_data {
         if let (Some(start), Some(end)) = (pair.get("start"), pair.get("end")) {
-            
+
             if let Some(start_inner) = start.get("inner").and_then(|v| v.as_str()) {
-                
+
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(start_inner) {
                     base_asset_id = Some(decoded);
                     debug!("Decoded base asset ID: {}", hex::encode(base_asset_id.as_ref().unwrap()));
 
-                    
+
                     if base_asset_id.as_ref().unwrap() == USDC_ASSET_ID {
                         base_symbol = Some("USDC".to_string());
                         debug!("Identified base asset as USDC");
@@ -689,12 +689,12 @@ async fn process_candlestick_data(
             }
 
             if let Some(end_inner) = end.get("inner").and_then(|v| v.as_str()) {
-                
+
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(end_inner) {
                     quote_asset_id = Some(decoded);
                     debug!("Decoded quote asset ID: {}", hex::encode(quote_asset_id.as_ref().unwrap()));
 
-                    
+
                     if quote_asset_id.as_ref().unwrap() == USDC_ASSET_ID {
                         quote_symbol = Some("USDC".to_string());
                         debug!("Identified quote asset as USDC");
@@ -704,7 +704,7 @@ async fn process_candlestick_data(
         }
     }
 
-    
+
     if base_asset_id.is_none() || quote_asset_id.is_none() || close_price.is_none() {
         debug!("Trying legacy attribute parsing method for candlestick data");
         for attr in &event.event.attributes {
@@ -714,7 +714,7 @@ async fn process_candlestick_data(
                         base_asset_id = Some(hex::decode(value).unwrap_or_default());
                         debug!("Found base asset ID from legacy attribute: {}", value);
 
-                        
+
                         if let Ok(bytes) = hex::decode(value) {
                             if let Ok(s) = std::str::from_utf8(&bytes) {
                                 if s.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -728,7 +728,7 @@ async fn process_candlestick_data(
                         quote_asset_id = Some(hex::decode(value).unwrap_or_default());
                         debug!("Found quote asset ID from legacy attribute: {}", value);
 
-                        
+
                         if let Ok(bytes) = hex::decode(value) {
                             if let Ok(s) = std::str::from_utf8(&bytes) {
                                 if s.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -748,7 +748,7 @@ async fn process_candlestick_data(
         }
     }
 
-    
+
     if let (Some(base), Some(quote), Some(price)) = (&base_asset_id, &quote_asset_id, &close_price) {
         if *price <= 0.0 {
             debug!("Skipping invalid non-positive price: {}", price);
@@ -762,19 +762,19 @@ async fn process_candlestick_data(
             price
         );
 
-        
+
         let is_usdc = |asset: &[u8]| -> bool {
             asset == USDC_ASSET_ID ||
-                
+
                 hex::encode(asset).contains("75736463")
         };
 
         if is_usdc(quote) {
-            
+
             debug!("💰 USDC DIRECT PAIR: base={} quote=USDC price=${}", hex::encode(base), price);
             update_asset_price(dbtx, base, *price, timestamp, base_symbol).await?;
         } else if is_usdc(base) {
-            
+
             if *price > 0.0 {
                 let inverse_price = 1.0 / *price;
                 debug!("💰 USDC INVERSE PAIR: base=USDC quote={} price=${:.8}",
@@ -782,8 +782,8 @@ async fn process_candlestick_data(
                 update_asset_price(dbtx, quote, inverse_price, timestamp, quote_symbol).await?;
             }
         } else {
-            
-            
+
+
             let asset_id_to_store = base;
             let symbol_to_use = base_symbol.clone();
             let price_to_store = *price;
@@ -792,7 +792,7 @@ async fn process_candlestick_data(
                   hex::encode(asset_id_to_store), price_to_store);
             update_asset_price(dbtx, asset_id_to_store, price_to_store, timestamp, symbol_to_use).await?;
 
-            
+
             let inverse_asset_id = quote;
             let inverse_symbol = quote_symbol.clone();
             if *price > 0.0 {
@@ -814,15 +814,15 @@ async fn process_candlestick_data(
 
 
 fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
-    
+
     debug!("Extracting asset ID from meta: {}, value: {}", meta, value);
 
-    
+
     if let Some(asset_id) = value.get("assetId") {
         if let Some(inner) = asset_id.get("inner") {
             if let Some(inner_str) = inner.as_str() {
                 debug!("Found assetId.inner: {}", inner_str);
-                
+
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(inner_str) {
                     debug!("Successfully decoded assetId.inner from base64: {}", hex::encode(&decoded));
                     return Some(decoded);
@@ -831,7 +831,7 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
         }
     }
 
-    
+
     if let Some(asset_id) = value.get("asset_id") {
         if let Some(asset_id_str) = asset_id.as_str() {
             debug!("Found asset_id directly: {}", asset_id_str);
@@ -839,7 +839,7 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
         }
     }
 
-    
+
     if let Some(value_inner) = value.get("value") {
         if let Some(asset_id) = value_inner.get("asset_id") {
             if let Some(asset_id_str) = asset_id.as_str() {
@@ -849,17 +849,17 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
         }
     }
 
-    
+
     if let Some(asset) = value.get("asset") {
         if let Some(asset_inner) = asset.get("inner") {
             if let Some(asset_inner_str) = asset_inner.as_str() {
                 debug!("Found asset.inner: {}", asset_inner_str);
-                
+
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(asset_inner_str) {
                     debug!("Decoded asset.inner as base64: {}", hex::encode(&decoded));
                     return Some(decoded);
                 }
-                
+
                 if let Ok(decoded) = hex::decode(asset_inner_str) {
                     debug!("Decoded asset.inner as hex: {}", hex::encode(&decoded));
                     return Some(decoded);
@@ -868,7 +868,7 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
         }
     }
 
-    
+
     if let Some(asset_id) = meta.get("asset_id") {
         if let Some(asset_id_str) = asset_id.as_str() {
             debug!("Found asset_id in meta: {}", asset_id_str);
@@ -876,7 +876,7 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
         }
     }
 
-    
+
     if let Some(denom) = meta.get("denom") {
         if let Some(denom_str) = denom.as_str() {
             debug!("Found denom in meta: {}", denom_str);
@@ -884,7 +884,7 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
         }
     }
 
-    
+
     if let Some(metadata) = meta.get("metadata") {
         if let Some(denom) = metadata.get("denom") {
             if let Some(denom_str) = denom.as_str() {
@@ -901,7 +901,7 @@ fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
         }
     }
 
-    
+
     debug!("Could not extract asset_id from metadata and value");
     None
 }
@@ -1067,7 +1067,7 @@ pub async fn process_events(
 
 
 
-    
+
     let mut candlestick_count = 0;
     for event in events {
         if event.event.kind.as_str() == "penumbra.core.component.dex.v1.EventCandlestickData" {
@@ -1381,7 +1381,7 @@ pub async fn process_events(
                     Direction::Outbound => dst_channel,
                 };
 
-                
+
                 debug!(
                     "Updating counterparty for channel {} to {} (direction: {})",
                     our_channel, counterparty_channel, direction
@@ -1432,7 +1432,7 @@ pub async fn process_events(
                     .fetch_optional(dbtx.as_mut())
                     .await?;
 
-                
+
                 final_client_id = db_client_id.flatten();
 
                 if final_client_id.is_none() && our_channel.starts_with("channel-") {
@@ -1497,7 +1497,7 @@ pub async fn process_events(
                 }
 
                 if let (Some(client_id), Some(tx_hash)) = (final_client_id, event.tx_hash()) {
-                    
+
                     sqlx::query(
                         r"
                         UPDATE explorer_transactions
@@ -1818,14 +1818,14 @@ pub async fn process_events(
                         None => continue,
                     };
 
-                    
+
                     let mut asset_id = extract_asset_id(&meta, &value);
 
-                    
+
                     let fallback_asset_id = if channel_id.starts_with("channel-") {
-                        
+
                         if let Some(channel_num) = extract_number_from_channel(channel_id) {
-                            
+
                             let channel_based_asset = format!("ibc_channel_{}", channel_num);
                             debug!("Using channel-based fallback asset ID: {}", channel_based_asset);
                             Some(channel_based_asset.as_bytes().to_vec())
@@ -1846,7 +1846,7 @@ pub async fn process_events(
                         debug!("Using asset ID for inbound transfer: {}",
                               hex::encode(asset_id_ref));
 
-                        
+
                         let mut symbol = None;
                         if let Ok(s) = std::str::from_utf8(asset_id_ref) {
                             if s.chars().all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '_') {
@@ -1855,7 +1855,7 @@ pub async fn process_events(
                             }
                         }
 
-                        
+
                         let existing_price = sqlx::query_scalar::<_, Option<f64>>(
                             "SELECT price_usd FROM asset_prices WHERE asset_id = $1"
                         )
@@ -1864,7 +1864,7 @@ pub async fn process_events(
                             .await;
 
                         if existing_price.is_err() || existing_price.as_ref().unwrap().is_none() {
-                            
+
                             debug!("No existing price for asset {}, getting fallback price", hex::encode(asset_id_ref));
                             if let Err(e) = get_asset_price(dbtx, asset_id_ref).await {
                                 error!("Failed to get and store price for asset {}: {}",
@@ -1882,7 +1882,7 @@ pub async fn process_events(
                         .fetch_optional(dbtx.as_mut())
                         .await?;
 
-                    
+
                     resolved_client_id = db_client_id.flatten();
 
                     if resolved_client_id.is_none() {
@@ -1942,7 +1942,100 @@ pub async fn process_events(
                     }
 
                     if let Some(client_id) = resolved_client_id {
+                        debug!(
+                            "Processing inbound IBC transfer (IBC Relay): channel={}, client={}, value={}",
+                            channel_id, client_id, amount_raw
+                        );
                         
+                        // Update explorer_transactions table for inbound transfers (IBC Relay)
+                        if let Some(tx_hash) = event.tx_hash() {
+                            debug!(
+                                "Updating explorer_transactions for IBC Relay transaction: {}",
+                                hex::encode(tx_hash)
+                            );
+
+                            // We don't have a sequence for inbound transfers from the event,
+                            // but we can use timestamp + hash for uniqueness
+                            let pseudo_sequence = format!("recv_{}", hex::encode(&tx_hash[0..8]));
+
+                            // First check if the transaction exists in explorer_transactions
+                            let tx_exists = sqlx::query_scalar::<_, Option<i32>>(
+                                "SELECT 1 FROM explorer_transactions WHERE tx_hash = $1",
+                            )
+                                .bind(tx_hash)
+                                .fetch_optional(dbtx.as_mut())
+                                .await
+                                .unwrap_or_else(|e| {
+                                    error!("Failed to check if transaction exists: {}", e);
+                                    None
+                                });
+
+                            if tx_exists.is_some() {
+                                debug!("Transaction exists in explorer_transactions, updating IBC metadata");
+                                sqlx::query(
+                                    r"
+                                    UPDATE explorer_transactions
+                                    SET
+                                        ibc_channel_id = $2,
+                                        ibc_client_id = $3,
+                                        ibc_status = $4,
+                                        ibc_direction = $5,
+                                        ibc_sequence = $6
+                                    WHERE tx_hash = $1
+                                    ",
+                                )
+                                    .bind(tx_hash)
+                                    .bind(channel_id)
+                                    .bind(&client_id)
+                                    .bind(TransactionStatus::Completed.to_string())
+                                    .bind(Direction::Inbound.to_string())
+                                    .bind(&pseudo_sequence)
+                                    .execute(dbtx.as_mut())
+                                    .await
+                                    .unwrap_or_else(|e| {
+                                        error!("Failed to update explorer_transactions for inbound IBC transfer: {}", e);
+                                        Default::default()
+                                    });
+                            } else {
+                                // Insert a new transaction record if it doesn't exist
+                                debug!("Transaction not found in explorer_transactions, inserting new record for IBC relay");
+                                sqlx::query(
+                                    r"
+                                    INSERT INTO explorer_transactions (
+                                        tx_hash,
+                                        block_height,
+                                        timestamp,
+                                        ibc_channel_id,
+                                        ibc_client_id,
+                                        ibc_status,
+                                        ibc_direction,
+                                        ibc_sequence
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                                    ON CONFLICT (tx_hash) DO UPDATE SET
+                                        ibc_channel_id = $4,
+                                        ibc_client_id = $5,
+                                        ibc_status = $6,
+                                        ibc_direction = $7,
+                                        ibc_sequence = $8
+                                    ",
+                                )
+                                    .bind(tx_hash)
+                                    .bind(event.block_height as i64)
+                                    .bind(timestamp)
+                                    .bind(channel_id)
+                                    .bind(&client_id)
+                                    .bind(TransactionStatus::Completed.to_string())
+                                    .bind(Direction::Inbound.to_string())
+                                    .bind(&pseudo_sequence)
+                                    .execute(dbtx.as_mut())
+                                    .await
+                                    .unwrap_or_else(|e| {
+                                        error!("Failed to insert transaction for inbound IBC transfer: {}", e);
+                                        Default::default()
+                                    });
+                            }
+                        }
+
                         if let Err(e) = record_transfer(
                             dbtx,
                             &client_id,
@@ -1959,7 +2052,7 @@ pub async fn process_events(
                             error!("Failed to record inbound transfer: {}", e);
                         }
 
-                        
+
                         if let Some(ref asset_id) = asset_id {
                             if let Err(e) = update_client_stats_with_usd(
                                 dbtx,
@@ -1973,7 +2066,7 @@ pub async fn process_events(
                             {
                                 error!("Failed to update USD stats for inbound transfer: {}", e);
 
-                                
+
                                 if let Err(e) = sqlx::query(
                                     r"
                                     UPDATE ibc_stats
@@ -2064,14 +2157,14 @@ pub async fn process_events(
                         None => continue,
                     };
 
-                    
+
                     let mut asset_id = extract_asset_id(&meta, &value);
 
-                    
+
                     let fallback_asset_id = if channel_id.starts_with("channel-") {
-                        
+
                         if let Some(channel_num) = extract_number_from_channel(channel_id) {
-                            
+
                             let channel_based_asset = format!("ibc_channel_{}", channel_num);
                             debug!("Using channel-based fallback asset ID: {}", channel_based_asset);
                             Some(channel_based_asset.as_bytes().to_vec())
@@ -2092,7 +2185,7 @@ pub async fn process_events(
                         debug!("Using asset ID for outbound transfer: {}",
                               hex::encode(asset_id_ref));
 
-                        
+
                         let mut symbol = None;
                         if let Ok(s) = std::str::from_utf8(asset_id_ref) {
                             if s.chars().all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '_') {
@@ -2101,7 +2194,7 @@ pub async fn process_events(
                             }
                         }
 
-                        
+
                         let existing_price = sqlx::query_scalar::<_, Option<f64>>(
                             "SELECT price_usd FROM asset_prices WHERE asset_id = $1"
                         )
@@ -2110,7 +2203,7 @@ pub async fn process_events(
                             .await;
 
                         if existing_price.is_err() || existing_price.as_ref().unwrap().is_none() {
-                            
+
                             debug!("No existing price for asset {}, getting fallback price", hex::encode(asset_id_ref));
                             if let Err(e) = get_asset_price(dbtx, asset_id_ref).await {
                                 error!("Failed to get and store price for asset {}: {}",
@@ -2128,7 +2221,7 @@ pub async fn process_events(
                         .fetch_optional(dbtx.as_mut())
                         .await?;
 
-                    
+
                     resolved_client_id = db_client_id.flatten();
 
                     if resolved_client_id.is_none() {
@@ -2188,7 +2281,7 @@ pub async fn process_events(
                     }
 
                     if let Some(client_id) = resolved_client_id {
-                        
+
                         if let Err(e) = record_transfer(
                             dbtx,
                             &client_id,
@@ -2205,7 +2298,7 @@ pub async fn process_events(
                             error!("Failed to record outbound transfer: {}", e);
                         }
 
-                        
+
                         if let Some(ref asset_id) = asset_id {
                             if let Err(e) = update_client_stats_with_usd(
                                 dbtx,
@@ -2219,7 +2312,7 @@ pub async fn process_events(
                             {
                                 error!("Failed to update USD stats for outbound transfer: {}", e);
 
-                                
+
                                 if let Err(e) = sqlx::query(
                                     r#"
                                     UPDATE ibc_stats
