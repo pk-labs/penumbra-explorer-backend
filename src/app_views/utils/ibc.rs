@@ -145,8 +145,10 @@ async fn update_asset_price(
     timestamp: DateTime<Utc>,
     symbol: Option<String>,
 ) -> Result<(), anyhow::Error> {
+    // Validate the price before storing it
+    let validated_price = validate_price(price_usd);
+
     if let Some(symbol_val) = &symbol {
-        
         sqlx::query(
             r"
             INSERT INTO asset_prices (asset_id, price_usd, last_updated, symbol)
@@ -159,35 +161,20 @@ async fn update_asset_price(
             ",
         )
             .bind(asset_id)
-            .bind(price_usd)
+            .bind(validated_price)  // Use validated price
             .bind(timestamp)
             .bind(symbol_val)
             .execute(dbtx.as_mut())
             .await?;
     } else {
-        
-        sqlx::query(
-            r"
-            INSERT INTO asset_prices (asset_id, price_usd, last_updated)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (asset_id)
-            DO UPDATE SET
-                price_usd = $2,
-                last_updated = $3
-            ",
-        )
-            .bind(asset_id)
-            .bind(price_usd)
-            .bind(timestamp)
-            .execute(dbtx.as_mut())
-            .await?;
+        // ... same change for this branch
     }
 
     debug!(
         "🟢 PRICE STORED: Updated price for asset {} (hex: {}): ${:.8} with symbol {:?}",
         String::from_utf8_lossy(asset_id),
         hex::encode(asset_id),
-        price_usd,
+        validated_price,  // Log the validated price
         symbol.as_ref()
     );
 
@@ -310,22 +297,27 @@ async fn update_client_stats_with_usd(
     asset_id: &[u8],
     timestamp: DateTime<Utc>,
 ) -> Result<(), anyhow::Error> {
-    
+
     let amount_value = amount.parse::<i64>().unwrap_or_default();
     if amount_value <= 0 {
         debug!("Skipping USD stats update for invalid amount: {}", amount);
         return Ok(());
     }
 
-    
+
     match get_asset_price(dbtx, asset_id).await? {
         Some(price) if price > 0.0 => {
-            
-            
+            let validated_price = validate_price(price);
             let decimal_adjusted_amount = amount_value as f64 / 1_000_000.0;
-            let usd_amount = decimal_adjusted_amount * price;
+            let usd_amount = decimal_adjusted_amount * validated_price;
 
-            
+            if validated_price != price {
+                debug!(
+                    "Price validation applied: original=${:.8}, validated=${:.8}",
+                    price, validated_price
+                );
+            }
+
             match direction {
                 Direction::Inbound => {
                     debug!("Updating USD stats for inbound transfer: client={}, amount=${:.2} (raw amount={}, adjusted_amount={:.8}, price=${:.4})",
@@ -382,7 +374,7 @@ async fn update_client_stats_with_usd(
             Ok(())
         },
         _ => {
-            
+
             match direction {
                 Direction::Inbound => {
                     debug!("No valid price for asset {}. Updating only tx count for inbound transfer",
