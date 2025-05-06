@@ -34,8 +34,8 @@ pub fn run_migrations(database_url: &str) -> Result<()> {
         ) as exists
     ",
     )
-        .get_result::<Exists>(&mut conn)?
-        .exists;
+    .get_result::<Exists>(&mut conn)?
+    .exists;
 
     if table_exists {
         info!("Migration tracking table exists, using existing migration state");
