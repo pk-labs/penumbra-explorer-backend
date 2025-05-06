@@ -44,9 +44,9 @@ pub async fn resolve_transaction(
             t.tx_hash = $1
         ",
     )
-        .bind(hash_bytes.as_slice())
-        .fetch_optional(db)
-        .await?;
+    .bind(hash_bytes.as_slice())
+    .fetch_optional(db)
+    .await?;
 
     if let Some(r) = row {
         let tx_hash: Vec<u8> = r.get("tx_hash");
