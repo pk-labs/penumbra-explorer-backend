@@ -69,18 +69,18 @@ async fn main() -> Result<()> {
     tracing::info!("  Polling Interval (ms): {}", opts.polling_interval_ms);
 
     penumbra_explorer::db_migrations::run_migrations(&opts.dest_db_url)?;
-    
+
     let explorer = Explorer::new(opts);
-    
+
     // Create a pool for the IBC status scheduler
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(explorer.get_dest_db_url())
         .await?;
-    
+
     // Start the IBC status scheduler with the database pool
     penumbra_explorer::grpc::start_ibc_status_scheduler(pool);
-    
+
     explorer.run().await?;
 
     Ok(())
