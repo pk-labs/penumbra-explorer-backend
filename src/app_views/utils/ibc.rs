@@ -1810,14 +1810,13 @@ pub async fn process_events(
                         continue;
                     };
 
-                    let amount_raw = match value.get("amount").and_then(|v| v.get("lo")) {
-                        Some(amount) => match amount.as_str() {
-                            Some(s) => s.to_string(),
-                            None => amount.to_string().trim_matches('"').to_string(),
-                        },
-                        None => continue,
-                    };
+                    let amount_value = extract_full_amount(&value);
+                    let amount_raw = amount_value.to_string();
 
+                    debug!(
+            "Processing inbound IBC transfer with full 128-bit amount: channel={}, amount={}",
+            channel_id, amount_value
+        );
 
                     let mut asset_id = extract_asset_id(&meta, &value);
 
@@ -1947,18 +1946,14 @@ pub async fn process_events(
                             channel_id, client_id, amount_raw
                         );
                         
-                        // Update explorer_transactions table for inbound transfers (IBC Relay)
                         if let Some(tx_hash) = event.tx_hash() {
                             debug!(
                                 "Updating explorer_transactions for IBC Relay transaction: {}",
                                 hex::encode(tx_hash)
                             );
 
-                            // We don't have a sequence for inbound transfers from the event,
-                            // but we can use timestamp + hash for uniqueness
                             let pseudo_sequence = format!("recv_{}", hex::encode(&tx_hash[0..8]));
 
-                            // First check if the transaction exists in explorer_transactions
                             let tx_exists = sqlx::query_scalar::<_, Option<i32>>(
                                 "SELECT 1 FROM explorer_transactions WHERE tx_hash = $1",
                             )
@@ -1997,7 +1992,6 @@ pub async fn process_events(
                                         Default::default()
                                     });
                             } else {
-                                // Insert a new transaction record if it doesn't exist
                                 debug!("Transaction not found in explorer_transactions, inserting new record for IBC relay");
                                 sqlx::query(
                                     r"
@@ -2149,16 +2143,16 @@ pub async fn process_events(
                         continue;
                     };
 
-                    let amount_raw = match value.get("amount").and_then(|v| v.get("lo")) {
-                        Some(amount) => match amount.as_str() {
-                            Some(s) => s.to_string(),
-                            None => amount.to_string().trim_matches('"').to_string(),
-                        },
-                        None => continue,
-                    };
+                    let amount_value = extract_full_amount(&value);
+                    let amount_raw = amount_value.to_string();
 
+                    debug!(
+            "Processing outbound IBC transfer with full 128-bit amount: channel={}, amount={}",
+            channel_id, amount_value
+        );
 
                     let mut asset_id = extract_asset_id(&meta, &value);
+
 
 
                     let fallback_asset_id = if channel_id.starts_with("channel-") {
