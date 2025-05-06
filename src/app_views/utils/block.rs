@@ -182,9 +182,9 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
     let exists = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM explorer_block_details WHERE height = $1)",
     )
-        .bind(height_i64)
-        .fetch_one(dbtx.as_mut())
-        .await?;
+    .bind(height_i64)
+    .fetch_one(dbtx.as_mut())
+    .await?;
 
     let validator_key = None::<String>;
     let previous_hash = None::<Vec<u8>>;
@@ -203,14 +203,14 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
         WHERE height = $1
         ",
         )
-            .bind(height_i64)
-            .bind(&meta.root)
-            .bind(meta.timestamp)
-            .bind(i32::try_from(meta.tx_count).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(&meta.raw_json)
-            .execute(dbtx.as_mut())
-            .await?;
+        .bind(height_i64)
+        .bind(&meta.root)
+        .bind(meta.timestamp)
+        .bind(i32::try_from(meta.tx_count).unwrap_or(0))
+        .bind(meta.chain_id)
+        .bind(&meta.raw_json)
+        .execute(dbtx.as_mut())
+        .await?;
 
         tracing::debug!("Updated block {}", meta.height);
     } else {
@@ -222,17 +222,17 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ",
         )
-            .bind(height_i64)
-            .bind(&meta.root)
-            .bind(meta.timestamp)
-            .bind(i32::try_from(meta.tx_count).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(validator_key)
-            .bind(previous_hash)
-            .bind(block_hash)
-            .bind(&meta.raw_json)
-            .execute(dbtx.as_mut())
-            .await?;
+        .bind(height_i64)
+        .bind(&meta.root)
+        .bind(meta.timestamp)
+        .bind(i32::try_from(meta.tx_count).unwrap_or(0))
+        .bind(meta.chain_id)
+        .bind(validator_key)
+        .bind(previous_hash)
+        .bind(block_hash)
+        .bind(&meta.raw_json)
+        .execute(dbtx.as_mut())
+        .await?;
 
         tracing::debug!("Inserted block {}", meta.height);
     }
