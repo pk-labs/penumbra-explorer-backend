@@ -167,7 +167,21 @@ async fn update_asset_price(
             .execute(dbtx.as_mut())
             .await?;
     } else {
-        // ... same change for this branch
+        sqlx::query(
+            r"
+            INSERT INTO asset_prices (asset_id, price_usd, last_updated)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (asset_id)
+            DO UPDATE SET
+                price_usd = $2,
+                last_updated = $3
+            ",
+        )
+            .bind(asset_id)
+            .bind(validated_price)  // Use validated price here too!
+            .bind(timestamp)
+            .execute(dbtx.as_mut())
+            .await?;
     }
 
     debug!(
@@ -180,9 +194,6 @@ async fn update_asset_price(
 
     Ok(())
 }
-
-
-
 
 
 
@@ -435,21 +446,30 @@ pub async fn record_transfer(
     status: TransactionStatus,
     asset_id: Option<Vec<u8>>,
 ) -> Result<(), anyhow::Error> {
-    
+    // Parse amount string to numeric value
     let amount_value = amount.parse::<i64>().unwrap_or_default();
     let tx_status = status.to_string();
 
-    
+    // Calculate USD value if we have an asset ID
     let usd_amount: Option<f64> = if let Some(asset) = &asset_id {
         match get_asset_price(dbtx, asset).await? {
             Some(price) if price > 0.0 => {
-                
-                
+                // Apply price validation
+                let validated_price = validate_price(price);
                 let decimal_adjusted_amount = amount_value as f64 / 1_000_000.0;
-                let amount_usd = decimal_adjusted_amount * price;
+                let amount_usd = decimal_adjusted_amount * validated_price;
+
+                // Add logging if price was capped or adjusted
+                if validated_price != price {
+                    debug!(
+                        "Price validation applied: original=${:.8}, validated=${:.8} for asset {}",
+                        price, validated_price, hex::encode(asset)
+                    );
+                }
+
                 debug!(
                     "Calculated USD amount for transfer: ${:.2} (raw_amount={}, adjusted_amount={:.8}, price=${:.8})",
-                    amount_usd, amount_value, decimal_adjusted_amount, price
+                    amount_usd, amount_value, decimal_adjusted_amount, validated_price
                 );
                 Some(amount_usd)
             },
@@ -462,6 +482,7 @@ pub async fn record_transfer(
         None
     };
 
+    // Insert transfer record into database
     sqlx::query(
         r"
         INSERT INTO ibc_transfers (
