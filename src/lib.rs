@@ -32,13 +32,13 @@ impl Explorer {
     pub fn new(options: ExplorerOptions) -> Self {
         Self { options }
     }
-    
+
     /// Returns the destination database URL
     #[must_use]
     pub fn get_dest_db_url(&self) -> &str {
         &self.options.dest_db_url
     }
-    
+
     /// Returns a connection pool to the destination database
     ///
     /// # Errors
@@ -49,7 +49,7 @@ impl Explorer {
             .connect(&self.options.dest_db_url)
             .await
             .context("Failed to connect to destination database")?;
-            
+
         Ok(pool)
     }
 
