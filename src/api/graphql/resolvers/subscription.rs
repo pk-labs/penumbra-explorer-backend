@@ -119,7 +119,6 @@ impl Root {
         Ok(futures_util::stream::select(initial, real_time).filter_map(|x| async move { x }))
     }
 
-    
     #[allow(clippy::unused_async)]
     async fn ibc_transactions(
         &self,
@@ -232,34 +231,29 @@ impl Root {
         Ok(combined_stream)
     }
 
-    
     #[allow(clippy::unused_async)]
     async fn total_shielded_volume(
         &self,
         ctx: &Context<'_>,
     ) -> Result<impl Stream<Item = TotalShieldedVolumeUpdate>> {
         let pubsub = ctx.data::<PubSub>()?.clone();
-        
+
         let _pool = Arc::new(ctx.data::<PgPool>()?.clone());
 
-        
         let initial_value = match TotalShieldedVolume::get(ctx).await {
             Ok(value) => value.value,
             Err(e) => {
-                
                 error!("Failed to get initial total shielded volume: {:?}", e);
                 "0".to_string()
             }
         };
 
-        
         let initial_stream = futures_util::stream::once(async move {
             TotalShieldedVolumeUpdate {
                 value: initial_value,
             }
         });
 
-        
         let receiver = pubsub.total_shielded_volume_subscribe();
         let stream = tokio_stream::wrappers::BroadcastStream::new(receiver);
 
@@ -273,7 +267,6 @@ impl Root {
             }
         });
 
-        
         Ok(initial_stream.chain(real_time_stream))
     }
 
@@ -361,7 +354,6 @@ impl Root {
         Ok(combined_stream)
     }
 
-    
     async fn latest_ibc_transactions(
         &self,
         ctx: &Context<'_>,
