@@ -147,7 +147,6 @@ async fn update_asset_price(
     timestamp: DateTime<Utc>,
     symbol: Option<String>,
 ) -> Result<(), anyhow::Error> {
-    // Validate the price before storing it
     let validated_price = validate_price(price_usd);
 
     if let Some(symbol_val) = &symbol {
@@ -190,7 +189,7 @@ async fn update_asset_price(
         "🟢 PRICE STORED: Updated price for asset {} (hex: {}): ${:.8} with symbol {:?}",
         String::from_utf8_lossy(asset_id),
         hex::encode(asset_id),
-        validated_price, // Log the validated price
+        validated_price,
         symbol.as_ref()
     );
 
@@ -291,9 +290,7 @@ async fn get_asset_price(
 fn extract_full_amount(value: &Value) -> u128 {
     debug!("Extracting amount from JSON: {}", value);
 
-    // First, try the old method that worked - getting amount.lo directly
     if let Some(amount_obj) = value.get("amount") {
-        // Case 1: {"amount":{"lo":"123456"}} - nested lo object
         if let Some(lo) = amount_obj.get("lo") {
             let lo_str = if let Value::String(s) = lo {
                 debug!("Found amount.lo as string: {}", s);
@@ -309,7 +306,6 @@ fn extract_full_amount(value: &Value) -> u128 {
             }
         }
 
-        // Case 2: {"amount":"123456"} - direct string
         if let Some(amount_str) = amount_obj.as_str() {
             debug!("Found direct amount string: {}", amount_str);
             if let Ok(amount) = amount_str.parse::<u128>() {
@@ -319,7 +315,6 @@ fn extract_full_amount(value: &Value) -> u128 {
         }
     }
 
-    // Fallback - nothing found
     debug!("Could not extract a valid amount, returning 0");
     0
 }
@@ -328,19 +323,16 @@ fn extract_full_amount(value: &Value) -> u128 {
 fn get_asset_decimals(asset_id: &[u8]) -> u32 {
     let asset_hex = hex::encode(asset_id);
 
-    // USDY - identified by known asset ID
     if asset_hex == "cc0d3c9eef0c7ff4e225eca85a3094603691d289aeaf428ab0d87319ad93a302" {
         debug!("Identified USDY with 12 decimals: {}", asset_hex);
         return 12;
     }
 
-    // USDC - standard 6 decimals
     if asset_id == USDC_ASSET_ID || asset_hex.contains("75736463") {
         debug!("Identified USDC with 6 decimals: {}", asset_hex);
         return 6;
     }
 
-    // Default to standard IBC token decimals
     DEFAULT_TOKEN_DECIMALS
 }
 /// Records an IBC transfer in the database
@@ -376,7 +368,6 @@ pub async fn record_transfer(
         }
     };
 
-    // Convert directly to i64 like in the original code
     let amount_numeric = amount_value.to_string().parse::<i64>().unwrap_or_default();
     debug!("Using amount for database storage: {}", amount_numeric);
 
@@ -387,7 +378,6 @@ pub async fn record_transfer(
             Some(price) if price > 0.0 => {
                 let validated_price = validate_price(price);
 
-                // Use fixed divisor of 1,000,000 as in the old code
                 let decimal_adjusted_amount = amount_numeric as f64 / 1_000_000.0;
                 let amount_usd = decimal_adjusted_amount * validated_price;
 
@@ -486,10 +476,8 @@ async fn update_client_stats_with_usd(
 
     debug!("Amount value for USD calculation: {}", amount_value);
 
-    // Keep original amount value
     let amount_for_calculation = amount_value;
 
-    // Skip stats update if amount is 0
     if amount_value == 0 {
         debug!("Amount is zero, skipping USD stats update");
         return Ok(());
@@ -1529,7 +1517,6 @@ pub async fn process_events(
                     .execute(dbtx.as_mut())
                     .await?;
 
-                    // Use "0" for pending transfers, just like in the old working code
                     let packet_amount = "0".to_string();
 
                     debug!(
