@@ -18,7 +18,7 @@ pub async fn resolve_ibc_stats(
         Some(TimePeriod::MONTH) => Some("30d".to_string()),
         Some(TimePeriod::ALL) | None => None,
     };
-    
+
     Stats::get_all(ctx, client_id, period_str, limit, offset).await
 }
 
@@ -36,7 +36,7 @@ pub async fn resolve_ibc_stats_by_client_id(
         Some(TimePeriod::MONTH) => Some("30d".to_string()),
         Some(TimePeriod::ALL) | None => None,
     };
-    
+
     Stats::get_by_client_id(ctx, client_id, period_str).await
 }
 
