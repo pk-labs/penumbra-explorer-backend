@@ -5,6 +5,7 @@ mod stats;
 mod subscription;
 mod transaction;
 
+use crate::api::graphql::types::inputs::TimePeriod;
 use async_graphql::Object;
 
 pub use block::{get as resolve_block, resolve_blocks, resolve_blocks_collection};
@@ -131,7 +132,7 @@ impl QueryRoot {
         &self,
         ctx: &async_graphql::Context<'_>,
         client_id: Option<String>,
-        time_period: Option<String>,
+        time_period: Option<TimePeriod>,
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> async_graphql::Result<Vec<crate::api::graphql::types::IbcStats>> {
@@ -142,7 +143,7 @@ impl QueryRoot {
         &self,
         ctx: &async_graphql::Context<'_>,
         client_id: String,
-        time_period: Option<String>,
+        time_period: Option<TimePeriod>,
     ) -> async_graphql::Result<Option<crate::api::graphql::types::IbcStats>> {
         resolve_ibc_stats_by_client_id(ctx, client_id, time_period).await
     }
