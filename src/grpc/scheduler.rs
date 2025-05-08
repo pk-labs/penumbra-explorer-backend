@@ -66,7 +66,6 @@ async fn check_client_channels(
             for (client_id, channels) in &client_channels {
                 if channels.is_empty() {
                     info!("Client: {} - No open channels found", client_id);
-                    // Still include the client in results with None for channels
                     results.push((client_id.clone(), None, None));
                 } else {
                     info!(
@@ -75,8 +74,6 @@ async fn check_client_channels(
                         channels.len()
                     );
 
-                    // For now, we'll just use the first channel for each client
-                    // We can later enhance this to handle multiple channels if needed
                     if let Some((_, channel_id, counterparty_channel_id)) = channels.first() {
                         info!(
                             "    Using primary channel: {}, Counterparty Channel: {}",
@@ -91,7 +88,6 @@ async fn check_client_channels(
                         results.push((client_id.clone(), None, None));
                     }
 
-                    // Log all channels
                     for (port_id, channel_id, counterparty_channel_id) in channels {
                         info!(
                             "    Port: {}, Channel: {}, Counterparty Channel: {}",
@@ -118,12 +114,9 @@ async fn check_ibc_clients(pool: &sqlx::PgPool) {
     info!("Running scheduled IBC client status check");
     let client = GrpcClient::new("grpc.penumbra.silentvalidator.com", 443);
 
-    // Check client statuses
     let _client_statuses = match check_client_statuses(&client).await {
         Ok(statuses) => {
-            // Update client statuses in the database
             for (client_id, status) in &statuses {
-                // We only update if the client ID already exists in the database
                 let result = sqlx::query(
                     r"
                     UPDATE ibc_clients 
@@ -149,12 +142,9 @@ async fn check_ibc_clients(pool: &sqlx::PgPool) {
         }
     };
 
-    // Check client channels
     match check_client_channels(&client).await {
         Ok(client_channels) => {
-            // Update channel information in the database
             for (client_id, channel_id, counterparty_channel_id) in client_channels {
-                // We only update if the client ID already exists in the database
                 let result = sqlx::query(
                     r"
                     UPDATE ibc_clients 
