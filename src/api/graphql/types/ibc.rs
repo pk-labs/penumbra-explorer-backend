@@ -23,6 +23,9 @@ pub struct ChannelPair {
 #[graphql(name = "IbcStats")]
 pub struct Stats {
     pub client_id: String,
+    pub status: Option<String>,
+    pub channel_id: Option<String>,
+    pub counterparty_channel_id: Option<String>,
     pub shielded_volume: String,
     pub shielded_tx_count: i64,
     pub unshielded_volume: String,
@@ -185,6 +188,9 @@ impl Stats {
         let mut query = format!(
             "SELECT
                 client_id,
+                status,
+                channel_id,
+                counterparty_channel_id,
                 shielded_volume::TEXT as shielded_volume,
                 shielded_tx_count,
                 unshielded_volume::TEXT as unshielded_volume,
@@ -215,6 +221,9 @@ impl Stats {
             .into_iter()
             .map(|row| Stats {
                 client_id: row.get("client_id"),
+                status: row.get("status"),
+                channel_id: row.get("channel_id"),
+                counterparty_channel_id: row.get("counterparty_channel_id"),
                 shielded_volume: row.get("shielded_volume"),
                 shielded_tx_count: row.get("shielded_tx_count"),
                 unshielded_volume: row.get("unshielded_volume"),
@@ -246,6 +255,9 @@ impl Stats {
         let row = sqlx::query(&format!(
             "SELECT
                 client_id,
+                status,
+                channel_id,
+                counterparty_channel_id,
                 shielded_volume::TEXT as shielded_volume,
                 shielded_tx_count,
                 unshielded_volume::TEXT as unshielded_volume,
@@ -262,6 +274,9 @@ impl Stats {
 
         Ok(row.map(|row| Stats {
             client_id: row.get("client_id"),
+            status: row.get("status"),
+            channel_id: row.get("channel_id"),
+            counterparty_channel_id: row.get("counterparty_channel_id"),
             shielded_volume: row.get("shielded_volume"),
             shielded_tx_count: row.get("shielded_tx_count"),
             unshielded_volume: row.get("unshielded_volume"),
