@@ -10,6 +10,7 @@ DROP VIEW IF EXISTS explorer_recent_blocks;
 DROP TABLE IF EXISTS ibc_transfers;
 DROP TABLE IF EXISTS ibc_stats;
 DROP TABLE IF EXISTS ibc_channels;
+DROP TABLE IF EXISTS ibc_connections;
 DROP TABLE IF EXISTS explorer_transactions;
 DROP TABLE IF EXISTS ibc_clients;
 DROP TABLE IF EXISTS explorer_block_details;
