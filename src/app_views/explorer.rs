@@ -247,10 +247,23 @@ impl AppView for Explorer {
 
         sqlx::query(
             r"
+            CREATE TABLE IF NOT EXISTS ibc_connections (
+                connection_id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL REFERENCES ibc_clients(client_id),
+                counterparty_connection_id TEXT,
+                state TEXT DEFAULT 'unknown'
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
             CREATE TABLE IF NOT EXISTS ibc_channels (
                 channel_id TEXT PRIMARY KEY,
-                client_id TEXT NOT NULL REFERENCES ibc_clients(client_id),
-                connection_id TEXT,
+                client_id TEXT REFERENCES ibc_clients(client_id),
+                connection_id TEXT REFERENCES ibc_connections(connection_id),
                 counterparty_channel_id TEXT
             )
             ",
