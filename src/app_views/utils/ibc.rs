@@ -554,7 +554,9 @@ async fn update_client_stats_with_usd(
                     );
                 }
                 Direction::Other => {
-                    debug!("Skipping USD stats update for 'other' IBC event - not a token transfer");
+                    debug!(
+                        "Skipping USD stats update for 'other' IBC event - not a token transfer"
+                    );
                 }
             }
 
@@ -929,20 +931,20 @@ fn is_ibc_event(event_kind: &str) -> bool {
     matches!(
         event_kind,
         "acknowledge_packet"
-        | "channel_open_ack"
-        | "channel_open_confirm"
-        | "channel_open_init"
-        | "channel_open_try"
-        | "connection_open_ack"
-        | "connection_open_confirm"
-        | "connection_open_init"
-        | "connection_open_try"
-        | "create_client"
-        | "recv_packet"
-        | "send_packet"
-        | "timeout_packet"
-        | "update_client"
-        | "write_acknowledgement"
+            | "channel_open_ack"
+            | "channel_open_confirm"
+            | "channel_open_init"
+            | "channel_open_try"
+            | "connection_open_ack"
+            | "connection_open_confirm"
+            | "connection_open_init"
+            | "connection_open_try"
+            | "create_client"
+            | "recv_packet"
+            | "send_packet"
+            | "timeout_packet"
+            | "update_client"
+            | "write_acknowledgement"
     )
 }
 
@@ -1287,7 +1289,8 @@ pub async fn process_events(
                     known_clients.push(client_id.to_string());
                 }
 
-                let counterparty_connection_id = find_attribute_value(event, "counterparty_connection_id");
+                let counterparty_connection_id =
+                    find_attribute_value(event, "counterparty_connection_id");
 
                 sqlx::query(
                     r"
@@ -1372,7 +1375,8 @@ pub async fn process_events(
                 .execute(dbtx.as_mut())
                 .await?;
 
-                let counterparty_connection_id = find_attribute_value(event, "counterparty_connection_id");
+                let counterparty_connection_id =
+                    find_attribute_value(event, "counterparty_connection_id");
 
                 sqlx::query(
                     r"
@@ -1392,11 +1396,15 @@ pub async fn process_events(
                 .execute(dbtx.as_mut())
                 .await?;
 
-                debug!("Processed connection_open_try: {} -> {}", connection_id, client_id);
+                debug!(
+                    "Processed connection_open_try: {} -> {}",
+                    connection_id, client_id
+                );
             }
         } else if event.event.kind.as_str() == "connection_open_ack" {
             if let Some(connection_id) = find_attribute_value(event, "connection_id") {
-                let counterparty_connection_id = find_attribute_value(event, "counterparty_connection_id");
+                let counterparty_connection_id =
+                    find_attribute_value(event, "counterparty_connection_id");
 
                 let client_id = sqlx::query_scalar::<_, Option<String>>(
                     "SELECT client_id FROM ibc_connections WHERE connection_id = $1",
@@ -1422,10 +1430,15 @@ pub async fn process_events(
                     .execute(dbtx.as_mut())
                     .await?;
 
-                    debug!("Processed connection_open_ack: {} <-> {:?}",
-                           connection_id, counterparty_connection_id);
+                    debug!(
+                        "Processed connection_open_ack: {} <-> {:?}",
+                        connection_id, counterparty_connection_id
+                    );
                 } else {
-                    warn!("Connection_open_ack for unknown connection: {}", connection_id);
+                    warn!(
+                        "Connection_open_ack for unknown connection: {}",
+                        connection_id
+                    );
                 }
             }
         } else if event.event.kind.as_str() == "connection_open_confirm" {
@@ -1533,7 +1546,10 @@ pub async fn process_events(
                     let memory_client_id = client_connections.get(connection_id).cloned();
 
                     if let Some(client_id) = memory_client_id {
-                        debug!("Creating missing connection {} with client {}", connection_id, client_id);
+                        debug!(
+                            "Creating missing connection {} with client {}",
+                            connection_id, client_id
+                        );
 
                         sqlx::query(
                             r"
@@ -1604,8 +1620,11 @@ pub async fn process_events(
     for event in events {
         let event_kind = event.event.kind.as_str();
 
-        if event_kind == "create_client" || event_kind == "connection_open_init" ||
-           event_kind == "channel_open_init" || event_kind == "channel_open_ack" {
+        if event_kind == "create_client"
+            || event_kind == "connection_open_init"
+            || event_kind == "channel_open_init"
+            || event_kind == "channel_open_ack"
+        {
             continue;
         }
 
@@ -1619,15 +1638,16 @@ pub async fn process_events(
                 .or(dst_channel);
 
             if let (Some(src_ch), Some(dst_ch)) = (src_channel, dst_channel) {
-
                 let (penumbra_channel, counterparty_channel) = match event_kind {
                     "recv_packet" | "write_acknowledgement" => (dst_ch, src_ch),
                     "send_packet" | "acknowledge_packet" | "timeout_packet" => (src_ch, dst_ch),
                     _ => continue,
                 };
 
-                debug!("Updating Penumbra channel {} mapping to counterparty {} from event {}",
-                       penumbra_channel, counterparty_channel, event_kind);
+                debug!(
+                    "Updating Penumbra channel {} mapping to counterparty {} from event {}",
+                    penumbra_channel, counterparty_channel, event_kind
+                );
 
                 sqlx::query(
                     r"
@@ -1678,7 +1698,10 @@ pub async fn process_events(
                 }
 
                 if let (Some(client), Some(ch_id)) = (&client_id_opt, channel_id) {
-                    debug!("Ensuring channel {} is associated with client {}", ch_id, client);
+                    debug!(
+                        "Ensuring channel {} is associated with client {}",
+                        ch_id, client
+                    );
 
                     sqlx::query(
                         r"
@@ -1704,7 +1727,10 @@ pub async fn process_events(
                     .await?;
 
                     if !client_exists {
-                        debug!("Creating missing client {} from IBC event {}", client_id, event_kind);
+                        debug!(
+                            "Creating missing client {} from IBC event {}",
+                            client_id, event_kind
+                        );
 
                         sqlx::query(
                             r"
@@ -1740,7 +1766,9 @@ pub async fn process_events(
 
                     debug!(
                         "Recording IBC event {} as 'other' direction with client_id={}, tx_hash={}",
-                        event_kind, client_id, hex::encode(tx_hash)
+                        event_kind,
+                        client_id,
+                        hex::encode(tx_hash)
                     );
 
                     sqlx::query(
@@ -1858,7 +1886,6 @@ pub async fn process_events(
                     find_attribute_value(event, "channel_id"),
                     find_attribute_value(event, "counterparty_channel_id"),
                 ) {
-
                     debug!(
                         "Processing {} for Penumbra channel {} with counterparty channel {}",
                         event_kind, channel_id, counterparty_channel_id
@@ -1974,7 +2001,6 @@ pub async fn process_events(
                     Direction::Inbound => (dst_channel, src_channel),
                     Direction::Outbound | Direction::Other => (src_channel, dst_channel),
                 };
-
 
                 debug!(
                     "Updating Penumbra channel {} with counterparty {} (direction: {})",
@@ -2471,7 +2497,10 @@ pub async fn process_events(
                         resolved_client_id = db_client_id.flatten();
 
                         if resolved_client_id.is_some() {
-                            debug!("Found client directly using counterparty channel {}", channel_id);
+                            debug!(
+                                "Found client directly using counterparty channel {}",
+                                channel_id
+                            );
                         }
                     }
 
@@ -2770,7 +2799,6 @@ pub async fn process_events(
                     resolved_client_id = db_client_id.flatten();
 
                     if resolved_client_id.is_none() {
-
                         warn!(
                             "Cannot associate channel {}: no client mapping found in database",
                             channel_id
@@ -2883,9 +2911,7 @@ pub async fn process_events(
 
 /// Cleans up any incorrectly stored counterparty channels from the database
 /// This helps to fix any issues caused by past bugs that created entries for non-Penumbra channels
-async fn cleanup_counterparty_channels(
-    dbtx: &mut PgTransaction<'_>,
-) -> Result<(), anyhow::Error> {
+async fn cleanup_counterparty_channels(dbtx: &mut PgTransaction<'_>) -> Result<(), anyhow::Error> {
     debug!("Running counterparty channel cleanup");
 
     let rows = sqlx::query(
@@ -2903,25 +2929,24 @@ async fn cleanup_counterparty_channels(
         let channel_a: String = row.get("channel_a");
         let channel_b: String = row.get("channel_b");
 
-        let (penumbra_channel, counterparty_channel) = if channel_a.starts_with("channel-") && !channel_a[8..].contains('-') {
-            (channel_a, channel_b)
-        } else if channel_b.starts_with("channel-") && !channel_b[8..].contains('-') {
-            (channel_b, channel_a)
-        } else {
-            // Can't determine which is Penumbra channel, skip
-            continue;
-        };
+        let (penumbra_channel, counterparty_channel) =
+            if channel_a.starts_with("channel-") && !channel_a[8..].contains('-') {
+                (channel_a, channel_b)
+            } else if channel_b.starts_with("channel-") && !channel_b[8..].contains('-') {
+                (channel_b, channel_a)
+            } else {
+                // Can't determine which is Penumbra channel, skip
+                continue;
+            };
 
         // Clone the counterparty_channel for the debug message
         let counterparty_channel_str = counterparty_channel.clone();
 
         // Remove the counterparty channel entry
-        let rows_affected = sqlx::query(
-            "DELETE FROM ibc_channels WHERE channel_id = $1",
-        )
-        .bind(counterparty_channel)
-        .execute(dbtx.as_mut())
-        .await?;
+        let rows_affected = sqlx::query("DELETE FROM ibc_channels WHERE channel_id = $1")
+            .bind(counterparty_channel)
+            .execute(dbtx.as_mut())
+            .await?;
 
         if rows_affected.rows_affected() > 0 {
             debug!(
@@ -2954,23 +2979,19 @@ async fn cleanup_counterparty_channels(
         // Keep the Penumbra channel (more likely to start with channel-)
         // And remove the counterparty channel
         if channel_1.starts_with("channel-") && !channel_2.starts_with("channel-") {
-            let rows_affected = sqlx::query(
-                "DELETE FROM ibc_channels WHERE channel_id = $1",
-            )
-            .bind(&channel_2)
-            .execute(dbtx.as_mut())
-            .await?;
+            let rows_affected = sqlx::query("DELETE FROM ibc_channels WHERE channel_id = $1")
+                .bind(&channel_2)
+                .execute(dbtx.as_mut())
+                .await?;
 
             if rows_affected.rows_affected() > 0 {
                 debug!("Kept {} and removed {}", channel_1, channel_2);
             }
         } else {
-            let rows_affected = sqlx::query(
-                "DELETE FROM ibc_channels WHERE channel_id = $1",
-            )
-            .bind(&channel_1)
-            .execute(dbtx.as_mut())
-            .await?;
+            let rows_affected = sqlx::query("DELETE FROM ibc_channels WHERE channel_id = $1")
+                .bind(&channel_1)
+                .execute(dbtx.as_mut())
+                .await?;
 
             if rows_affected.rows_affected() > 0 {
                 debug!("Kept {} and removed {}", channel_2, channel_1);
@@ -2988,7 +3009,7 @@ async fn cleanup_counterparty_channels(
           AND a.client_id IS NULL
           AND b.client_id IS NOT NULL
           AND a.channel_id LIKE 'channel-%'
-        "
+        ",
     )
     .execute(dbtx.as_mut())
     .await?;
@@ -3001,11 +3022,10 @@ async fn cleanup_counterparty_channels(
     }
 
     // Also delete any channel that doesn't match Penumbra's channel format
-    let rows_affected = sqlx::query(
-        "DELETE FROM ibc_channels WHERE channel_id NOT LIKE 'channel-%'"
-    )
-    .execute(dbtx.as_mut())
-    .await?;
+    let rows_affected =
+        sqlx::query("DELETE FROM ibc_channels WHERE channel_id NOT LIKE 'channel-%'")
+            .execute(dbtx.as_mut())
+            .await?;
 
     if rows_affected.rows_affected() > 0 {
         debug!(
