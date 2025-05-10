@@ -2461,8 +2461,6 @@ pub async fn process_events(
 
                     let mut resolved_client_id: Option<String> = None;
 
-                    // For inbound transfers, the channel_id in meta is the counterparty channel ID
-                    // We need to find the local Penumbra channel ID that corresponds to this counterparty channel
                     let local_channel = sqlx::query_scalar::<_, Option<String>>(
                         "SELECT channel_id FROM ibc_channels WHERE counterparty_channel_id = $1",
                     )
@@ -2476,7 +2474,6 @@ pub async fn process_events(
                             local_channel_id, channel_id
                         );
 
-                        // Now use the local channel ID to look up the client ID
                         let db_client_id = sqlx::query_scalar::<_, Option<String>>(
                             "SELECT client_id FROM ibc_channels WHERE channel_id = $1",
                         )
@@ -2486,7 +2483,6 @@ pub async fn process_events(
 
                         resolved_client_id = db_client_id.flatten();
                     } else {
-                        // Fall back to direct lookup as before (for backward compatibility)
                         let db_client_id = sqlx::query_scalar::<_, Option<String>>(
                             "SELECT client_id FROM ibc_channels WHERE channel_id = $1",
                         )
@@ -2935,14 +2931,11 @@ async fn cleanup_counterparty_channels(dbtx: &mut PgTransaction<'_>) -> Result<(
             } else if channel_b.starts_with("channel-") && !channel_b[8..].contains('-') {
                 (channel_b, channel_a)
             } else {
-                // Can't determine which is Penumbra channel, skip
                 continue;
             };
 
-        // Clone the counterparty_channel for the debug message
         let counterparty_channel_str = counterparty_channel.clone();
 
-        // Remove the counterparty channel entry
         let rows_affected = sqlx::query("DELETE FROM ibc_channels WHERE channel_id = $1")
             .bind(counterparty_channel)
             .execute(dbtx.as_mut())
@@ -2976,8 +2969,6 @@ async fn cleanup_counterparty_channels(dbtx: &mut PgTransaction<'_>) -> Result<(
             channel_1, channel_2
         );
 
-        // Keep the Penumbra channel (more likely to start with channel-)
-        // And remove the counterparty channel
         if channel_1.starts_with("channel-") && !channel_2.starts_with("channel-") {
             let rows_affected = sqlx::query("DELETE FROM ibc_channels WHERE channel_id = $1")
                 .bind(&channel_2)
@@ -2999,7 +2990,6 @@ async fn cleanup_counterparty_channels(dbtx: &mut PgTransaction<'_>) -> Result<(
         }
     }
 
-    // Ensure client_id is not null for all Penumbra channels
     let client_updates = sqlx::query(
         r"
         UPDATE ibc_channels a
@@ -3021,7 +3011,6 @@ async fn cleanup_counterparty_channels(dbtx: &mut PgTransaction<'_>) -> Result<(
         );
     }
 
-    // Also delete any channel that doesn't match Penumbra's channel format
     let rows_affected =
         sqlx::query("DELETE FROM ibc_channels WHERE channel_id NOT LIKE 'channel-%'")
             .execute(dbtx.as_mut())
