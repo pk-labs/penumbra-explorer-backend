@@ -1621,11 +1621,8 @@ pub async fn process_events(
             if let (Some(src_ch), Some(dst_ch)) = (src_channel, dst_channel) {
 
                 let (penumbra_channel, counterparty_channel) = match event_kind {
-                    "recv_packet" => (dst_ch, src_ch),
-                    "send_packet" => (src_ch, dst_ch),
-                    "write_acknowledgement" => (dst_ch, src_ch),
-                    "acknowledge_packet" => (src_ch, dst_ch),
-                    "timeout_packet" => (src_ch, dst_ch),
+                    "recv_packet" | "write_acknowledgement" => (dst_ch, src_ch),
+                    "send_packet" | "acknowledge_packet" | "timeout_packet" => (src_ch, dst_ch),
                     _ => continue,
                 };
 
