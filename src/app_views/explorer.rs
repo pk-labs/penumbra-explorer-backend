@@ -407,9 +407,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         tx_stats AS (
             SELECT
                 t.ibc_client_id as client_id,
+                -- Shielded: Inbound token transfers with status completed
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                -- Unshielded: Outbound token transfers with status completed
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                -- Total: ALL transactions with status completed (all directions)
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                -- Pending: All transactions with status pending
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                -- Expired: All transactions with status expired
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
             FROM
                 explorer_transactions t
@@ -428,7 +434,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             COALESCE(v.unshielded_volume, 0) as unshielded_volume,
             COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
             (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
-            (COALESCE(t.shielded_tx_count, 0) + COALESCE(t.unshielded_tx_count, 0)) as total_tx_count,
+            COALESCE(t.completed_tx_count, 0) as total_tx_count,
             COALESCE(t.pending_tx_count, 0) as pending_tx_count,
             COALESCE(t.expired_tx_count, 0) as expired_tx_count,
             v.last_updated
@@ -473,9 +479,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         tx_stats AS (
             SELECT
                 t.ibc_client_id as client_id,
+                -- Shielded: Inbound token transfers with status completed
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                -- Unshielded: Outbound token transfers with status completed
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                -- Total: ALL transactions with status completed (all directions)
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                -- Pending: All transactions with status pending
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                -- Expired: All transactions with status expired
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
             FROM
                 explorer_transactions t
@@ -495,7 +507,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             COALESCE(v.unshielded_volume, 0) as unshielded_volume,
             COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
             (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
-            (COALESCE(t.shielded_tx_count, 0) + COALESCE(t.unshielded_tx_count, 0)) as total_tx_count,
+            COALESCE(t.completed_tx_count, 0) as total_tx_count,
             COALESCE(t.pending_tx_count, 0) as pending_tx_count,
             COALESCE(t.expired_tx_count, 0) as expired_tx_count,
             v.last_updated
@@ -540,9 +552,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         tx_stats AS (
             SELECT
                 t.ibc_client_id as client_id,
+                -- Shielded: Inbound token transfers with status completed
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                -- Unshielded: Outbound token transfers with status completed
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                -- Total: ALL transactions with status completed (all directions)
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                -- Pending: All transactions with status pending
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                -- Expired: All transactions with status expired
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
             FROM
                 explorer_transactions t
@@ -562,7 +580,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             COALESCE(v.unshielded_volume, 0) as unshielded_volume,
             COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
             (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
-            (COALESCE(t.shielded_tx_count, 0) + COALESCE(t.unshielded_tx_count, 0)) as total_tx_count,
+            COALESCE(t.completed_tx_count, 0) as total_tx_count,
             COALESCE(t.pending_tx_count, 0) as pending_tx_count,
             COALESCE(t.expired_tx_count, 0) as expired_tx_count,
             v.last_updated
@@ -594,7 +612,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 COALESCE(v.unshielded_volume, 0) as unshielded_volume,
                 COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
                 (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
-                (COALESCE(t.shielded_tx_count, 0) + COALESCE(t.unshielded_tx_count, 0)) as total_tx_count,
+                COALESCE(t.completed_tx_count, 0) as total_tx_count,
                 COALESCE(t.pending_tx_count, 0) as pending_tx_count,
                 COALESCE(t.expired_tx_count, 0) as expired_tx_count,
                 v.last_updated
@@ -614,9 +632,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             LEFT JOIN (
                 SELECT
                     t.ibc_client_id as client_id,
+                    -- Shielded: Inbound token transfers with status completed
                     COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                    -- Unshielded: Outbound token transfers with status completed
                     COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                    -- Total: ALL transactions with status completed (all directions)
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                    -- Pending: All transactions with status pending
                     COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                    -- Expired: All transactions with status expired
                     COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
                 FROM
                     explorer_transactions t
@@ -640,7 +664,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 COALESCE(v.unshielded_volume, 0) as unshielded_volume,
                 COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
                 (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
-                (COALESCE(t.shielded_tx_count, 0) + COALESCE(t.unshielded_tx_count, 0)) as total_tx_count,
+                COALESCE(t.completed_tx_count, 0) as total_tx_count,
                 COALESCE(t.pending_tx_count, 0) as pending_tx_count,
                 COALESCE(t.expired_tx_count, 0) as expired_tx_count,
                 v.last_updated
@@ -662,9 +686,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             LEFT JOIN (
                 SELECT
                     t.ibc_client_id as client_id,
+                    -- Shielded: Inbound token transfers with status completed
                     COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                    -- Unshielded: Outbound token transfers with status completed
                     COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                    -- Total: ALL transactions with status completed (all directions)
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                    -- Pending: All transactions with status pending
                     COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                    -- Expired: All transactions with status expired
                     COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
                 FROM
                     explorer_transactions t
@@ -689,7 +719,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 COALESCE(v.unshielded_volume, 0) as unshielded_volume,
                 COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
                 (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
-                (COALESCE(t.shielded_tx_count, 0) + COALESCE(t.unshielded_tx_count, 0)) as total_tx_count,
+                COALESCE(t.completed_tx_count, 0) as total_tx_count,
                 COALESCE(t.pending_tx_count, 0) as pending_tx_count,
                 COALESCE(t.expired_tx_count, 0) as expired_tx_count,
                 v.last_updated
@@ -711,9 +741,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             LEFT JOIN (
                 SELECT
                     t.ibc_client_id as client_id,
+                    -- Shielded: Inbound token transfers with status completed
                     COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                    -- Unshielded: Outbound token transfers with status completed
                     COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                    -- Total: ALL transactions with status completed (all directions)
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                    -- Pending: All transactions with status pending
                     COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                    -- Expired: All transactions with status expired
                     COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
                 FROM
                     explorer_transactions t
