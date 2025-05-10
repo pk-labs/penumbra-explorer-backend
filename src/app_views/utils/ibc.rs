@@ -2438,18 +2438,49 @@ pub async fn process_events(
 
                     let mut resolved_client_id: Option<String> = None;
 
-                    let db_client_id = sqlx::query_scalar::<_, Option<String>>(
-                        "SELECT client_id FROM ibc_channels WHERE channel_id = $1",
+                    // For inbound transfers, the channel_id in meta is the counterparty channel ID
+                    // We need to find the local Penumbra channel ID that corresponds to this counterparty channel
+                    let local_channel = sqlx::query_scalar::<_, Option<String>>(
+                        "SELECT channel_id FROM ibc_channels WHERE counterparty_channel_id = $1",
                     )
                     .bind(channel_id)
                     .fetch_optional(dbtx.as_mut())
                     .await?;
 
-                    resolved_client_id = db_client_id.flatten();
+                    if let Some(local_channel_id) = local_channel {
+                        debug!(
+                            "Found local channel {:?} matching counterparty channel {}",
+                            local_channel_id, channel_id
+                        );
+
+                        // Now use the local channel ID to look up the client ID
+                        let db_client_id = sqlx::query_scalar::<_, Option<String>>(
+                            "SELECT client_id FROM ibc_channels WHERE channel_id = $1",
+                        )
+                        .bind(&local_channel_id)
+                        .fetch_optional(dbtx.as_mut())
+                        .await?;
+
+                        resolved_client_id = db_client_id.flatten();
+                    } else {
+                        // Fall back to direct lookup as before (for backward compatibility)
+                        let db_client_id = sqlx::query_scalar::<_, Option<String>>(
+                            "SELECT client_id FROM ibc_channels WHERE channel_id = $1",
+                        )
+                        .bind(channel_id)
+                        .fetch_optional(dbtx.as_mut())
+                        .await?;
+
+                        resolved_client_id = db_client_id.flatten();
+
+                        if resolved_client_id.is_some() {
+                            debug!("Found client directly using counterparty channel {}", channel_id);
+                        }
+                    }
 
                     if resolved_client_id.is_none() {
                         warn!(
-                            "Cannot attribute transfer: no client mapping found in database for channel {}",
+                            "Cannot attribute inbound transfer: no client mapping found for counterparty channel {}",
                             channel_id
                         );
                     }
