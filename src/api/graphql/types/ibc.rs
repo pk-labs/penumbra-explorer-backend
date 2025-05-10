@@ -41,6 +41,7 @@ pub struct Stats {
     pub unshielded_tx_count: i64,
     pub pending_tx_count: i64,
     pub expired_tx_count: i64,
+    pub total_tx_count: i64,
     #[graphql(name = "lastUpdated")]
     pub last_updated: Option<DateTime>,
 }
@@ -218,6 +219,7 @@ impl Stats {
                 unshielded_tx_count,
                 pending_tx_count,
                 expired_tx_count,
+                total_tx_count,
                 last_updated
             FROM {view_name}"
         );
@@ -254,6 +256,7 @@ impl Stats {
                 unshielded_tx_count: row.get("unshielded_tx_count"),
                 pending_tx_count: row.get("pending_tx_count"),
                 expired_tx_count: row.get("expired_tx_count"),
+                total_tx_count: row.get("total_tx_count"),
                 last_updated: row
                     .get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_updated")
                     .map(DateTime),
@@ -288,6 +291,7 @@ impl Stats {
                 unshielded_tx_count,
                 pending_tx_count,
                 expired_tx_count,
+                total_tx_count,
                 last_updated
             FROM {view_name}
             WHERE client_id = $1"
@@ -307,6 +311,7 @@ impl Stats {
             unshielded_tx_count: row.get("unshielded_tx_count"),
             pending_tx_count: row.get("pending_tx_count"),
             expired_tx_count: row.get("expired_tx_count"),
+            total_tx_count: row.get("total_tx_count"),
             last_updated: row
                 .get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_updated")
                 .map(DateTime),
