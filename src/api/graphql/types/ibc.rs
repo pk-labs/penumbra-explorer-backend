@@ -1,6 +1,15 @@
 use crate::api::graphql::scalars::DateTime;
-use async_graphql::{Context, Result, SimpleObject};
+use async_graphql::{Context, Enum, Result, SimpleObject};
 use sqlx::Row;
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "camelCase")]
+pub enum ClientStatus {
+    Active,
+    Expired,
+    Frozen,
+    Unknown,
+}
 
 #[derive(SimpleObject)]
 #[graphql(rename_fields = "camelCase")]
@@ -23,7 +32,7 @@ pub struct ChannelPair {
 #[graphql(name = "IbcStats")]
 pub struct Stats {
     pub client_id: String,
-    pub status: Option<String>,
+    pub status: ClientStatus,
     pub channel_id: Option<String>,
     pub counterparty_channel_id: Option<String>,
     pub shielded_volume: String,
@@ -156,6 +165,18 @@ impl ChannelPair {
     }
 }
 
+impl ClientStatus {
+    /// Converts a string status to a `ClientStatus` enum
+    fn from_str(status: Option<&str>) -> Self {
+        match status {
+            Some("Active") => Self::Active,
+            Some("Expired") => Self::Expired,
+            Some("Frozen") => Self::Frozen,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 impl Stats {
     /// Gets the appropriate view name based on the time period
     fn get_view_name(time_period: Option<&str>) -> &'static str {
@@ -205,7 +226,8 @@ impl Stats {
             query.push_str(" WHERE client_id = $1");
         }
 
-        query.push_str(" ORDER BY client_id");
+        // Order first by status (Active first), then by shielded_tx_count (descending)
+        query.push_str(" ORDER BY CASE WHEN status = 'Active' THEN 0 ELSE 1 END, shielded_tx_count DESC");
         query.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
 
         let rows = if let Some(client_id_val) = client_id {
@@ -221,7 +243,7 @@ impl Stats {
             .into_iter()
             .map(|row| Stats {
                 client_id: row.get("client_id"),
-                status: row.get("status"),
+                status: ClientStatus::from_str(row.get("status")),
                 channel_id: row.get("channel_id"),
                 counterparty_channel_id: row.get("counterparty_channel_id"),
                 shielded_volume: row.get("shielded_volume"),
@@ -274,7 +296,7 @@ impl Stats {
 
         Ok(row.map(|row| Stats {
             client_id: row.get("client_id"),
-            status: row.get("status"),
+            status: ClientStatus::from_str(row.get("status")),
             channel_id: row.get("channel_id"),
             counterparty_channel_id: row.get("counterparty_channel_id"),
             shielded_volume: row.get("shielded_volume"),
