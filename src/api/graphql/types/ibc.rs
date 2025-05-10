@@ -227,7 +227,9 @@ impl Stats {
         }
 
         // Order first by status (Active first), then by shielded_tx_count (descending)
-        query.push_str(" ORDER BY CASE WHEN status = 'Active' THEN 0 ELSE 1 END, shielded_tx_count DESC");
+        query.push_str(
+            " ORDER BY CASE WHEN status = 'Active' THEN 0 ELSE 1 END, shielded_tx_count DESC",
+        );
         query.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
 
         let rows = if let Some(client_id_val) = client_id {
