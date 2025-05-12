@@ -1073,7 +1073,11 @@ pub async fn update_transfer_status(
 ///
 /// # Returns
 /// * `Result<Option<String>>` - The most reliable client ID if found
-/// Get the most reliable client ID using IBC connection and channel relationships
+///
+///   Get the most reliable client ID using IBC connection and channel relationships
+///
+/// # Errors
+/// * Returns an error if database queries fail
 ///
 /// # Arguments
 /// * `dbtx` - Database transaction
@@ -2643,7 +2647,7 @@ pub async fn process_events(
                             ).await?;
 
                             if resolved_client_id.is_some() {
-                                channel_for_transfer = penumbra_channel.clone();
+                                channel_for_transfer.clone_from(penumbra_channel);
 
                                 debug!(
                         "Successfully resolved client ID {} for inbound transfer using sequence {}",
