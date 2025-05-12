@@ -411,8 +411,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
                 -- Unshielded: Outbound token transfers with status completed
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
-                -- Total: ALL transactions with status completed (all directions)
-                COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                -- Total: ALL transactions (regardless of status)
+                COUNT(DISTINCT t.tx_hash) as completed_tx_count,
                 -- Pending: All transactions with status pending
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
                 -- Expired: All transactions with status expired
@@ -483,8 +483,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
                 -- Unshielded: Outbound token transfers with status completed
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
-                -- Total: ALL transactions with status completed (all directions)
-                COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                -- Total: ALL transactions (regardless of status)
+                COUNT(DISTINCT t.tx_hash) as completed_tx_count,
                 -- Pending: All transactions with status pending
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
                 -- Expired: All transactions with status expired
@@ -556,8 +556,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
                 -- Unshielded: Outbound token transfers with status completed
                 COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
-                -- Total: ALL transactions with status completed (all directions)
-                COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                -- Total: ALL transactions (regardless of status)
+                COUNT(DISTINCT t.tx_hash) as completed_tx_count,
                 -- Pending: All transactions with status pending
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
                 -- Expired: All transactions with status expired
