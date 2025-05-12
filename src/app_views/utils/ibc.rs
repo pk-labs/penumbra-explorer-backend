@@ -1073,19 +1073,24 @@ pub async fn update_transfer_status(
 ///
 /// # Returns
 /// * `Result<Option<String>>` - The most reliable client ID if found
+/// Get the most reliable client ID using IBC connection and channel relationships
+///
+/// # Arguments
+/// * `dbtx` - Database transaction
+/// * `channel_id` - The channel ID
+/// * `connection_id` - Connection ID (highest priority for lookup)
+///
+/// # Returns
+/// * `Result<Option<String>>` - The most reliable client ID if found
 pub async fn get_reliable_client_id(
     dbtx: &mut PgTransaction<'_>,
     channel_id: &str,
-    counterparty_channel_id: Option<&str>,
     connection_id: Option<&str>,
 ) -> Result<Option<String>, anyhow::Error> {
-    debug!(
-        "Looking up client ID for channel={}, counterparty={:?}, connection={:?}",
-        channel_id, counterparty_channel_id, connection_id
-    );
-
-    // Try connection ID first (most reliable)
+    // HIGHEST PRIORITY: Direct connection ID lookup
     if let Some(conn_id) = connection_id {
+        debug!("Looking up client ID using connection ID {}", conn_id);
+
         let conn_client_id = sqlx::query_scalar::<_, Option<String>>(
             "SELECT client_id FROM ibc_connections WHERE connection_id = $1 AND client_id IS NOT NULL",
         )
@@ -1103,7 +1108,7 @@ pub async fn get_reliable_client_id(
         }
     }
 
-    // Try channel to connection join
+    // SECOND PRIORITY: Try channel -> connection join
     let channel_conn_client = sqlx::query_scalar::<_, Option<String>>(
         r"
         SELECT c.client_id
@@ -1120,13 +1125,12 @@ pub async fn get_reliable_client_id(
 
     if let Some(client_id) = &channel_conn_client {
         debug!(
-            "Found client ID {} via channel {} connection join",
+            "Found client ID {} via channel {} -> connection join",
             client_id, channel_id
         );
         return Ok(Some(client_id.clone()));
     }
 
-    // Direct channel lookup
     let direct_client = sqlx::query_scalar::<_, Option<String>>(
         "SELECT client_id FROM ibc_channels WHERE channel_id = $1 AND client_id IS NOT NULL",
     )
@@ -1143,39 +1147,9 @@ pub async fn get_reliable_client_id(
         return Ok(Some(client_id.clone()));
     }
 
-    // Try via counterparty channel
-    if let Some(counterparty) = counterparty_channel_id {
-        let local_channel = sqlx::query_scalar::<_, Option<String>>(
-            "SELECT channel_id FROM ibc_channels WHERE counterparty_channel_id = $1 AND channel_id LIKE 'channel-%'",
-        )
-            .bind(counterparty)
-            .fetch_optional(dbtx.as_mut())
-            .await?
-            .flatten();
-
-        if let Some(local) = &local_channel {
-            let counterparty_client = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT client_id FROM ibc_channels WHERE channel_id = $1 AND client_id IS NOT NULL",
-            )
-                .bind(local)
-                .fetch_optional(dbtx.as_mut())
-                .await?
-                .flatten();
-
-            if let Some(client_id) = &counterparty_client {
-                debug!(
-                    "Found client ID {} via counterparty channel {} -> local channel {}",
-                    client_id, counterparty, local
-                );
-                return Ok(Some(client_id.clone()));
-            }
-        }
-    }
-
-    debug!("No reliable client ID found for channel {}", channel_id);
+    debug!("No client ID found for channel {}", channel_id);
     Ok(None)
 }
-
 #[allow(
     clippy::too_many_lines,
     clippy::cast_possible_wrap,
@@ -1220,6 +1194,31 @@ pub async fn process_events(
 
     let client_connections: HashMap<String, String> = HashMap::new();
     let connection_channels: HashMap<String, String> = HashMap::new();
+
+    // Create a map to store packet information for cross-referencing
+    // This maps sequence -> (penumbra_channel, counterparty_channel, connection_id)
+    let mut packet_info: HashMap<String, (String, String, String)> = HashMap::new();
+
+    // First pass - collect recv_packet information to properly map channel IDs
+    for event in events {
+        if event.event.kind.as_str() == "recv_packet" {
+            if let (Some(src_channel), Some(dst_channel), Some(sequence), Some(connection)) = (
+                find_attribute_value(event, "packet_src_channel"),
+                find_attribute_value(event, "packet_dst_channel"),
+                find_attribute_value(event, "packet_sequence"),
+                find_attribute_value(event, "packet_connection"),
+            ) {
+                // Store mapping of sequence to penumbra channel, counterparty channel, and connection
+                packet_info.insert(
+                    sequence.to_string(),
+                    (dst_channel.to_string(), src_channel.to_string(), connection.to_string())
+                );
+
+                debug!("Cached packet info for sequence {}: penumbra_channel={}, counterparty_channel={}, connection={}",
+                sequence, dst_channel, src_channel, connection);
+            }
+        }
+    }
 
     let mut refunded_sequences: HashMap<String, bool> = HashMap::new();
     let mut error_acknowledgments: HashMap<String, bool> = HashMap::new();
@@ -2100,9 +2099,9 @@ pub async fn process_events(
                     continue;
                 };
 
+                let connection_id = find_attribute_value(event, "packet_connection");
+
                 let packet_data = find_attribute_value(event, "packet_data").unwrap_or_default();
-                // Get connection_id if available for more reliable lookup
-                let connection_id = find_attribute_value(event, "connection_id");
 
                 let direction = if packet_data.contains("\"receiver\":\"penumbra") {
                     Direction::Inbound
@@ -2118,8 +2117,8 @@ pub async fn process_events(
                 };
 
                 debug!(
-        "Updating Penumbra channel {} with counterparty {} (direction: {})",
-        our_channel, counterparty_channel, direction
+        "Processing send_packet: our_channel={}, counterparty={}, connection={:?}",
+        our_channel, counterparty_channel, connection_id
     );
 
                 sqlx::query(
@@ -2133,11 +2132,6 @@ pub async fn process_events(
                     .bind(counterparty_channel)
                     .execute(dbtx.as_mut())
                     .await?;
-
-                debug!(
-        "Checking if counterparty channel {} was stored incorrectly",
-        counterparty_channel
-    );
 
                 let rows_affected = sqlx::query(
                     r"
@@ -2156,18 +2150,16 @@ pub async fn process_events(
         );
                 }
 
-                // Use the new robust client ID lookup function
                 let reliable_client_id = get_reliable_client_id(
                     dbtx,
                     our_channel,
-                    Some(counterparty_channel),
                     connection_id
                 ).await?;
 
                 if let Some(client_id) = reliable_client_id {
                     debug!(
-            "Found reliable client ID {} for channel {}",
-            client_id, our_channel
+            "Found reliable client ID {} for send_packet on channel {} with connection {:?}",
+            client_id, our_channel, connection_id
         );
 
                     if let Some(tx_hash) = event.tx_hash() {
@@ -2208,11 +2200,6 @@ pub async fn process_events(
 
                         let packet_amount = "0".to_string();
 
-                        debug!(
-                "Using packet amount for pending transfer: {}",
-                packet_amount
-            );
-
                         if let Err(e) = record_transfer(
                             dbtx,
                             &client_id,
@@ -2236,8 +2223,8 @@ pub async fn process_events(
                     }
                 } else {
                     warn!(
-            "Cannot associate channel {}: no client mapping found",
-            our_channel
+            "Cannot determine client ID for channel {} with connection {:?}",
+            our_channel, connection_id
         );
                 }
             }
@@ -2250,31 +2237,31 @@ pub async fn process_events(
                     continue;
                 };
 
-                let connection_id = find_attribute_value(event, "connection_id");
+                let connection_id = find_attribute_value(event, "packet_connection");
 
-                // For recv_packet, dst_channel is the Penumbra channel
                 let our_channel = dst_channel;
                 let counterparty_channel = src_channel;
 
-                // Use our new robust client_id lookup function
+                debug!(
+        "Processing recv_packet: our_channel={}, counterparty={}, connection={:?}",
+        our_channel, counterparty_channel, connection_id
+    );
+
                 let reliable_client_id = get_reliable_client_id(
                     dbtx,
                     our_channel,
-                    Some(counterparty_channel),
-                    connection_id,
+                    connection_id
                 ).await?;
 
                 if let Some(client_id) = reliable_client_id {
-                    if let Some(tx_hash) = event.tx_hash() {
-                        debug!(
-                "Processing recv_packet event: channel={}, client={}, sequence={}",
-                our_channel, client_id, sequence
-            );
+                    debug!(
+            "Found reliable client ID {} for recv_packet on channel {} with connection {:?}",
+            client_id, our_channel, connection_id
+        );
 
-                        // Create pseudo-sequence for recv packets
+                    if let Some(tx_hash) = event.tx_hash() {
                         let pseudo_sequence = format!("recv_{}", hex::encode(&tx_hash[0..8]));
 
-                        // Update explorer_transactions
                         sqlx::query(
                             r"
                 UPDATE explorer_transactions
@@ -2296,26 +2283,33 @@ pub async fn process_events(
                             .execute(dbtx.as_mut())
                             .await?;
 
-                        // Update any related ibc_transfers
-                        sqlx::query(
-                            r"
-                UPDATE ibc_transfers
-                SET client_id = $2
-                WHERE tx_hash = $1
-                ",
+                        if let Err(e) = record_transfer(
+                            dbtx,
+                            &client_id,
+                            our_channel,
+                            Direction::Inbound,
+                            "0",
+                            timestamp,
+                            Some(tx_hash.to_vec()),
+                            TransactionStatus::Completed,
+                            None,
                         )
-                            .bind(tx_hash)
-                            .bind(&client_id)
-                            .execute(dbtx.as_mut())
-                            .await?;
+                            .await {
+                            error!("Failed to record recv_packet as completed transfer: {}", e);
+                        }
+
+                        debug!(
+                "Processed recv_packet for channel {} with client {}",
+                our_channel, client_id
+            );
                     }
                 } else {
                     warn!(
-            "Cannot determine client ID for recv_packet on channel {}",
-            our_channel
+            "Cannot determine client ID for recv_packet on channel {} with connection {:?}",
+            our_channel, connection_id
         );
                 }
-            },
+            }
             "acknowledge_packet" => {
                 let (Some(src_channel), Some(dst_channel), Some(sequence)) = (
                     find_attribute_value(event, "packet_src_channel"),
@@ -2567,7 +2561,7 @@ pub async fn process_events(
                 let value: Result<serde_json::Value, _> = serde_json::from_str(value);
 
                 if let (Ok(meta), Ok(value)) = (meta, value) {
-                    let Some(channel_id) = meta.get("channel").and_then(|v| v.as_str()) else {
+                    let Some(counterparty_channel) = meta.get("channel").and_then(|v| v.as_str()) else {
                         continue;
                     };
 
@@ -2575,26 +2569,23 @@ pub async fn process_events(
                     let amount_raw = amount_value.to_string();
 
                     debug!(
-            "Processing inbound IBC transfer with full 128-bit amount: channel={}, amount={}",
-            channel_id, amount_value
+            "Processing inbound IBC transfer with full 128-bit amount: counterparty_channel={}, amount={}",
+            counterparty_channel, amount_value
         );
 
                     let mut asset_id = extract_asset_id(&meta, &value);
 
-                    let fallback_asset_id = if channel_id.starts_with("channel-") {
-                        if let Some(channel_num) = extract_number_from_channel(channel_id) {
+                    let fallback_asset_id = if counterparty_channel.starts_with("channel-") {
+                        if let Some(channel_num) = extract_number_from_channel(counterparty_channel) {
                             let channel_based_asset = format!("ibc_channel_{}", channel_num);
-                            debug!(
-                                "Using channel-based fallback asset ID: {}",
-                                channel_based_asset
-                            );
+                            debug!("Using channel-based fallback asset ID: {}", channel_based_asset);
                             Some(channel_based_asset.as_bytes().to_vec())
                         } else {
-                            debug!("Could not extract channel number from {}", channel_id);
-                            Some(channel_id.as_bytes().to_vec())
+                            debug!("Could not extract channel number from {}", counterparty_channel);
+                            Some(counterparty_channel.as_bytes().to_vec())
                         }
                     } else {
-                        Some(channel_id.as_bytes().to_vec())
+                        Some(counterparty_channel.as_bytes().to_vec())
                     };
 
                     if asset_id.is_none() {
@@ -2603,135 +2594,163 @@ pub async fn process_events(
                     }
 
                     if let Some(asset_id_ref) = asset_id.as_ref() {
-                        debug!(
-                            "Using asset ID for inbound transfer: {}",
-                            hex::encode(asset_id_ref)
-                        );
+                        debug!("Using asset ID for inbound transfer: {}", hex::encode(asset_id_ref));
 
                         let mut symbol = None;
                         if let Ok(s) = std::str::from_utf8(asset_id_ref) {
-                            if s.chars()
-                                .all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '_')
-                            {
+                            if s.chars().all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '_') {
                                 symbol = Some(s.to_uppercase());
-                                debug!(
-                                    "Extracted asset symbol for inbound transfer: {}",
-                                    s.to_uppercase()
-                                );
+                                debug!("Extracted asset symbol for inbound transfer: {}", s.to_uppercase());
                             }
                         }
 
                         let existing_price = sqlx::query_scalar::<_, Option<f64>>(
                             "SELECT price_usd FROM asset_prices WHERE asset_id = $1",
                         )
-                        .bind(asset_id_ref)
-                        .fetch_optional(dbtx.as_mut())
-                        .await;
+                            .bind(asset_id_ref)
+                            .fetch_optional(dbtx.as_mut())
+                            .await;
 
                         if existing_price.is_err() || existing_price.as_ref().unwrap().is_none() {
                             debug!(
-                                "No existing price for asset {}, getting fallback price",
-                                hex::encode(asset_id_ref)
-                            );
+                    "No existing price for asset {}, getting fallback price",
+                    hex::encode(asset_id_ref)
+                );
                             if let Err(e) = get_asset_price(dbtx, asset_id_ref).await {
                                 error!(
-                                    "Failed to get and store price for asset {}: {}",
-                                    hex::encode(asset_id_ref),
-                                    e
-                                );
+                        "Failed to get and store price for asset {}: {}",
+                        hex::encode(asset_id_ref),
+                        e
+                    );
                             }
                         }
                     }
 
                     let mut resolved_client_id: Option<String> = None;
+                    let mut channel_for_transfer = counterparty_channel.to_string();
 
-                    let local_channel = sqlx::query_scalar::<_, Option<String>>(
-                        "SELECT channel_id FROM ibc_channels WHERE counterparty_channel_id = $1",
-                    )
-                    .bind(channel_id)
-                    .fetch_optional(dbtx.as_mut())
-                    .await?;
-
-                    if let Some(local_channel_id) = local_channel {
-                        debug!(
-                            "Found local channel {:?} matching counterparty channel {}",
-                            local_channel_id, channel_id
-                        );
-
-                        let db_client_id = sqlx::query_scalar::<_, Option<String>>(
-                            "SELECT client_id FROM ibc_channels WHERE channel_id = $1",
-                        )
-                        .bind(&local_channel_id)
-                        .fetch_optional(dbtx.as_mut())
-                        .await?;
-
-                        resolved_client_id = db_client_id.flatten();
-                    } else {
-                        let db_client_id = sqlx::query_scalar::<_, Option<String>>(
-                            "SELECT client_id FROM ibc_channels WHERE channel_id = $1",
-                        )
-                        .bind(channel_id)
-                        .fetch_optional(dbtx.as_mut())
-                        .await?;
-
-                        resolved_client_id = db_client_id.flatten();
-
-                        if resolved_client_id.is_some() {
+                    if let Some(sequence) = meta.get("sequence").and_then(|v| v.as_str()) {
+                        if let Some((penumbra_channel, _, connection_id)) = packet_info.get(sequence) {
                             debug!(
-                                "Found client directly using counterparty channel {}",
-                                channel_id
-                            );
+                    "Found packet info for sequence {}: penumbra_channel={}, counterparty_channel={}, connection_id={}",
+                    sequence, penumbra_channel, counterparty_channel, connection_id
+                );
+
+                            resolved_client_id = get_reliable_client_id(
+                                dbtx,
+                                penumbra_channel,
+                                Some(connection_id)
+                            ).await?;
+
+                            if resolved_client_id.is_some() {
+                                channel_for_transfer = penumbra_channel.clone();
+
+                                debug!(
+                        "Successfully resolved client ID {} for inbound transfer using sequence {}",
+                        resolved_client_id.as_ref().unwrap(), sequence
+                    );
+                            }
+                        }
+                    }
+
+                    if resolved_client_id.is_none() {
+                        debug!(
+                "No packet info found for inbound transfer - using fallback resolution for counterparty channel {}",
+                counterparty_channel
+            );
+
+                        let local_channel_opt = sqlx::query_scalar::<_, String>(
+                            "SELECT channel_id FROM ibc_channels WHERE counterparty_channel_id = $1 AND channel_id LIKE 'channel-%' LIMIT 1",
+                        )
+                            .bind(counterparty_channel)
+                            .fetch_optional(dbtx.as_mut())
+                            .await?;
+
+                        if let Some(local_channel_id) = local_channel_opt {
+                            debug!(
+                    "Found local channel {} matching counterparty channel {}",
+                    local_channel_id, counterparty_channel
+                );
+
+                            let db_client_id = sqlx::query_scalar::<_, String>(
+                                "SELECT client_id FROM ibc_channels WHERE channel_id = $1 AND client_id IS NOT NULL LIMIT 1",
+                            )
+                                .bind(&local_channel_id)
+                                .fetch_optional(dbtx.as_mut())
+                                .await?;
+
+                            if let Some(client_id) = db_client_id {
+                                resolved_client_id = Some(client_id);
+                                channel_for_transfer = local_channel_id;
+                                debug!(
+                        "Found client ID {} via local channel {} for counterparty {}",
+                        resolved_client_id.as_ref().unwrap(), channel_for_transfer, counterparty_channel
+                    );
+                            }
+                        } else {
+                            let db_client_id = sqlx::query_scalar::<_, String>(
+                                "SELECT client_id FROM ibc_channels WHERE channel_id = $1 AND client_id IS NOT NULL LIMIT 1",
+                            )
+                                .bind(counterparty_channel)
+                                .fetch_optional(dbtx.as_mut())
+                                .await?;
+
+                            if let Some(client_id) = db_client_id {
+                                resolved_client_id = Some(client_id);
+                                debug!(
+                        "Found client directly using counterparty channel {} - this might be incorrect",
+                        counterparty_channel
+                    );
+                            }
                         }
                     }
 
                     if resolved_client_id.is_none() {
                         warn!(
-                            "Cannot attribute inbound transfer: no client mapping found for counterparty channel {}",
-                            channel_id
-                        );
-                    }
-
-                    if let Some(client_id) = resolved_client_id {
+                "Cannot attribute inbound transfer: no client mapping found for counterparty channel {}",
+                counterparty_channel
+            );
+                    } else if let Some(client_id) = resolved_client_id {
                         debug!(
-                            "Processing inbound IBC transfer (IBC Relay): channel={}, client={}, value={}",
-                            channel_id, client_id, amount_raw
-                        );
+                "Processing inbound IBC transfer: channel={}, client={}, value={}",
+                channel_for_transfer, client_id, amount_raw
+            );
 
                         if let Some(tx_hash) = event.tx_hash() {
                             debug!(
-                                "Updating explorer_transactions for IBC Relay transaction: {}",
-                                hex::encode(tx_hash)
-                            );
+                    "Updating explorer_transactions for IBC transfer transaction: {}",
+                    hex::encode(tx_hash)
+                );
 
                             let pseudo_sequence = format!("recv_{}", hex::encode(&tx_hash[0..8]));
 
                             let tx_exists = sqlx::query_scalar::<_, Option<i32>>(
                                 "SELECT 1 FROM explorer_transactions WHERE tx_hash = $1",
                             )
-                            .bind(tx_hash)
-                            .fetch_optional(dbtx.as_mut())
-                            .await
-                            .unwrap_or_else(|e| {
-                                error!("Failed to check if transaction exists: {}", e);
-                                None
-                            });
+                                .bind(tx_hash)
+                                .fetch_optional(dbtx.as_mut())
+                                .await
+                                .unwrap_or_else(|e| {
+                                    error!("Failed to check if transaction exists: {}", e);
+                                    None
+                                });
 
                             if tx_exists.is_some() {
                                 debug!("Transaction exists in explorer_transactions, updating IBC metadata");
                                 sqlx::query(
                                     r"
-                                    UPDATE explorer_transactions
-                                    SET
-                                        ibc_channel_id = $2,
-                                        ibc_client_id = $3,
-                                        ibc_status = $4,
-                                        ibc_direction = $5,
-                                        ibc_sequence = $6
-                                    WHERE tx_hash = $1
-                                    ",
+                        UPDATE explorer_transactions
+                        SET
+                            ibc_channel_id = $2,
+                            ibc_client_id = $3,
+                            ibc_status = $4,
+                            ibc_direction = $5,
+                            ibc_sequence = $6
+                        WHERE tx_hash = $1
+                        ",
                                 )
                                     .bind(tx_hash)
-                                    .bind(channel_id)
+                                    .bind(&channel_for_transfer)
                                     .bind(&client_id)
                                     .bind(TransactionStatus::Completed.to_string())
                                     .bind(Direction::Inbound.to_string())
@@ -2743,51 +2762,48 @@ pub async fn process_events(
                                         PgQueryResult::default()
                                     });
                             } else {
-                                debug!("Transaction not found in explorer_transactions, inserting new record for IBC relay");
+                                debug!("Transaction not found in explorer_transactions, inserting new record");
                                 sqlx::query(
                                     r"
-                                    INSERT INTO explorer_transactions (
-                                        tx_hash,
-                                        block_height,
-                                        timestamp,
-                                        ibc_channel_id,
-                                        ibc_client_id,
-                                        ibc_status,
-                                        ibc_direction,
-                                        ibc_sequence
-                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                                    ON CONFLICT (tx_hash) DO UPDATE SET
-                                        ibc_channel_id = $4,
-                                        ibc_client_id = $5,
-                                        ibc_status = $6,
-                                        ibc_direction = $7,
-                                        ibc_sequence = $8
-                                    ",
+                        INSERT INTO explorer_transactions (
+                            tx_hash,
+                            block_height,
+                            timestamp,
+                            ibc_channel_id,
+                            ibc_client_id,
+                            ibc_status,
+                            ibc_direction,
+                            ibc_sequence
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        ON CONFLICT (tx_hash) DO UPDATE SET
+                            ibc_channel_id = $4,
+                            ibc_client_id = $5,
+                            ibc_status = $6,
+                            ibc_direction = $7,
+                            ibc_sequence = $8
+                        ",
                                 )
-                                .bind(tx_hash)
-                                .bind(event.block_height as i64)
-                                .bind(timestamp)
-                                .bind(channel_id)
-                                .bind(&client_id)
-                                .bind(TransactionStatus::Completed.to_string())
-                                .bind(Direction::Inbound.to_string())
-                                .bind(&pseudo_sequence)
-                                .execute(dbtx.as_mut())
-                                .await
-                                .unwrap_or_else(|e| {
-                                    error!(
-                                        "Failed to insert transaction for inbound IBC transfer: {}",
-                                        e
-                                    );
-                                    PgQueryResult::default()
-                                });
+                                    .bind(tx_hash)
+                                    .bind(event.block_height as i64)
+                                    .bind(timestamp)
+                                    .bind(&channel_for_transfer)
+                                    .bind(&client_id)
+                                    .bind(TransactionStatus::Completed.to_string())
+                                    .bind(Direction::Inbound.to_string())
+                                    .bind(&pseudo_sequence)
+                                    .execute(dbtx.as_mut())
+                                    .await
+                                    .unwrap_or_else(|e| {
+                                        error!("Failed to insert transaction for inbound IBC transfer: {}", e);
+                                        PgQueryResult::default()
+                                    });
                             }
                         }
 
                         if let Err(e) = record_transfer(
                             dbtx,
                             &client_id,
-                            channel_id,
+                            &channel_for_transfer,
                             Direction::Inbound,
                             &amount_raw,
                             timestamp,
@@ -2795,7 +2811,7 @@ pub async fn process_events(
                             TransactionStatus::Completed,
                             asset_id.clone(),
                         )
-                        .await
+                            .await
                         {
                             error!("Failed to record inbound transfer: {}", e);
                         }
@@ -2809,29 +2825,29 @@ pub async fn process_events(
                                 asset_id,
                                 timestamp,
                             )
-                            .await
+                                .await
                             {
                                 error!("Failed to update USD stats for inbound transfer: {}", e);
 
                                 if let Err(e) = sqlx::query(
                                     r"
-                                    UPDATE ibc_stats
-                                    SET
-                                        -- Convert to NUMERIC first, then add safely
-                                        shielded_volume =
-                                            CASE
-                                                WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
-                                                    COALESCE(shielded_volume, 0) +
-                                                    CASE
-                                                        WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
-                                                        ELSE CAST($2 AS NUMERIC)
-                                                    END
-                                                ELSE shielded_volume -- If not valid, don't change
-                                            END,
-                                        shielded_tx_count = shielded_tx_count + 1,
-                                        last_updated = $3
-                                    WHERE client_id = $1
-                                    ",
+                        UPDATE ibc_stats
+                        SET
+                            -- Convert to NUMERIC first, then add safely
+                            shielded_volume =
+                                CASE
+                                    WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
+                                        COALESCE(shielded_volume, 0) +
+                                        CASE
+                                            WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
+                                            ELSE CAST($2 AS NUMERIC)
+                                        END
+                                    ELSE shielded_volume -- If not valid, don't change
+                                END,
+                            shielded_tx_count = shielded_tx_count + 1,
+                            last_updated = $3
+                        WHERE client_id = $1
+                        ",
                                 )
                                     .bind(&client_id)
                                     .bind(&amount_raw)
@@ -2844,37 +2860,32 @@ pub async fn process_events(
                             }
                         } else if let Err(e) = sqlx::query(
                             r"
-                            UPDATE ibc_stats
-                            SET
-                                -- Convert to NUMERIC first, then add safely
-                                shielded_volume =
-                                    CASE
-                                        WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
-                                            COALESCE(shielded_volume, 0) +
-                                            CASE
-                                                WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
-                                                ELSE CAST($2 AS NUMERIC)
-                                            END
-                                        ELSE shielded_volume -- If not valid, don't change
-                                    END,
-                                shielded_tx_count = shielded_tx_count + 1,
-                                last_updated = $3
-                            WHERE client_id = $1
-                            ",
+                UPDATE ibc_stats
+                SET
+                    -- Convert to NUMERIC first, then add safely
+                    shielded_volume =
+                        CASE
+                            WHEN $2 ~ '^[0-9]+$' THEN -- Check if it's a valid number
+                                COALESCE(shielded_volume, 0) +
+                                CASE
+                                    WHEN LENGTH($2) > 15 THEN 0 -- If too large, use 0
+                                    ELSE CAST($2 AS NUMERIC)
+                                END
+                            ELSE shielded_volume -- If not valid, don't change
+                        END,
+                    shielded_tx_count = shielded_tx_count + 1,
+                    last_updated = $3
+                WHERE client_id = $1
+                ",
                         )
-                        .bind(&client_id)
-                        .bind(&amount_raw)
-                        .bind(timestamp)
-                        .execute(dbtx.as_mut())
-                        .await
+                            .bind(&client_id)
+                            .bind(&amount_raw)
+                            .bind(timestamp)
+                            .execute(dbtx.as_mut())
+                            .await
                         {
                             error!("Error updating legacy stats for inbound transfer: {}", e);
                         }
-                    } else {
-                        warn!(
-                            "Cannot attribute transfer: no client found for channel {}",
-                            channel_id
-                        );
                     }
                 }
             }
