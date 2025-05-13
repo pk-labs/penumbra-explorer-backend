@@ -397,8 +397,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     -- Add upper bound to prevent extreme values
                     THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
                     ELSE 0
-                END) as unshielded_volume,
-                MAX(t.timestamp) as last_updated
+                END) as unshielded_volume
             FROM
                 ibc_transfers t
             GROUP BY
@@ -416,7 +415,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 -- Pending: All transactions with status pending
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
                 -- Expired: All transactions with status expired
-                COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                -- Last transaction timestamp for this client
+                MAX(t.timestamp) as last_updated
             FROM
                 explorer_transactions t
             WHERE
@@ -437,7 +438,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             COALESCE(t.completed_tx_count, 0) as total_tx_count,
             COALESCE(t.pending_tx_count, 0) as pending_tx_count,
             COALESCE(t.expired_tx_count, 0) as expired_tx_count,
-            v.last_updated
+            t.last_updated
         FROM
             ibc_clients c
         LEFT JOIN
@@ -467,8 +468,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     WHEN t.direction = 'outbound' AND t.status = 'completed'
                     THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
                     ELSE 0
-                END) as unshielded_volume,
-                MAX(t.timestamp) as last_updated
+                END) as unshielded_volume
             FROM
                 ibc_transfers t
             WHERE
@@ -488,7 +488,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 -- Pending: All transactions with status pending
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
                 -- Expired: All transactions with status expired
-                COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                -- Last transaction timestamp for this client in the 24h period
+                MAX(t.timestamp) as last_updated
             FROM
                 explorer_transactions t
             WHERE
@@ -510,7 +512,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             COALESCE(t.completed_tx_count, 0) as total_tx_count,
             COALESCE(t.pending_tx_count, 0) as pending_tx_count,
             COALESCE(t.expired_tx_count, 0) as expired_tx_count,
-            v.last_updated
+            t.last_updated
         FROM
             ibc_clients c
         LEFT JOIN
@@ -524,7 +526,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             .execute(dbtx.as_mut())
             .await?;
 
-        // Create or replace the 30d summary view
         sqlx::query(
             r"
         CREATE OR REPLACE VIEW ibc_client_summary_30d AS
@@ -540,8 +541,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     WHEN t.direction = 'outbound' AND t.status = 'completed'
                     THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
                     ELSE 0
-                END) as unshielded_volume,
-                MAX(t.timestamp) as last_updated
+                END) as unshielded_volume
             FROM
                 ibc_transfers t
             WHERE
@@ -561,7 +561,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 -- Pending: All transactions with status pending
                 COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
                 -- Expired: All transactions with status expired
-                COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                -- Last transaction timestamp for this client in the 30d period
+                MAX(t.timestamp) as last_updated
             FROM
                 explorer_transactions t
             WHERE
@@ -583,7 +585,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             COALESCE(t.completed_tx_count, 0) as total_tx_count,
             COALESCE(t.pending_tx_count, 0) as pending_tx_count,
             COALESCE(t.expired_tx_count, 0) as expired_tx_count,
-            v.last_updated
+            t.last_updated
         FROM
             ibc_clients c
         LEFT JOIN
@@ -615,15 +617,14 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 COALESCE(t.completed_tx_count, 0) as total_tx_count,
                 COALESCE(t.pending_tx_count, 0) as pending_tx_count,
                 COALESCE(t.expired_tx_count, 0) as expired_tx_count,
-                v.last_updated
+                t.last_updated
             FROM
                 ibc_clients c
             LEFT JOIN (
                 SELECT
                     t.client_id,
                     SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume,
-                    MAX(t.timestamp) as last_updated
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume
                 FROM
                     ibc_transfers t
                 GROUP BY
@@ -641,7 +642,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     -- Pending: All transactions with status pending
                     COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
                     -- Expired: All transactions with status expired
-                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                    -- Last transaction timestamp for this client
+                    MAX(t.timestamp) as last_updated
                 FROM
                     explorer_transactions t
                 WHERE
@@ -667,15 +670,14 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 COALESCE(t.completed_tx_count, 0) as total_tx_count,
                 COALESCE(t.pending_tx_count, 0) as pending_tx_count,
                 COALESCE(t.expired_tx_count, 0) as expired_tx_count,
-                v.last_updated
+                t.last_updated
             FROM
                 ibc_clients c
             LEFT JOIN (
                 SELECT
                     t.client_id,
                     SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume,
-                    MAX(t.timestamp) as last_updated
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume
                 FROM
                     ibc_transfers t
                 WHERE
@@ -695,7 +697,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     -- Pending: All transactions with status pending
                     COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
                     -- Expired: All transactions with status expired
-                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                    -- Last transaction timestamp for this client
+                    MAX(t.timestamp) as last_updated
                 FROM
                     explorer_transactions t
                 WHERE
@@ -722,15 +726,14 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 COALESCE(t.completed_tx_count, 0) as total_tx_count,
                 COALESCE(t.pending_tx_count, 0) as pending_tx_count,
                 COALESCE(t.expired_tx_count, 0) as expired_tx_count,
-                v.last_updated
+                t.last_updated
             FROM
                 ibc_clients c
             LEFT JOIN (
                 SELECT
                     t.client_id,
                     SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume,
-                    MAX(t.timestamp) as last_updated
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume
                 FROM
                     ibc_transfers t
                 WHERE
@@ -750,7 +753,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     -- Pending: All transactions with status pending
                     COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
                     -- Expired: All transactions with status expired
-                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                    -- Last transaction timestamp for this client
+                    MAX(t.timestamp) as last_updated
                 FROM
                     explorer_transactions t
                 WHERE
