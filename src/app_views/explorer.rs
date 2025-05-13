@@ -119,7 +119,7 @@ impl AppView for Explorer {
                 previous_block_hash BYTEA,
                 block_hash BYTEA,
                 chain_id TEXT,
-                raw_json TEXT
+                raw_json JSONB
             )
             ",
         )
@@ -153,7 +153,7 @@ impl AppView for Explorer {
                 fee_amount NUMERIC(39, 0) DEFAULT 0,
                 chain_id TEXT,
                 raw_data TEXT,
-                raw_json TEXT,
+                raw_json JSONB,
                 -- IBC fields
                 ibc_channel_id TEXT,
                 ibc_client_id TEXT,
@@ -826,9 +826,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 *tx_hash, tx_bytes, *height, *timestamp, *tx_index, tx_events,
             );
 
-            let parsed_json: Value =
-                serde_json::from_str(&formatted_tx_json).unwrap_or_else(|_| json!({}));
-            let fee_amount = transaction::extract_fee_amount(&parsed_json["transaction_view"]);
+            // formatted_tx_json is already a Value, no need to parse
+            let fee_amount = transaction::extract_fee_amount(&formatted_tx_json["transaction_view"]);
 
             let chain_id = self
                 .chain_id
