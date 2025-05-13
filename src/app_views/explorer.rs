@@ -4,7 +4,7 @@ use cometindex::{
     index::{EventBatch, EventBatchContext},
     sqlx, AppView, ContextualizedEvent, PgTransaction,
 };
-use serde_json::{json, Value};
+use serde_json::json;
 use sqlx::{
     postgres::PgPool,
     types::chrono::{DateTime, Utc},
@@ -826,7 +826,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 *tx_hash, tx_bytes, *height, *timestamp, *tx_index, tx_events,
             );
 
-            // formatted_tx_json is already a Value, no need to parse
             let fee_amount = transaction::extract_fee_amount(&formatted_tx_json["transaction_view"]);
 
             let chain_id = self
