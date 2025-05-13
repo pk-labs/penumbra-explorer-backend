@@ -4,7 +4,7 @@ use cometindex::{
     index::{EventBatch, EventBatchContext},
     sqlx, AppView, ContextualizedEvent, PgTransaction,
 };
-use serde_json::json;
+use serde_json::Value;
 use sqlx::{
     postgres::PgPool,
     types::chrono::{DateTime, Utc},
@@ -69,7 +69,7 @@ impl Explorer {
             return None;
         }
 
-        let genesis: Result<serde_json::Value, _> = serde_json::from_str(&contents);
+        let genesis: Result<Value, _> = serde_json::from_str(&contents);
         if let Err(e) = genesis {
             tracing::error!("Failed to parse genesis.json: {}", e);
             return None;
@@ -100,7 +100,7 @@ impl AppView for Explorer {
     async fn init_chain(
         &self,
         dbtx: &mut PgTransaction,
-        _: &serde_json::Value,
+        _: &Value,
     ) -> Result<(), anyhow::Error> {
         tracing::info!(
             "Initializing Explorer with chain_id = {}",
