@@ -1,0 +1,2 @@
+-- This is a no-op down migration as the tables are recreated by the application
+-- The up migration drops tables, this down migration does nothing
