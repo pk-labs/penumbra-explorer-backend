@@ -26,6 +26,7 @@ pub fn encode_to_base64<T: AsRef<[u8]>>(data: T) -> String {
 
 /// Parse attribute string from an event
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn parse_attribute_string(attr_str: &str) -> Option<(String, String)> {
     if attr_str.contains("EventAttribute")
         && attr_str.contains("key:")
@@ -55,7 +56,7 @@ pub fn parse_attribute_string(attr_str: &str) -> Option<(String, String)> {
             .replace("\\\\", "\\")
             .replace("\\n", "\n");
             
-        if clean_value.starts_with("\"") && clean_value.ends_with("\\") {
+        if clean_value.starts_with('\"') && clean_value.ends_with('\\') {
             clean_value = clean_value
                 .trim_start_matches('"')
                 .trim_end_matches('\\')
@@ -98,7 +99,7 @@ pub fn parse_attribute_string(attr_str: &str) -> Option<(String, String)> {
             .replace("\\\\", "\\")
             .replace("\\n", "\n");
             
-        if clean_value.starts_with("\"") && clean_value.ends_with("\\") {
+        if clean_value.starts_with('\"') && clean_value.ends_with('\\') {
             clean_value = clean_value
                 .trim_start_matches('"')
                 .trim_end_matches('\\')
@@ -210,6 +211,25 @@ pub fn event_to_json(
                 value
             };
 
+            // Special handling for known JSON fields
+            if key == "identityKey" || key == "anchor" || key == "root" || 
+               key == "nullifier" || key == "position" || key == "state" {
+                // Additional cleanup for these special fields
+                let extra_clean = fixed_value
+                    .replace("\\\"", "\"")
+                    .replace("\\\\", "\\")
+                    .replace("\\n", "\n");
+                    
+                if let Ok(parsed_json) = serde_json::from_str::<Value>(&extra_clean) {
+                    attributes.push(json!({
+                        "key": key,
+                        "value": parsed_json
+                    }));
+                    continue;
+                }
+            }
+            
+            // General JSON parsing for any value that looks like JSON
             if fixed_value.trim().starts_with('{') && fixed_value.trim().ends_with('}') {
                 if let Ok(parsed_json) = serde_json::from_str::<Value>(&fixed_value) {
                     attributes.push(json!({
