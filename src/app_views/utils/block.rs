@@ -136,7 +136,6 @@ pub async fn process_block_events<'a>(
                     let key = attr.get("key").and_then(|k| k.as_str()).unwrap_or("");
                     if let Some(val_str) = attr.get("value").and_then(|v| v.as_str()) {
                         if (key == "identityKey" || key == "anchor" || key == "root") && val_str.contains("inner") {
-                            // Try to parse as JSON
                             if let Ok(json_value) = serde_json::from_str::<Value>(val_str) {
                                 attr["value"] = json_value;
                             }
@@ -369,28 +368,20 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                         for attr in attrs {
                             let key = attr.get("key").and_then(|k| k.as_str()).unwrap_or("");
                             
-                            // Skip empty keys
                             if key.trim().is_empty() {
                                 continue;
                             }
                             
-                            // Get the value - preserve JSON objects
                             let attr_value = attr.get("value");
                             
                             if let Some(value) = attr_value {
-                                // Handle JSON objects directly
                                 if value.is_object() {
-                                    // Special handling for gasUsed to fix potential missing fields
                                     if key == "gasUsed" {
-                                        // Check the database for this specific event to get the full value
-                                        // If we can't do that here, at least keep the fields we have
                                         if let Some(block_space) = value.get("blockSpace") {
-                                            // We have a partial object - make sure we preserve it
                                             let mut full_gas_used = serde_json::json!({
                                                 "blockSpace": block_space,
                                             });
                                             
-                                            // Add any other fields we might have
                                             if let Some(compact) = value.get("compactBlockSpace") {
                                                 full_gas_used["compactBlockSpace"] = compact.clone();
                                             }
@@ -416,36 +407,25 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                                     continue;
                                 }
                                 
-                                // Handle string values
                                 if let Some(value_str) = value.as_str() {
-                                    // Skip empty amount objects
                                     if value_str.contains("{\"amount\":{}}") {
                                         continue;
                                     }
                                     
-                                    // Special handling for known complex JSON fields that might be truncated
                                     if key == "position" && value_str.contains("closeOnFill") {
-                                        // This might be a truncated position string
                                         if value_str.starts_with('{') && !value_str.trim().ends_with('}') {
-                                            // Let's check if we can find the full object in the raw data
-                                            // For now, skip this truncated value as it will be fixed in the parsing.rs fix
                                             continue;
                                         }
                                     }
                                     
                                     if key == "tradingPair" && value_str.contains("asset1") {
-                                        // This might be a truncated tradingPair string
                                         if value_str.starts_with('{') && !value_str.trim().ends_with('}') {
-                                            // Let's check if we can find the full object in the raw data
-                                            // For now, skip this truncated value as it will be fixed in the parsing.rs fix
                                             continue;
                                         }
                                     }
                                     
-                                    // If it's a JSON string but escaped with quotes, parse it
-                                    if (value_str.starts_with('"') && value_str.ends_with('"')) && 
+                                    if (value_str.starts_with('"') && value_str.ends_with('"')) &&
                                        value_str.contains('{') && value_str.contains('}') {
-                                        // Remove the outer quotes
                                         let unquoted = value_str.trim_start_matches('"').trim_end_matches('"');
                                         if let Ok(parsed_json) = serde_json::from_str::<Value>(unquoted) {
                                             attributes.push(json!({
@@ -456,7 +436,6 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                                         }
                                     }
                                     
-                                    // Try to parse string as JSON if it looks like JSON
                                     if value_str.trim().starts_with('{') && value_str.trim().ends_with('}') {
                                         if let Ok(parsed_json) = serde_json::from_str::<Value>(value_str) {
                                             attributes.push(json!({
@@ -467,7 +446,6 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                                         }
                                     }
                                     
-                                    // Plain string values - remove extra quotes if they exist
                                     let clean_str = if value_str.starts_with('"') && value_str.ends_with('"') {
                                         value_str.trim_start_matches('"').trim_end_matches('"')
                                     } else {
@@ -481,7 +459,6 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                                     continue;
                                 }
                                 
-                                // Fallback - use the value as is
                                 attributes.push(json!({
                                     "key": key,
                                     "value": value
