@@ -14,7 +14,7 @@ pub struct Metadata<'a> {
     pub fee_amount: u64,
     pub chain_id: &'a str,
     pub tx_bytes_base64: String,
-    pub decoded_tx_json: String,
+    pub decoded_tx_json: Value,
 }
 
 /// Insert transaction into database
@@ -134,20 +134,36 @@ pub fn create_transaction_json(
     timestamp: DateTime<Utc>,
     tx_index: u64,
     tx_events: &[ContextualizedEvent<'_>],
-) -> String {
+) -> Value {
     let mut processed_events = Vec::with_capacity(tx_events.len() + 1);
-
-    processed_events.push(json!({
-        "type": "tx",
-        "attributes": [
-            {"key": "hash", "value": encode_to_hex(tx_hash)},
-            {"key": "height", "value": height.to_string()}
-        ]
-    }));
+    
+    let mut tx_attributes = vec![
+        json!({"key": "hash", "value": encode_to_hex(tx_hash)}),
+        json!({"key": "height", "value": height.to_string()})
+    ];
 
     for event in tx_events {
         let attr_capacity = event.event.attributes.len();
         let mut attributes = Vec::with_capacity(attr_capacity);
+
+        if event.event.kind == "tx" {
+            for attr in &event.event.attributes {
+                let attr_str = format!("{attr:?}");
+
+                if let Some((key, value)) = parse_attribute_string(&attr_str) {
+                    if value.contains("{\"amount\":{}}") || value.trim().is_empty() {
+                        continue;
+                    }
+
+
+                    let attr_json = json!({"key": key, "value": value});
+                    if !tx_attributes.contains(&attr_json) {
+                        tx_attributes.push(attr_json);
+                    }
+                }
+            }
+            continue;
+        }
 
         for attr in &event.event.attributes {
             let attr_str = format!("{attr:?}");
@@ -176,39 +192,25 @@ pub fn create_transaction_json(
             }));
         }
     }
+    
+    // Add the consolidated tx event with all attributes
+    processed_events.push(json!({
+        "type": "tx",
+        "attributes": tx_attributes
+    }));
 
     let tx_result_decoded = decode(tx_hash, tx_bytes);
     let tx_hash_hex = encode_to_hex(tx_hash);
 
-    let mut json_str = String::new();
-
-    json_str.push_str("{\n");
-
-    json_str.push_str(&format!("  \"hash\": \"{tx_hash_hex}\",\n"));
-    json_str.push_str(&format!("  \"block_height\": \"{height}\",\n"));
-    json_str.push_str(&format!("  \"index\": \"{tx_index}\",\n"));
-    json_str.push_str(&format!(
-        "  \"timestamp\": \"{}\",\n",
-        timestamp.to_rfc3339()
-    ));
-
-    json_str.push_str("  \"transaction_view\": ");
-    let tx_view_json =
-        serde_json::to_string_pretty(&tx_result_decoded).unwrap_or_else(|_| "{}".to_string());
-    let tx_view_indented = tx_view_json.replace('\n', "\n  ");
-    json_str.push_str(&tx_view_indented);
-    json_str.push_str(",\n");
-
-    json_str.push_str("  \"events\": ");
-    let events_json =
-        serde_json::to_string_pretty(&processed_events).unwrap_or_else(|_| "[]".to_string());
-    let events_indented = events_json.replace('\n', "\n  ");
-    json_str.push_str(&events_indented);
-    json_str.push('\n');
-
-    json_str.push('}');
-
-    json_str
+    // Create a proper JSON structure
+    json!({
+        "hash": tx_hash_hex,
+        "block_height": height.to_string(),
+        "index": tx_index.to_string(),
+        "timestamp": timestamp.to_rfc3339(),
+        "transaction_view": tx_result_decoded,
+        "events": processed_events
+    })
 }
 
 /// Extract fee amount from transaction result
