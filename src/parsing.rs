@@ -49,7 +49,22 @@ pub fn parse_attribute_string(attr_str: &str) -> Option<(String, String)> {
             .trim_matches('"')
             .to_string();
 
-        let clean_value = value.replace("\\\"", "\"");
+        let mut clean_value = value
+            .replace("\\\"", "\"")
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
+            .replace("\\n", "\n");
+            
+        if clean_value.starts_with("\"") && clean_value.ends_with("\\") {
+            clean_value = clean_value
+                .trim_start_matches('"')
+                .trim_end_matches('\\')
+                .to_string();
+        }
+        
+        if key == "swappedBaseFeeTotal" || key == "swappedFeeTotal" || key == "swappedTipTotal" {
+            return Some((key, clean_value));
+        }
 
         if clean_value == "{\"amount\":{}}" || clean_value.trim().is_empty() {
             return None;
@@ -77,7 +92,22 @@ pub fn parse_attribute_string(attr_str: &str) -> Option<(String, String)> {
             .trim_matches('"')
             .to_string();
 
-        let clean_value = value.replace("\\\"", "\"");
+        let mut clean_value = value
+            .replace("\\\"", "\"")
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
+            .replace("\\n", "\n");
+            
+        if clean_value.starts_with("\"") && clean_value.ends_with("\\") {
+            clean_value = clean_value
+                .trim_start_matches('"')
+                .trim_end_matches('\\')
+                .to_string();
+        }
+        
+        if key == "swappedBaseFeeTotal" || key == "swappedFeeTotal" || key == "swappedTipTotal" {
+            return Some((key, clean_value));
+        }
 
         if clean_value == "{\"amount\":{}}" || clean_value.trim().is_empty() {
             return None;
@@ -93,6 +123,12 @@ pub fn parse_attribute_string(attr_str: &str) -> Option<(String, String)> {
         if !field_name.is_empty() {
             let mut json_content = attr_str[json_start..].to_string();
 
+            json_content = json_content.replace("\\\"", "\"");
+            
+            if json_content.matches('"').count() % 2 != 0 {
+                json_content.push('"');
+            }
+            
             let open_braces = json_content.chars().filter(|&c| c == '{').count();
             let close_braces = json_content.chars().filter(|&c| c == '}').count();
 
@@ -133,15 +169,33 @@ pub fn event_to_json(
         let attr_str = format!("{attr:?}");
 
         if let Some((key, value)) = parse_attribute_string(&attr_str) {
-            if value.contains("{\"amount\":{}}")
-                || value.trim().is_empty()
-                || value == "{}"
-                || value.ends_with(":{")
+            if (key == "swappedBaseFeeTotal" || key == "swappedFeeTotal" || key == "swappedTipTotal")
+                && value.contains("{\"amount\":{}}") 
             {
+                attributes.push(json!({
+                    "key": key,
+                    "value": {"amount":{}}
+                }));
                 continue;
             }
-
-            let fixed_value = if (key == "position" || key == "state") && !value.ends_with('}') {
+            
+            if value.trim().is_empty() || value == "{}" || value.ends_with(":{") {
+                continue;
+            }
+            
+            let fixed_value = if value.contains("\\\"") {
+                value.replace("\\\"", "\"")
+            } else if key == "gasUsed" && !value.ends_with('}') {
+                let mut fixed = value;
+                if fixed.contains("blockSpace") && !fixed.ends_with('}') {
+                    if fixed.ends_with('\\') {
+                        fixed = fixed.trim_end_matches('\\').to_string() + "\"}";
+                    } else {
+                        fixed.push('}');
+                    }
+                }
+                fixed
+            } else if (key == "position" || key == "state") && !value.ends_with('}') {
                 let mut fixed = value.clone();
                 let open_braces = fixed.chars().filter(|&c| c == '{').count();
                 let close_braces = fixed.chars().filter(|&c| c == '}').count();
@@ -156,6 +210,16 @@ pub fn event_to_json(
                 value
             };
 
+            if fixed_value.trim().starts_with('{') && fixed_value.trim().ends_with('}') {
+                if let Ok(parsed_json) = serde_json::from_str::<Value>(&fixed_value) {
+                    attributes.push(json!({
+                        "key": key,
+                        "value": parsed_json
+                    }));
+                    continue;
+                }
+            }
+            
             attributes.push(json!({
                 "key": key,
                 "value": fixed_value
