@@ -193,7 +193,6 @@ pub fn create_transaction_json(
         }
     }
     
-    // Add the consolidated tx event with all attributes
     processed_events.push(json!({
         "type": "tx",
         "attributes": tx_attributes
@@ -202,7 +201,6 @@ pub fn create_transaction_json(
     let tx_result_decoded = decode(tx_hash, tx_bytes);
     let tx_hash_hex = encode_to_hex(tx_hash);
 
-    // Create a proper JSON structure
     json!({
         "hash": tx_hash_hex,
         "block_height": height.to_string(),
