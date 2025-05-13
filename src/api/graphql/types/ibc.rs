@@ -228,9 +228,9 @@ impl Stats {
             query.push_str(" WHERE client_id = $1");
         }
 
-        // Order first by status (Active first), then by shielded_tx_count (descending)
+        // Order first by status (Active first), then by total_tx_count (descending)
         query.push_str(
-            " ORDER BY CASE WHEN status = 'Active' THEN 0 ELSE 1 END, shielded_tx_count DESC",
+            " ORDER BY CASE WHEN status = 'Active' THEN 0 ELSE 1 END, total_tx_count DESC",
         );
         query.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
 
