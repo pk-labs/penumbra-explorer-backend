@@ -115,16 +115,8 @@ impl Block {
 
     #[graphql(name = "rawJson")]
     #[allow(clippy::unused_async)]
-    async fn raw_json(&self) -> Result<Option<String>> {
-        if let Some(json_value) = &self.raw_json {
-            if let Some(raw_str) = json_value.as_str() {
-                Ok(Some(raw_str.to_string()))
-            } else {
-                Ok(Some(serde_json::to_string(json_value)?))
-            }
-        } else {
-            Ok(None)
-        }
+    async fn raw_json(&self) -> Result<Option<serde_json::Value>> {
+        Ok(self.raw_json.clone())
     }
 
     #[graphql(name = "chainId")]
