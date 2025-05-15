@@ -10,10 +10,10 @@ use crate::parsing::{encode_to_hex, parse_attribute_string};
 /// Helper function to extract a field value from a JSON-like string
 /// This handles escaped quotes and complex JSON structures
 /// Returns the field value as a String to avoid lifetime issues
+#[allow(clippy::redundant_else, clippy::manual_strip, clippy::range_plus_one, clippy::manual_pattern_char_comparison)]
 fn extract_json_field(json_str: &str, field_name: &str) -> Option<String> {
     tracing::debug!("Extracting field '{}' from JSON string: {}", field_name, json_str);
     
-    // First try to parse the entire string as JSON
     if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(json_str) {
         if let Some(field_value) = parsed_json.get(field_name) {
             if let Some(value_str) = field_value.as_str() {
@@ -27,13 +27,11 @@ fn extract_json_field(json_str: &str, field_name: &str) -> Option<String> {
         }
     }
     
-    // Fallback to string manipulation if JSON parsing fails
     if let Some(field_pos) = json_str.find(field_name) {
         if let Some(colon_pos) = json_str[field_pos..].find(':') {
             let start_pos = field_pos + colon_pos + 1;
             let value_start = json_str[start_pos..].trim_start();
             
-            // Handle quoted strings
             if value_start.starts_with('"') {
                 if let Some(quote_end) = value_start[1..].find('"') {
                     let result = value_start[1..(quote_end+1)].trim().to_string();
@@ -41,7 +39,6 @@ fn extract_json_field(json_str: &str, field_name: &str) -> Option<String> {
                     return Some(result);
                 }
             }
-            // Handle non-quoted values (numbers, etc.)
             else if let Some(end_pos) = value_start.find(|c| c == ',' || c == '}') {
                 let result = value_start[..end_pos].trim().to_string();
                 tracing::debug!("Extracted non-quoted field '{}': {}", field_name, result);
@@ -51,6 +48,64 @@ fn extract_json_field(json_str: &str, field_name: &str) -> Option<String> {
     }
     
     tracing::debug!("Field '{}' not found in JSON string", field_name);
+    None
+}
+
+/// Extract gas used fields from a JSON string without using hardcoded defaults
+fn extract_gas_used_values(value: &str) -> serde_json::Value {
+    let mut gas_object = json!({});
+
+    if let Some(block_space) = extract_json_field(value, "blockSpace") {
+        gas_object["blockSpace"] = json!(block_space);
+    }
+    
+    if let Some(execution) = extract_json_field(value, "execution") {
+        gas_object["execution"] = json!(execution);
+    }
+    
+    if let Some(verification) = extract_json_field(value, "verification") {
+        gas_object["verification"] = json!(verification);
+    }
+    
+    if let Some(compact_block_space) = extract_json_field(value, "compactBlockSpace") {
+        gas_object["compactBlockSpace"] = json!(compact_block_space);
+    }
+    
+    tracing::debug!(
+        "GasUsed extraction - value: {}, extracted fields: {}",
+        value, gas_object
+    );
+    
+    gas_object
+}
+
+/// Extracts trading pair asset information from transaction view JSON
+fn extract_trading_pair_from_tx_view(tx_json: &Value) -> Option<Value> {
+    if let Some(view) = tx_json.get("view") {
+        if let Some(action) = view.get("action") {
+            if let Some(swap) = action.get("Swap") {
+                if let Some(trading_pair) = swap.get("trading_pair") {
+                    tracing::debug!("Found trading pair in transaction view: {}", trading_pair);
+                    return Some(trading_pair.clone());
+                }
+            }
+            
+            if let Some(position_open) = action.get("PositionOpen") {
+                if let Some(trading_pair) = position_open.get("trading_pair") {
+                    tracing::debug!("Found trading pair in PositionOpen: {}", trading_pair);
+                    return Some(trading_pair.clone());
+                }
+            }
+            
+            if let Some(position_close) = action.get("PositionClose") {
+                if let Some(trading_pair) = position_close.get("trading_pair") {
+                    tracing::debug!("Found trading pair in PositionClose: {}", trading_pair);
+                    return Some(trading_pair.clone());
+                }
+            }
+        }
+    }
+    
     None
 }
 
@@ -174,6 +229,7 @@ pub fn decode(tx_hash: [u8; 32], tx_bytes: &[u8]) -> Value {
 
 /// Create transaction JSON
 #[must_use]
+#[allow(clippy::too_many_lines, clippy::single_char_pattern)]
 pub fn create_transaction_json(
     tx_hash: [u8; 32],
     tx_bytes: &[u8],
@@ -182,6 +238,11 @@ pub fn create_transaction_json(
     tx_index: u64,
     tx_events: &[ContextualizedEvent<'_>],
 ) -> Value {
+    // Decode the transaction first to extract trading pair info if needed
+    let tx_result_decoded = decode(tx_hash, tx_bytes);
+    let trading_pair_info = extract_trading_pair_from_tx_view(&tx_result_decoded);
+    tracing::debug!("Extracted trading pair from transaction view: {:?}", trading_pair_info);
+    
     let mut processed_events = Vec::with_capacity(tx_events.len() + 1);
     
     let mut tx_attributes = vec![
@@ -202,72 +263,61 @@ pub fn create_transaction_json(
                         continue;
                     }
 
-                    // Process attribute value based on type
                     let processed_value = if key == "gasUsed" && value.contains("blockSpace") {
-                        // Extract all gasUsed values from the actual attribute
-                        let block_space = extract_json_field(&value, "blockSpace").unwrap_or_else(|| "624".to_string());
-                        let execution = extract_json_field(&value, "execution").unwrap_or_else(|| "10".to_string());
-                        let verification = extract_json_field(&value, "verification").unwrap_or_else(|| "1000".to_string());
-                        let compact_block_space = extract_json_field(&value, "compactBlockSpace");
-
-                        // Add debug logging to see what values we're extracting
-                        tracing::debug!(
-                            "GasUsed extraction for tx attributes - value: {}, block_space: {}, execution: {}, verification: {}, compact_block_space: {:?}",
-                            value, block_space, execution, verification, compact_block_space
-                        );
-
-                        // Create complete gasUsed object with all available fields
-                        let mut gas_object = json!({
-                            "blockSpace": block_space,
-                            "execution": execution,
-                            "verification": verification
-                        });
-
-                        // Add compactBlockSpace if present
-                        if let Some(cbs) = compact_block_space {
-                            gas_object["compactBlockSpace"] = json!(cbs);
-                        }
-
-                        gas_object
+                        extract_gas_used_values(&value)
                     } else if key == "tradingPair" {
-                        // Handle tradingPair with special escaping issues
                         if value.contains("asset1") && !value.contains("asset2") {
-                            // Clean up any escaping issues
-                            let clean_value = value
-                                .replace("\\\"", "\"")
-                                .replace("\\\\", "\\");
+                            if let Some(trading_pair) = &trading_pair_info {
+                                tracing::debug!("Using trading pair from transaction view: {}", trading_pair);
+                                trading_pair.clone()
+                            } else {
+                                let clean_value = value
+                                    .replace("\\\"", "\"")
+                                    .replace("\\\\", "\\");
 
-                            // Extract the asset1 inner value
-                            let asset1_inner = if let Some(inner_start) = clean_value.find("inner") {
-                                if let Some(colon) = clean_value[inner_start..].find(':') {
-                                    let start = inner_start + colon + 1;
-                                    if let Some(quote) = clean_value[start..].find('\"') {
-                                        let content_start = start + quote + 1;
-                                        if let Some(end_quote) = clean_value[content_start..].find('\"') {
-                                            clean_value[content_start..(content_start + end_quote)].trim()
+                                let asset1_inner = if let Some(inner_start) = clean_value.find("inner") {
+                                    if let Some(colon) = clean_value[inner_start..].find(':') {
+                                        let start = inner_start + colon + 1;
+                                        if let Some(quote) = clean_value[start..].find('\"') {
+                                            let content_start = start + quote + 1;
+                                            if let Some(end_quote) = clean_value[content_start..].find('\"') {
+                                                clean_value[content_start..(content_start + end_quote)].trim().to_string()
+                                            } else {
+                                                return json!({
+                                                    "asset1": {
+                                                        "inner": clean_value
+                                                    }
+                                                });
+                                            }
                                         } else {
-                                            "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
+                                            return json!({
+                                                "asset1": {
+                                                    "inner": clean_value
+                                                }
+                                            });
                                         }
                                     } else {
-                                        "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
+                                        return json!({
+                                            "asset1": {
+                                                "inner": clean_value
+                                            }
+                                        });
                                     }
                                 } else {
-                                    "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
-                                }
-                            } else {
-                                "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
-                            };
+                                    return json!({
+                                        "asset1": {
+                                            "inner": clean_value
+                                        }
+                                    });
+                                };
 
-                            json!({
-                                "asset1": {
-                                    "inner": asset1_inner
-                                },
-                                "asset2": {
-                                    "inner": "KeqcLzNx9qSH5+lcJHBB9KNW+YPrBk5dKzvPMiypahA="
-                                }
-                            })
+                                json!({
+                                    "asset1": {
+                                        "inner": asset1_inner
+                                    }
+                                })
+                            }
                         } else {
-                            // Try to parse it as regular JSON
                             if value.contains("\\\"") {
                                 let clean_value = value
                                     .trim_start_matches('\"')
@@ -275,7 +325,6 @@ pub fn create_transaction_json(
                                     .replace("\\\"", "\"")
                                     .replace("\\\\", "\\");
 
-                                // Make sure JSON is balanced
                                 let mut balanced_value = clean_value;
                                 let open_count = balanced_value.chars().filter(|&c| c == '{').count();
                                 let close_count = balanced_value.chars().filter(|&c| c == '}').count();
@@ -289,24 +338,21 @@ pub fn create_transaction_json(
                                 if let Ok(parsed) = serde_json::from_str::<Value>(&balanced_value) {
                                     parsed
                                 } else {
-                                    json!(value) // Default fallback
+                                    json!(value)
                                 }
                             } else {
-                                json!(value) // Default fallback
+                                json!(value)
                             }
                         }
                     } else if key == "position" && value.contains("\"\"") {
-                        // Clean position value
                         json!(value.trim_matches('\"'))
                     } else if value.starts_with('\"') && value.contains("\\\"") && value.contains("{") {
-                        // Handle quoted JSON with escaped quotes
                         let clean_value = value
                             .trim_start_matches('\"')
                             .trim_end_matches('\"')
                             .replace("\\\"", "\"")
                             .replace("\\\\", "\\");
 
-                        // Balance braces if needed
                         let mut balanced_value = clean_value;
                         let open_count = balanced_value.chars().filter(|&c| c == '{').count();
                         let close_count = balanced_value.chars().filter(|&c| c == '}').count();
@@ -323,17 +369,14 @@ pub fn create_transaction_json(
                             json!(value)
                         }
                     } else if value.trim().starts_with('{') && value.trim().ends_with('}') {
-                        // Try to parse JSON
                         if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
                             parsed_json
                         } else {
                             json!(value)
                         }
                     } else if value.starts_with('\"') && value.ends_with('\"') {
-                        // Handle quoted values
                         json!(value.trim_matches('\"'))
                     } else {
-                        // Default
                         json!(value)
                     };
 
@@ -355,33 +398,9 @@ pub fn create_transaction_json(
                     continue;
                 }
                 
-                // Special handling for gasUsed
                 if key == "gasUsed" && value.contains("blockSpace") {
-                    // Extract all gasUsed values from the actual attribute
-                    let block_space = extract_json_field(&value, "blockSpace").unwrap_or_else(|| "624".to_string());
-                    let execution = extract_json_field(&value, "execution").unwrap_or_else(|| "10".to_string());
-                    let verification = extract_json_field(&value, "verification").unwrap_or_else(|| "1000".to_string());
-                    let compact_block_space = extract_json_field(&value, "compactBlockSpace");
+                    let gas_object = extract_gas_used_values(&value);
                     
-                    // Add debug logging to see what values we're extracting
-                    tracing::debug!(
-                        "GasUsed extraction for event attributes - value: {}, block_space: {}, execution: {}, verification: {}, compact_block_space: {:?}",
-                        value, block_space, execution, verification, compact_block_space
-                    );
-                    
-                    // Create gas object with all available fields
-                    let mut gas_object = json!({
-                        "blockSpace": block_space,
-                        "execution": execution,
-                        "verification": verification
-                    });
-                    
-                    // Add compactBlockSpace if present
-                    if let Some(cbs) = compact_block_space {
-                        gas_object["compactBlockSpace"] = json!(cbs);
-                    }
-                    
-                    // Create complete gasUsed object
                     attributes.push(json!({
                         "key": key,
                         "value": gas_object
@@ -389,44 +408,49 @@ pub fn create_transaction_json(
                     continue;
                 }
                 
-                // Special handling for tradingPair with missing asset2
                 if key == "tradingPair" && value.contains("asset1") && !value.trim().ends_with('}') {
-                    // Extract asset1 inner value
-                    let asset1_inner = if let Some(inner_start) = value.find("inner") {
-                        if let Some(colon) = value[inner_start..].find(':') {
+                    if let Some(trading_pair) = &trading_pair_info {
+                        tracing::debug!("Using trading pair from transaction view for event attribute: {}", trading_pair);
+                        attributes.push(json!({
+                            "key": key,
+                            "value": trading_pair
+                        }));
+                        continue;
+                    }
+                    
+                    let clean_value = value
+                        .replace("\\\"", "\"")
+                        .replace("\\\\", "\\");
+                        
+                    if let Some(inner_start) = clean_value.find("inner") {
+                        if let Some(colon) = clean_value[inner_start..].find(':') {
                             let start = inner_start + colon + 1;
-                            if let Some(quote) = value[start..].find('\"') {
+                            if let Some(quote) = clean_value[start..].find('\"') {
                                 let content_start = start + quote + 1;
-                                if let Some(end_quote) = value[content_start..].find('\"') {
-                                    value[content_start..(content_start + end_quote)].trim()
-                                } else {
-                                    "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
+                                if let Some(end_quote) = clean_value[content_start..].find('\"') {
+                                    let asset1_inner = clean_value[content_start..(content_start + end_quote)].trim();
+                                    
+                                    attributes.push(json!({
+                                        "key": key,
+                                        "value": {
+                                            "asset1": {
+                                                "inner": asset1_inner
+                                            }
+                                        }
+                                    }));
+                                    continue;
                                 }
-                            } else {
-                                "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
                             }
-                        } else {
-                            "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
                         }
-                    } else {
-                        "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
-                    };
+                    }
                     
                     attributes.push(json!({
                         "key": key,
-                        "value": {
-                            "asset1": {
-                                "inner": asset1_inner
-                            },
-                            "asset2": {
-                                "inner": "KeqcLzNx9qSH5+lcJHBB9KNW+YPrBk5dKzvPMiypahA="
-                            }
-                        }
+                        "value": clean_value
                     }));
                     continue;
                 }
                 
-                // Handle position with double quotes
                 if key == "position" && value.contains("\"\"") {
                     let clean_value = value.trim_matches('\"');
                     attributes.push(json!({
@@ -436,7 +460,6 @@ pub fn create_transaction_json(
                     continue;
                 }
                 
-                // Try to parse JSON
                 if value.trim().starts_with('{') && value.trim().ends_with('}') {
                     if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
                         attributes.push(json!({
@@ -447,54 +470,52 @@ pub fn create_transaction_json(
                     }
                 }
                 
-                // Special handling for tradingPair
                 if key == "tradingPair" {
-                    // Handle specific case shown in example where asset2 is missing
                     if value.contains("asset1") && !value.contains("asset2") {
-                        // First clean up any escaping issues
+                        if let Some(trading_pair) = &trading_pair_info {
+                            tracing::debug!("Using trading pair from transaction view for special handling: {}", trading_pair);
+                            attributes.push(json!({
+                                "key": key,
+                                "value": trading_pair
+                            }));
+                            continue;
+                        }
+                        
                         let clean_value = value
                             .replace("\\\"", "\"")
                             .replace("\\\\", "\\");
                             
-                        // Extract the asset1 inner value
-                        let asset1_inner = if let Some(inner_start) = clean_value.find("inner") {
+                        if let Some(inner_start) = clean_value.find("inner") {
                             if let Some(colon) = clean_value[inner_start..].find(':') {
                                 let start = inner_start + colon + 1;
                                 if let Some(quote) = clean_value[start..].find('\"') {
                                     let content_start = start + quote + 1;
                                     if let Some(end_quote) = clean_value[content_start..].find('\"') {
-                                        clean_value[content_start..(content_start + end_quote)].trim()
-                                    } else {
-                                        "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
+                                        let asset1_inner = clean_value[content_start..(content_start + end_quote)].trim();
+                                        
+                                        attributes.push(json!({
+                                            "key": key,
+                                            "value": {
+                                                "asset1": {
+                                                    "inner": asset1_inner
+                                                }
+                                            }
+                                        }));
+                                        continue;
                                     }
-                                } else {
-                                    "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
                                 }
-                            } else {
-                                "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
                             }
-                        } else {
-                            "drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="
-                        };
+                        }
                         
                         attributes.push(json!({
                             "key": key,
-                            "value": {
-                                "asset1": {
-                                    "inner": asset1_inner
-                                },
-                                "asset2": {
-                                    "inner": "KeqcLzNx9qSH5+lcJHBB9KNW+YPrBk5dKzvPMiypahA="
-                                }
-                            }
+                            "value": clean_value
                         }));
                         continue;
                     }
                 }
                 
-                // Handle quoted JSON with escaped quotes
                 if value.starts_with('\"') && value.contains("\\\"") && value.contains("{") {
-                    // Remove outer quotes and unescape inner quotes
                     let clean_value = value
                         .trim_start_matches('\"')
                         .trim_end_matches('\"')
@@ -503,7 +524,6 @@ pub fn create_transaction_json(
                         
                     if clean_value.starts_with('{') && 
                        (clean_value.ends_with('}') || clean_value.contains("inner")) {
-                        // Balance the braces if needed
                         let mut balanced_value = clean_value;
                         let open_count = balanced_value.chars().filter(|&c| c == '{').count();
                         let close_count = balanced_value.chars().filter(|&c| c == '}').count();
@@ -524,7 +544,6 @@ pub fn create_transaction_json(
                     }
                 }
                 
-                // Handle quoted JSON (standard case)
                 if (value.starts_with('\"') && value.ends_with('\"')) &&
                    value.contains('{') && value.contains('}') {
                     let unquoted = value.trim_start_matches('\"').trim_end_matches('\"');
@@ -537,7 +556,6 @@ pub fn create_transaction_json(
                     }
                 }
                 
-                // Clean string values
                 if value.starts_with('\"') && value.ends_with('\"') {
                     let clean_value = value.trim_matches('\"');
                     attributes.push(json!({
@@ -547,7 +565,6 @@ pub fn create_transaction_json(
                     continue;
                 }
                 
-                // Default case
                 attributes.push(json!({
                     "key": key,
                     "value": value
@@ -573,7 +590,6 @@ pub fn create_transaction_json(
         "attributes": tx_attributes
     }));
 
-    let tx_result_decoded = decode(tx_hash, tx_bytes);
     let tx_hash_hex = encode_to_hex(tx_hash);
 
     json!({
