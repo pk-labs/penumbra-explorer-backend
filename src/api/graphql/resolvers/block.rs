@@ -28,15 +28,8 @@ pub async fn get(ctx: &async_graphql::Context<'_>, height: i32) -> Result<Option
     .await?;
 
     Ok(row.map(|r| {
-        let raw_json_str: String = r.get("raw_json");
-        // Pass the raw JSON string directly without parsing
-        let raw_json = if raw_json_str.is_empty() {
-            None
-        } else {
-            // Store the raw JSON string in a serde_json::Value
-            Some(serde_json::Value::String(raw_json_str))
-        };
-
+        let raw_json: Option<serde_json::Value> = r.get::<Option<serde_json::Value>, _>("raw_json");
+        
         Block::new(
             i32::try_from(r.get::<i64, _>("height")).unwrap_or_default(),
             r.get("timestamp"),
@@ -67,12 +60,7 @@ pub async fn resolve_blocks(
     let blocks = rows
         .into_iter()
         .map(|row| {
-            let raw_json_str: String = row.get("raw_json");
-            let raw_json = if raw_json_str.is_empty() {
-                None
-            } else {
-                Some(serde_json::Value::String(raw_json_str))
-            };
+            let raw_json: Option<serde_json::Value> = row.get::<Option<serde_json::Value>, _>("raw_json");
 
             Block::new(
                 i32::try_from(row.get::<i64, _>("height")).unwrap_or_default(),
@@ -144,12 +132,7 @@ pub async fn resolve_blocks_collection(
     let blocks = rows
         .into_iter()
         .map(|row| {
-            let raw_json_str: String = row.get("raw_json");
-            let raw_json = if raw_json_str.is_empty() {
-                None
-            } else {
-                Some(serde_json::Value::String(raw_json_str))
-            };
+            let raw_json: Option<serde_json::Value> = row.get::<Option<serde_json::Value>, _>("raw_json");
 
             Block::new(
                 i32::try_from(row.get::<i64, _>("height")).unwrap_or_default(),
