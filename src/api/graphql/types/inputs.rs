@@ -1,5 +1,5 @@
 use crate::api::graphql::types::RangeDirection;
-use async_graphql::InputObject;
+use async_graphql::{Enum, InputObject};
 
 #[derive(InputObject)]
 pub struct BlockHeightRange {
@@ -54,10 +54,17 @@ pub struct TransactionFilter {
     pub client_id: Option<String>,
 }
 
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum TimePeriod {
+    ALL,
+    DAY,
+    MONTH,
+}
+
 #[derive(InputObject)]
 pub struct IbcStatsFilter {
     pub client_id: Option<String>,
-    pub time_period: Option<String>,
+    pub time_period: Option<TimePeriod>,
 }
 
 #[derive(InputObject, Default)]

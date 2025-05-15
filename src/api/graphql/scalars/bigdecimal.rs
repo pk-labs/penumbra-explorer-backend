@@ -7,7 +7,6 @@ use std::str::FromStr;
 use crate::api::graphql::resolvers::{QueryRoot, SubscriptionRoot};
 use async_graphql::{EmptyMutation, SchemaBuilder};
 
-// Wrapper type for BigDecimal to satisfy the orphan rule
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Decimal(pub BigDecimal);
 
@@ -64,7 +63,6 @@ impl ScalarType for Decimal {
     }
 }
 
-/// Register the `Decimal` scalar with the schema
 pub fn register(
     builder: SchemaBuilder<QueryRoot, EmptyMutation, SubscriptionRoot>,
 ) -> SchemaBuilder<QueryRoot, EmptyMutation, SubscriptionRoot> {

@@ -1,6 +1,15 @@
 use crate::api::graphql::scalars::DateTime;
-use async_graphql::{Context, Result, SimpleObject};
+use async_graphql::{Context, Enum, Result, SimpleObject};
 use sqlx::Row;
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "camelCase")]
+pub enum ClientStatus {
+    Active,
+    Expired,
+    Frozen,
+    Unknown,
+}
 
 #[derive(SimpleObject)]
 #[graphql(rename_fields = "camelCase")]
@@ -23,12 +32,16 @@ pub struct ChannelPair {
 #[graphql(name = "IbcStats")]
 pub struct Stats {
     pub client_id: String,
+    pub status: ClientStatus,
+    pub channel_id: Option<String>,
+    pub counterparty_channel_id: Option<String>,
     pub shielded_volume: String,
     pub shielded_tx_count: i64,
     pub unshielded_volume: String,
     pub unshielded_tx_count: i64,
     pub pending_tx_count: i64,
     pub expired_tx_count: i64,
+    pub total_tx_count: i64,
     #[graphql(name = "lastUpdated")]
     pub last_updated: Option<DateTime>,
 }
@@ -153,6 +166,18 @@ impl ChannelPair {
     }
 }
 
+impl ClientStatus {
+    /// Converts a string status to a `ClientStatus` enum
+    fn from_str(status: Option<&str>) -> Self {
+        match status {
+            Some("Active") => Self::Active,
+            Some("Expired") => Self::Expired,
+            Some("Frozen") => Self::Frozen,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 impl Stats {
     /// Gets the appropriate view name based on the time period
     fn get_view_name(time_period: Option<&str>) -> &'static str {
@@ -185,12 +210,16 @@ impl Stats {
         let mut query = format!(
             "SELECT
                 client_id,
+                status,
+                channel_id,
+                counterparty_channel_id,
                 shielded_volume::TEXT as shielded_volume,
                 shielded_tx_count,
                 unshielded_volume::TEXT as unshielded_volume,
                 unshielded_tx_count,
                 pending_tx_count,
                 expired_tx_count,
+                total_tx_count,
                 last_updated
             FROM {view_name}"
         );
@@ -199,7 +228,10 @@ impl Stats {
             query.push_str(" WHERE client_id = $1");
         }
 
-        query.push_str(" ORDER BY client_id");
+        // Order first by status (Active first), then by total_tx_count (descending)
+        query.push_str(
+            " ORDER BY CASE WHEN status = 'Active' THEN 0 ELSE 1 END, total_tx_count DESC",
+        );
         query.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
 
         let rows = if let Some(client_id_val) = client_id {
@@ -215,12 +247,16 @@ impl Stats {
             .into_iter()
             .map(|row| Stats {
                 client_id: row.get("client_id"),
+                status: ClientStatus::from_str(row.get("status")),
+                channel_id: row.get("channel_id"),
+                counterparty_channel_id: row.get("counterparty_channel_id"),
                 shielded_volume: row.get("shielded_volume"),
                 shielded_tx_count: row.get("shielded_tx_count"),
                 unshielded_volume: row.get("unshielded_volume"),
                 unshielded_tx_count: row.get("unshielded_tx_count"),
                 pending_tx_count: row.get("pending_tx_count"),
                 expired_tx_count: row.get("expired_tx_count"),
+                total_tx_count: row.get("total_tx_count"),
                 last_updated: row
                     .get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_updated")
                     .map(DateTime),
@@ -246,12 +282,16 @@ impl Stats {
         let row = sqlx::query(&format!(
             "SELECT
                 client_id,
+                status,
+                channel_id,
+                counterparty_channel_id,
                 shielded_volume::TEXT as shielded_volume,
                 shielded_tx_count,
                 unshielded_volume::TEXT as unshielded_volume,
                 unshielded_tx_count,
                 pending_tx_count,
                 expired_tx_count,
+                total_tx_count,
                 last_updated
             FROM {view_name}
             WHERE client_id = $1"
@@ -262,12 +302,16 @@ impl Stats {
 
         Ok(row.map(|row| Stats {
             client_id: row.get("client_id"),
+            status: ClientStatus::from_str(row.get("status")),
+            channel_id: row.get("channel_id"),
+            counterparty_channel_id: row.get("counterparty_channel_id"),
             shielded_volume: row.get("shielded_volume"),
             shielded_tx_count: row.get("shielded_tx_count"),
             unshielded_volume: row.get("unshielded_volume"),
             unshielded_tx_count: row.get("unshielded_tx_count"),
             pending_tx_count: row.get("pending_tx_count"),
             expired_tx_count: row.get("expired_tx_count"),
+            total_tx_count: row.get("total_tx_count"),
             last_updated: row
                 .get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_updated")
                 .map(DateTime),

@@ -5,7 +5,6 @@ use tracing::{debug, error, info};
 use super::ibc;
 use super::PubSub;
 
-/// Starts all subscription triggers as concurrent tasks
 pub async fn start(pubsub: PubSub, pool: Pool<Postgres>) {
     info!("Starting real-time subscription triggers");
 
@@ -19,10 +18,8 @@ pub async fn start(pubsub: PubSub, pool: Pool<Postgres>) {
     fallback_polling(pubsub, pool).await;
 }
 
-/// Sets up `PostgreSQL` notification triggers for real-time updates
 #[allow(clippy::too_many_lines)]
 async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
-    // Existing triggers setup
     sqlx::query(
         r"
         CREATE OR REPLACE FUNCTION notify_block_update()
@@ -65,7 +62,6 @@ async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sqlx::
     .execute(pool)
     .await?;
 
-    // Add a new trigger function for total shielded volume updates
     sqlx::query(
         r"
         CREATE OR REPLACE FUNCTION notify_total_shielded_volume_update()
@@ -132,7 +128,6 @@ async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sqlx::
     .execute(pool)
     .await?;
 
-    // Add trigger for total shielded volume updates
     sqlx::query(
         r"
         CREATE TRIGGER total_shielded_volume_update_trigger
@@ -147,8 +142,6 @@ async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sqlx::
     Ok(())
 }
 
-/// Fallback polling mechanism
-/// This is the main method we'll use since LISTEN/NOTIFY has compatibility issues
 async fn fallback_polling(pubsub: PubSub, pool: Pool<Postgres>) {
     info!("Starting polling mechanism");
 
@@ -156,7 +149,7 @@ async fn fallback_polling(pubsub: PubSub, pool: Pool<Postgres>) {
     let txs_interval = interval(Duration::from_secs(1));
     let count_interval = interval(Duration::from_secs(1));
     let ibc_txs_interval = interval(Duration::from_secs(2));
-    // Add a new interval for total shielded volume (check every 5 seconds to reduce DB load)
+
     let total_shielded_volume_interval = interval(Duration::from_secs(5));
 
     tokio::join!(
@@ -164,12 +157,10 @@ async fn fallback_polling(pubsub: PubSub, pool: Pool<Postgres>) {
         poll_transactions(pubsub.clone(), pool.clone(), txs_interval),
         poll_transaction_count(pubsub.clone(), pool.clone(), count_interval),
         ibc::poll_ibc_transactions(pubsub.clone(), pool.clone(), ibc_txs_interval),
-        // Add total shielded volume polling
         poll_total_shielded_volume(pubsub, pool, total_shielded_volume_interval)
     );
 }
 
-/// Polls for new blocks
 async fn poll_blocks(pubsub: PubSub, pool: Pool<Postgres>, mut interval: tokio::time::Interval) {
     let mut last_height: Option<i64> = None;
 
@@ -190,7 +181,6 @@ async fn poll_blocks(pubsub: PubSub, pool: Pool<Postgres>, mut interval: tokio::
     }
 }
 
-/// Polls for new transactions
 async fn poll_transactions(
     pubsub: PubSub,
     pool: Pool<Postgres>,
@@ -218,7 +208,6 @@ async fn poll_transactions(
     }
 }
 
-/// Polls for changes in transaction count
 async fn poll_transaction_count(
     pubsub: PubSub,
     pool: Pool<Postgres>,
@@ -242,7 +231,6 @@ async fn poll_transaction_count(
     }
 }
 
-/// Polls for changes in total shielded volume
 async fn poll_total_shielded_volume(
     pubsub: PubSub,
     pool: Pool<Postgres>,
@@ -294,7 +282,6 @@ async fn get_transaction_count(pool: &Pool<Postgres>) -> Result<i64, sqlx::Error
     Ok(result.0)
 }
 
-/// Gets the current total shielded volume from the database
 async fn get_total_shielded_volume(pool: &Pool<Postgres>) -> Result<String, sqlx::Error> {
     let result = sqlx::query_scalar::<_, String>(
         r"

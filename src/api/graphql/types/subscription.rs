@@ -23,25 +23,23 @@ pub struct TransactionCountUpdate {
 #[derive(SimpleObject)]
 #[graphql(rename_fields = "camelCase")]
 pub struct IbcTransactionUpdate {
-    /// Transaction hash in hex format
     pub tx_hash: String,
-    /// IBC client ID associated with the transaction
+
     pub client_id: String,
-    /// Current transaction status (pending, completed, expired, error)
+
     pub status: String,
-    /// Block height where the transaction was included
+
     pub block_height: i64,
-    /// Timestamp when the transaction was processed
+
     pub timestamp: DateTime,
-    /// Flag indicating if this is a status update to an existing transaction
+
     pub is_status_update: bool,
-    /// Raw transaction data
+
     pub raw: String,
 }
 
 #[derive(SimpleObject, Clone)]
 #[graphql(rename_fields = "camelCase")]
 pub struct TotalShieldedVolumeUpdate {
-    /// Total shielded volume across all IBC clients
     pub value: String,
 }

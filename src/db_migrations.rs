@@ -28,8 +28,8 @@ pub fn run_migrations(database_url: &str) -> Result<()> {
     let table_exists = diesel::sql_query(
         "
         SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' 
+            SELECT FROM information_schema.tables
+            WHERE table_schema = 'public'
             AND table_name = '__diesel_schema_migrations'
         ) as exists
     ",
