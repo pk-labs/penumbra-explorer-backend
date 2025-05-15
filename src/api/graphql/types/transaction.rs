@@ -107,12 +107,8 @@ impl Transaction {
 
     #[graphql(name = "rawJson")]
     #[allow(clippy::unused_async)]
-    async fn raw_json(&self) -> Result<String> {
-        if let Some(raw_str) = self.raw_json.as_str() {
-            Ok(raw_str.to_string())
-        } else {
-            Ok(serde_json::to_string(&self.raw_json)?)
-        }
+    async fn raw_json(&self) -> Result<serde_json::Value> {
+        Ok(self.raw_json.clone())
     }
 
     #[graphql(name = "clientId")]
@@ -258,16 +254,10 @@ impl DbRawTransaction {
         if let Some(row) = row_result {
             let tx_hash: Vec<u8> = row.get("tx_hash");
             let raw_data: Option<String> = row.get("raw_data");
-            let raw_json_str: String = row.get("raw_json");
             let ibc_client_id: Option<String> = row.get("ibc_client_id");
             let ibc_status: String = row.get("ibc_status");
 
-            let json_value = if raw_json_str.is_empty() {
-                None
-            } else {
-                // Store raw JSON string without parsing
-                Some(serde_json::Value::String(raw_json_str))
-            };
+            let json_value: Option<serde_json::Value> = row.get::<Option<serde_json::Value>, _>("raw_json");
 
             Ok(Some(Self {
                 tx_hash_hex: hex::encode_upper(&tx_hash),
@@ -358,15 +348,10 @@ impl DbRawTransaction {
         for row in rows {
             let tx_hash: Vec<u8> = row.get("tx_hash");
             let raw_data: Option<String> = row.get("raw_data");
-            let raw_json_str: String = row.get("raw_json");
             let ibc_client_id: Option<String> = row.get("ibc_client_id");
             let ibc_status: String = row.get("ibc_status");
 
-            let json_value = if raw_json_str.is_empty() {
-                None
-            } else {
-                Some(serde_json::Value::String(raw_json_str))
-            };
+            let json_value: Option<serde_json::Value> = row.get::<Option<serde_json::Value>, _>("raw_json");
 
             transactions.push(Self {
                 tx_hash_hex: hex::encode_upper(&tx_hash),
