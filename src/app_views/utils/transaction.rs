@@ -51,8 +51,87 @@ fn extract_json_field(json_str: &str, field_name: &str) -> Option<String> {
     None
 }
 
-/// Extract gas used fields from a JSON string without using hardcoded defaults
+/// Extract gas used fields from a JSON string, using the same pattern as in block.rs
+/// by only including fields that are present in the raw data
 fn extract_gas_used_values(value: &str) -> serde_json::Value {
+    let clean_value = if value.starts_with('"') && value.contains("\\\"") {
+        value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+    } else {
+        value.to_string()
+    };
+
+    if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(&clean_value) {
+        if let Some(obj) = parsed_json.as_object() {
+            let mut gas_used = serde_json::json!({});
+
+            if let Some(block_space) = obj.get("blockSpace") {
+                gas_used["blockSpace"] = block_space.clone();
+            }
+            
+            if let Some(compact) = obj.get("compactBlockSpace") {
+                gas_used["compactBlockSpace"] = compact.clone();
+            }
+            
+            if let Some(exec) = obj.get("execution") {
+                gas_used["execution"] = exec.clone();
+            }
+            
+            if let Some(verify) = obj.get("verification") {
+                gas_used["verification"] = verify.clone();
+            }
+
+            if !gas_used.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+                return gas_used;
+            }
+
+            return parsed_json;
+        }
+
+        return parsed_json;
+    }
+
+    if clean_value.trim().starts_with('{') {
+        let mut balanced_value = clean_value.to_string();
+        let open_count = balanced_value.chars().filter(|&c| c == '{').count();
+        let close_count = balanced_value.chars().filter(|&c| c == '}').count();
+        
+        if open_count > close_count {
+            for _ in 0..(open_count - close_count) {
+                balanced_value.push('}');
+            }
+        }
+        
+        if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(&balanced_value) {
+            if let Some(obj) = parsed_json.as_object() {
+                let mut gas_used = serde_json::json!({});
+                
+                if let Some(block_space) = obj.get("blockSpace") {
+                    gas_used["blockSpace"] = block_space.clone();
+                }
+                
+                if let Some(compact) = obj.get("compactBlockSpace") {
+                    gas_used["compactBlockSpace"] = compact.clone();
+                }
+                
+                if let Some(exec) = obj.get("execution") {
+                    gas_used["execution"] = exec.clone();
+                }
+                
+                if let Some(verify) = obj.get("verification") {
+                    gas_used["verification"] = verify.clone();
+                }
+                
+                if !gas_used.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+                    return gas_used;
+                }
+                
+                return parsed_json;
+            }
+            
+            return parsed_json;
+        }
+    }
+
     let mut gas_object = json!({});
 
     if let Some(block_space) = extract_json_field(value, "blockSpace") {
@@ -70,17 +149,34 @@ fn extract_gas_used_values(value: &str) -> serde_json::Value {
     if let Some(compact_block_space) = extract_json_field(value, "compactBlockSpace") {
         gas_object["compactBlockSpace"] = json!(compact_block_space);
     }
-    
-    tracing::debug!(
-        "GasUsed extraction - value: {}, extracted fields: {}",
-        value, gas_object
-    );
-    
-    gas_object
+
+    if !gas_object.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+        tracing::debug!("Extracted gas object with found fields: {}", gas_object);
+        return gas_object;
+    }
+
+    json!({})
 }
 
 /// Extracts trading pair asset information from transaction view JSON
 fn extract_trading_pair_from_tx_view(tx_json: &Value) -> Option<Value> {
+    if let Some(body) = tx_json.get("body") {
+        if let Some(actions) = body.get("actions").and_then(|a| a.as_array()) {
+            for action in actions {
+                if let Some(position_open) = action.get("positionOpen") {
+                    if let Some(position) = position_open.get("position") {
+                        if let Some(phi) = position.get("phi") {
+                            if let Some(pair) = phi.get("pair") {
+                                tracing::debug!("Found trading pair in position.phi.pair: {}", pair);
+                                return Some(pair.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if let Some(view) = tx_json.get("view") {
         if let Some(action) = view.get("action") {
             if let Some(swap) = action.get("Swap") {
@@ -107,6 +203,92 @@ fn extract_trading_pair_from_tx_view(tx_json: &Value) -> Option<Value> {
     }
     
     None
+}
+
+/// Extracts complete position object from transaction view JSON
+#[allow(dead_code)]
+fn extract_position_from_tx_view(tx_json: &Value) -> Option<Value> {
+    if let Some(body) = tx_json.get("body") {
+        if let Some(actions) = body.get("actions").and_then(|a| a.as_array()) {
+            for action in actions {
+                if let Some(position_open) = action.get("positionOpen") {
+                    if let Some(position) = position_open.get("position") {
+                        tracing::debug!("Found position data in transaction view: {}", position);
+                        return Some(position.clone());
+                    }
+                }
+            }
+        }
+    }
+    
+    if let Some(view) = tx_json.get("view") {
+        if let Some(action) = view.get("action") {
+            if let Some(position_open) = action.get("PositionOpen") {
+                if let Some(position) = position_open.get("position") {
+                    tracing::debug!("Found position in PositionOpen: {}", position);
+                    return Some(position.clone());
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// Helper function to extract nested JSON from a string
+#[allow(dead_code)]
+fn try_extract_nested_json(json_str: &str, field_name: &str) -> Value {
+    if let Some(field_pos) = json_str.find(field_name) {
+        if let Some(colon_pos) = json_str[field_pos..].find(':') {
+            let start_pos = field_pos + colon_pos + 1;
+            let value_start = json_str[start_pos..].trim_start();
+            
+            if value_start.starts_with('{') {
+                let mut brace_level = 0;
+                let mut end_pos = 0;
+                let mut in_quotes = false;
+                let mut escaped = false;
+                
+                for (i, c) in value_start.char_indices() {
+                    if in_quotes && c == '\\' {
+                        escaped = !escaped;
+                        continue;
+                    }
+                    
+                    if c == '"' && !escaped {
+                        in_quotes = !in_quotes;
+                        escaped = false;
+                        continue;
+                    }
+                    
+                    if escaped {
+                        escaped = false;
+                    }
+                    
+                    if !in_quotes {
+                        if c == '{' {
+                            brace_level += 1;
+                        } else if c == '}' {
+                            brace_level -= 1;
+                            if brace_level == 0 {
+                                end_pos = i + 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                if end_pos > 0 {
+                    let json_part = &value_start[..end_pos];
+                    if let Ok(parsed_json) = serde_json::from_str::<Value>(json_part) {
+                        return parsed_json;
+                    }
+                }
+            }
+        }
+    }
+    
+    Value::Null
 }
 
 pub struct Metadata<'a> {
@@ -238,7 +420,6 @@ pub fn create_transaction_json(
     tx_index: u64,
     tx_events: &[ContextualizedEvent<'_>],
 ) -> Value {
-    // Decode the transaction first to extract trading pair info if needed
     let tx_result_decoded = decode(tx_hash, tx_bytes);
     let trading_pair_info = extract_trading_pair_from_tx_view(&tx_result_decoded);
     tracing::debug!("Extracted trading pair from transaction view: {:?}", trading_pair_info);
@@ -263,110 +444,124 @@ pub fn create_transaction_json(
                         continue;
                     }
 
-                    let processed_value = if key == "gasUsed" && value.contains("blockSpace") {
-                        extract_gas_used_values(&value)
-                    } else if key == "tradingPair" {
-                        if value.contains("asset1") && !value.contains("asset2") {
-                            if let Some(trading_pair) = &trading_pair_info {
-                                tracing::debug!("Using trading pair from transaction view: {}", trading_pair);
-                                trading_pair.clone()
-                            } else {
-                                let clean_value = value
-                                    .replace("\\\"", "\"")
-                                    .replace("\\\\", "\\");
-
-                                let asset1_inner = if let Some(inner_start) = clean_value.find("inner") {
-                                    if let Some(colon) = clean_value[inner_start..].find(':') {
-                                        let start = inner_start + colon + 1;
-                                        if let Some(quote) = clean_value[start..].find('\"') {
-                                            let content_start = start + quote + 1;
-                                            if let Some(end_quote) = clean_value[content_start..].find('\"') {
-                                                clean_value[content_start..(content_start + end_quote)].trim().to_string()
-                                            } else {
-                                                return json!({
-                                                    "asset1": {
-                                                        "inner": clean_value
-                                                    }
-                                                });
-                                            }
-                                        } else {
-                                            return json!({
-                                                "asset1": {
-                                                    "inner": clean_value
-                                                }
-                                            });
-                                        }
-                                    } else {
-                                        return json!({
-                                            "asset1": {
-                                                "inner": clean_value
-                                            }
-                                        });
-                                    }
+                    let processed_value = if key == "gasUsed" {
+                        tracing::debug!("Processing gasUsed in tx attributes: {}", value);
+                        
+                        if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
+                            if let Some(obj) = parsed_json.as_object() {
+                                let mut full_gas_used = serde_json::json!({});
+                                
+                                if let Some(block_space) = obj.get("blockSpace") {
+                                    full_gas_used["blockSpace"] = block_space.clone();
+                                }
+                                
+                                if let Some(compact) = obj.get("compactBlockSpace") {
+                                    full_gas_used["compactBlockSpace"] = compact.clone();
+                                }
+                                
+                                if let Some(exec) = obj.get("execution") {
+                                    full_gas_used["execution"] = exec.clone();
+                                }
+                                
+                                if let Some(verify) = obj.get("verification") {
+                                    full_gas_used["verification"] = verify.clone();
+                                }
+                                
+                                if full_gas_used.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+                                    parsed_json
                                 } else {
-                                    return json!({
-                                        "asset1": {
-                                            "inner": clean_value
-                                        }
-                                    });
-                                };
-
-                                json!({
-                                    "asset1": {
-                                        "inner": asset1_inner
-                                    }
-                                })
+                                    full_gas_used
+                                }
+                            } else if let Some(block_space_str) = parsed_json.as_str() {
+                                json!({"blockSpace": block_space_str})
+                            } else {
+                                parsed_json
                             }
                         } else {
-                            if value.contains("\\\"") {
-                                let clean_value = value
-                                    .trim_start_matches('\"')
-                                    .trim_end_matches('\"')
-                                    .replace("\\\"", "\"")
-                                    .replace("\\\\", "\\");
-
-                                let mut balanced_value = clean_value;
+                            extract_gas_used_values(&value)
+                        }
+                    } else if key == "tradingPair" {
+                        if let Some(trading_pair) = &trading_pair_info {
+                            tracing::debug!("Using trading pair from transaction view: {}", trading_pair);
+                            trading_pair.clone()
+                        } else {
+                            let clean_value = if value.starts_with('"') && value.contains("\\\"") {
+                                value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                            } else {
+                                value.to_string()
+                            };
+                            
+                            if clean_value.trim().starts_with('{') {
+                                let mut balanced_value = clean_value.to_string();
                                 let open_count = balanced_value.chars().filter(|&c| c == '{').count();
                                 let close_count = balanced_value.chars().filter(|&c| c == '}').count();
-
+                                
                                 if open_count > close_count {
                                     for _ in 0..(open_count - close_count) {
                                         balanced_value.push('}');
                                     }
                                 }
-
-                                if let Ok(parsed) = serde_json::from_str::<Value>(&balanced_value) {
-                                    parsed
+                                
+                                if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
+                                    parsed_json
                                 } else {
-                                    json!(value)
+                                    json!(clean_value)
                                 }
                             } else {
-                                json!(value)
+                                json!(clean_value)
                             }
                         }
-                    } else if key == "position" && value.contains("\"\"") {
-                        json!(value.trim_matches('\"'))
-                    } else if value.starts_with('\"') && value.contains("\\\"") && value.contains("{") {
-                        let clean_value = value
-                            .trim_start_matches('\"')
-                            .trim_end_matches('\"')
-                            .replace("\\\"", "\"")
-                            .replace("\\\\", "\\");
-
+                    } else if value.trim().starts_with('{') || (value.starts_with('"') && value.contains("\\\"") && value.contains("{")) {
+                        let clean_value = if value.starts_with('"') && value.contains("\\\"") {
+                            value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                        } else {
+                            value.to_string()
+                        };
+                        
                         let mut balanced_value = clean_value;
                         let open_count = balanced_value.chars().filter(|&c| c == '{').count();
                         let close_count = balanced_value.chars().filter(|&c| c == '}').count();
-
+                        
                         if open_count > close_count {
                             for _ in 0..(open_count - close_count) {
                                 balanced_value.push('}');
                             }
                         }
-
+                        
                         if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
                             parsed_json
                         } else {
-                            json!(value)
+                            if let Some(json_start) = balanced_value.find('{') {
+                                let json_part = &balanced_value[json_start..];
+                                
+                                let mut balanced_json = json_part.to_string();
+                                let json_open_count = balanced_json.chars().filter(|&c| c == '{').count();
+                                let json_close_count = balanced_json.chars().filter(|&c| c == '}').count();
+                                
+                                if json_open_count > json_close_count {
+                                    for _ in 0..(json_open_count - json_close_count) {
+                                        balanced_json.push('}');
+                                    }
+                                }
+                                
+                                if let Ok(parsed_substring) = serde_json::from_str::<Value>(&balanced_json) {
+                                    parsed_substring
+                                } else {
+                                    json!(balanced_value)
+                                }
+                            } else {
+                                json!(balanced_value)
+                            }
+                        }
+                    } else if key == "position" {
+                        if value.trim().chars().all(|c| c.is_ascii_digit()) {
+                            json!(value.trim_matches('\"'))
+                        } else {
+                            if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
+                                parsed_json
+                            } else {
+                                json!(value)
+                            }
                         }
                     } else if value.trim().starts_with('{') && value.trim().ends_with('}') {
                         if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
@@ -398,19 +593,116 @@ pub fn create_transaction_json(
                     continue;
                 }
                 
-                if key == "gasUsed" && value.contains("blockSpace") {
-                    let gas_object = extract_gas_used_values(&value);
+                if key == "gasUsed" {
+                    if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
+                        if let Some(obj) = parsed_json.as_object() {
+                            let mut full_gas_used = serde_json::json!({});
+                            
+                            if let Some(block_space) = obj.get("blockSpace") {
+                                full_gas_used["blockSpace"] = block_space.clone();
+                                
+                                if let Some(compact) = obj.get("compactBlockSpace") {
+                                    full_gas_used["compactBlockSpace"] = compact.clone();
+                                }
+                                if let Some(exec) = obj.get("execution") {
+                                    full_gas_used["execution"] = exec.clone();
+                                }
+                                if let Some(verify) = obj.get("verification") {
+                                    full_gas_used["verification"] = verify.clone();
+                                }
+                                
+                                attributes.push(json!({
+                                    "key": key,
+                                    "value": full_gas_used
+                                }));
+                                continue;
+                            }
+                            
+                            let mut has_fields = false;
+                            
+                            if let Some(compact) = obj.get("compactBlockSpace") {
+                                full_gas_used["compactBlockSpace"] = compact.clone();
+                                has_fields = true;
+                            }
+                            if let Some(exec) = obj.get("execution") {
+                                full_gas_used["execution"] = exec.clone();
+                                has_fields = true;
+                            }
+                            if let Some(verify) = obj.get("verification") {
+                                full_gas_used["verification"] = verify.clone();
+                                has_fields = true;
+                            }
+                            
+                            if has_fields {
+                                attributes.push(json!({
+                                    "key": key,
+                                    "value": full_gas_used
+                                }));
+                                continue;
+                            }
+                            
+                            attributes.push(json!({
+                                "key": key,
+                                "value": parsed_json
+                            }));
+                            continue;
+                        }
+                        
+                        if let Some(block_space_str) = parsed_json.as_str() {
+                            attributes.push(json!({
+                                "key": key,
+                                "value": json!({"blockSpace": block_space_str})
+                            }));
+                            continue;
+                        }
+                        
+                        attributes.push(json!({
+                            "key": key,
+                            "value": parsed_json
+                        }));
+                        continue;
+                    }
                     
-                    attributes.push(json!({
-                        "key": key,
-                        "value": gas_object
-                    }));
+                    let clean_value = if value.starts_with('"') && value.contains("\\\"") {
+                        value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                    } else {
+                        value.to_string()
+                    };
+                    
+                    if let Ok(parsed_clean) = serde_json::from_str::<Value>(&clean_value) {
+                        let extracted = extract_gas_used_values(&clean_value);
+                        if extracted.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+                            attributes.push(json!({
+                                "key": key,
+                                "value": parsed_clean
+                            }));
+                        } else {
+                            attributes.push(json!({
+                                "key": key,
+                                "value": extracted
+                            }));
+                        }
+                        continue;
+                    }
+                    
+                    let extracted = extract_gas_used_values(&value);
+                    if extracted.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+                        attributes.push(json!({
+                            "key": key,
+                            "value": value
+                        }));
+                    } else {
+                        attributes.push(json!({
+                            "key": key,
+                            "value": extracted
+                        }));
+                    }
                     continue;
                 }
                 
-                if key == "tradingPair" && value.contains("asset1") && !value.trim().ends_with('}') {
+                if key == "tradingPair" {
                     if let Some(trading_pair) = &trading_pair_info {
-                        tracing::debug!("Using trading pair from transaction view for event attribute: {}", trading_pair);
+                        tracing::debug!("Using complete trading pair from transaction view for event attribute: {}", trading_pair);
                         attributes.push(json!({
                             "key": key,
                             "value": trading_pair
@@ -418,28 +710,50 @@ pub fn create_transaction_json(
                         continue;
                     }
                     
-                    let clean_value = value
-                        .replace("\\\"", "\"")
-                        .replace("\\\\", "\\");
+                    let clean_value = if value.starts_with('"') && value.contains("\\\"") {
+                        value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                    } else {
+                        value.to_string()
+                    };
+                    
+                    if clean_value.trim().starts_with('{') {
+                        let mut balanced_value = clean_value.to_string();
+                        let open_count = balanced_value.chars().filter(|&c| c == '{').count();
+                        let close_count = balanced_value.chars().filter(|&c| c == '}').count();
                         
-                    if let Some(inner_start) = clean_value.find("inner") {
-                        if let Some(colon) = clean_value[inner_start..].find(':') {
-                            let start = inner_start + colon + 1;
-                            if let Some(quote) = clean_value[start..].find('\"') {
-                                let content_start = start + quote + 1;
-                                if let Some(end_quote) = clean_value[content_start..].find('\"') {
-                                    let asset1_inner = clean_value[content_start..(content_start + end_quote)].trim();
-                                    
-                                    attributes.push(json!({
-                                        "key": key,
-                                        "value": {
-                                            "asset1": {
-                                                "inner": asset1_inner
-                                            }
-                                        }
-                                    }));
-                                    continue;
+                        if open_count > close_count {
+                            for _ in 0..(open_count - close_count) {
+                                balanced_value.push('}');
+                            }
+                        }
+                        
+                        if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
+                            attributes.push(json!({
+                                "key": key,
+                                "value": parsed_json
+                            }));
+                            continue;
+                        }
+                        
+                        if let Some(json_start) = balanced_value.find('{') {
+                            let json_fragment = &balanced_value[json_start..];
+                            let mut balanced_fragment = json_fragment.to_string();
+                            
+                            let frag_open = balanced_fragment.chars().filter(|&c| c == '{').count();
+                            let frag_close = balanced_fragment.chars().filter(|&c| c == '}').count();
+                            
+                            if frag_open > frag_close {
+                                for _ in 0..(frag_open - frag_close) {
+                                    balanced_fragment.push('}');
                                 }
+                            }
+                            
+                            if let Ok(parsed_fragment) = serde_json::from_str::<Value>(&balanced_fragment) {
+                                attributes.push(json!({
+                                    "key": key,
+                                    "value": parsed_fragment
+                                }));
+                                continue;
                             }
                         }
                     }
@@ -451,11 +765,106 @@ pub fn create_transaction_json(
                     continue;
                 }
                 
-                if key == "position" && value.contains("\"\"") {
-                    let clean_value = value.trim_matches('\"');
+                if value.trim().starts_with('{') || (value.starts_with('"') && value.contains("\\\"") && value.contains("{")) {
+                    let clean_value = if value.starts_with('"') && value.contains("\\\"") {
+                        value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                    } else {
+                        value.to_string()
+                    };
+                    
+                    let mut balanced_value = clean_value;
+                    let open_count = balanced_value.chars().filter(|&c| c == '{').count();
+                    let close_count = balanced_value.chars().filter(|&c| c == '}').count();
+                    
+                    if open_count > close_count {
+                        for _ in 0..(open_count - close_count) {
+                            balanced_value.push('}');
+                        }
+                    }
+                    
+                    if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
+                        attributes.push(json!({
+                            "key": key,
+                            "value": parsed_json
+                        }));
+                        continue;
+                    }
+                    
+                    if let Some(json_start) = balanced_value.find('{') {
+                        let json_part = &balanced_value[json_start..];
+                        
+                        let mut balanced_json = json_part.to_string();
+                        let json_open_count = balanced_json.chars().filter(|&c| c == '{').count();
+                        let json_close_count = balanced_json.chars().filter(|&c| c == '}').count();
+                        
+                        if json_open_count > json_close_count {
+                            for _ in 0..(json_open_count - json_close_count) {
+                                balanced_json.push('}');
+                            }
+                        }
+                        
+                        if let Ok(parsed_substring) = serde_json::from_str::<Value>(&balanced_json) {
+                            attributes.push(json!({
+                                "key": key,
+                                "value": parsed_substring
+                            }));
+                            continue;
+                        }
+                    }
+                    
                     attributes.push(json!({
                         "key": key,
-                        "value": clean_value
+                        "value": balanced_value
+                    }));
+                    continue;
+                } else if key == "position" {
+                    if value.trim().chars().all(|c| c.is_ascii_digit()) {
+                        attributes.push(json!({
+                            "key": key,
+                            "value": value.trim_matches('\"')
+                        }));
+                        continue;
+                    }
+                    
+                    if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
+                        attributes.push(json!({
+                            "key": key,
+                            "value": parsed_json
+                        }));
+                        continue;
+                    }
+                    
+                    tracing::debug!("Original position value from DB: {}", value);
+                    
+                    let clean_value = if value.starts_with('\"') && value.contains("\\\"") {
+                        value.trim_matches('\"').replace("\\\"", "\"").replace("\\\\", "\\")
+                    } else {
+                        value.to_string()
+                    };
+                    
+                    if clean_value.trim().starts_with('{') {
+                        let mut balanced_value = clean_value.to_string();
+                        let open_count = balanced_value.chars().filter(|&c| c == '{').count();
+                        let close_count = balanced_value.chars().filter(|&c| c == '}').count();
+                        
+                        if open_count > close_count {
+                            for _ in 0..(open_count - close_count) {
+                                balanced_value.push('}');
+                            }
+                        }
+                        
+                        if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
+                            attributes.push(json!({
+                                "key": key,
+                                "value": parsed_json
+                            }));
+                            continue;
+                        }
+                    }
+                    
+                    attributes.push(json!({
+                        "key": key,
+                        "value": value.trim_matches('\"')
                     }));
                     continue;
                 }
@@ -470,51 +879,7 @@ pub fn create_transaction_json(
                     }
                 }
                 
-                if key == "tradingPair" {
-                    if value.contains("asset1") && !value.contains("asset2") {
-                        if let Some(trading_pair) = &trading_pair_info {
-                            tracing::debug!("Using trading pair from transaction view for special handling: {}", trading_pair);
-                            attributes.push(json!({
-                                "key": key,
-                                "value": trading_pair
-                            }));
-                            continue;
-                        }
-                        
-                        let clean_value = value
-                            .replace("\\\"", "\"")
-                            .replace("\\\\", "\\");
-                            
-                        if let Some(inner_start) = clean_value.find("inner") {
-                            if let Some(colon) = clean_value[inner_start..].find(':') {
-                                let start = inner_start + colon + 1;
-                                if let Some(quote) = clean_value[start..].find('\"') {
-                                    let content_start = start + quote + 1;
-                                    if let Some(end_quote) = clean_value[content_start..].find('\"') {
-                                        let asset1_inner = clean_value[content_start..(content_start + end_quote)].trim();
-                                        
-                                        attributes.push(json!({
-                                            "key": key,
-                                            "value": {
-                                                "asset1": {
-                                                    "inner": asset1_inner
-                                                }
-                                            }
-                                        }));
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        attributes.push(json!({
-                            "key": key,
-                            "value": clean_value
-                        }));
-                        continue;
-                    }
-                }
-                
+
                 if value.starts_with('\"') && value.contains("\\\"") && value.contains("{") {
                     let clean_value = value
                         .trim_start_matches('\"')

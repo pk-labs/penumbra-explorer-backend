@@ -25,317 +25,308 @@ pub fn encode_to_base64<T: AsRef<[u8]>>(data: T) -> String {
 }
 
 /// Parse attribute string from an event
+/// 
+/// This function extracts key-value pairs from attribute strings in various formats,
+/// handling complex nested JSON structures and properly preserving all values.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn parse_attribute_string(attr_str: &str) -> Option<(String, String)> {
-    if attr_str.contains("EventAttribute")
-        && attr_str.contains("key:")
-        && attr_str.contains("value:")
-    {
-        // Extract the key
-        let key_start = attr_str.find("key:").unwrap_or(0) + 5;
-        let mut key_end = attr_str[key_start..]
-            .find(',')
-            .map_or(attr_str.len(), |pos| key_start + pos);
-            
-        // Adjust if the key contains a quoted comma
-        if attr_str[key_start..key_end].contains('"') && 
-           attr_str[key_start..key_end].matches('"').count() % 2 != 0 {
-            if let Some(next_comma) = attr_str[key_end+1..].find(',') {
-                key_end = key_end + 1 + next_comma;
-            }
-        }
-        
-        let key = attr_str[key_start..key_end]
-            .trim()
-            .trim_matches('"')
-            .to_string();
+    let (key, raw_value) = if attr_str.contains("EventAttribute") && attr_str.contains("key:") && attr_str.contains("value:") {
+        extract_key_value_from_event_attribute(attr_str)?
+    } else if attr_str.contains("key:") && attr_str.contains("value:") {
+        extract_key_value_from_key_value(attr_str)?
+    } else if attr_str.contains('{') {
+        extract_key_value_from_json(attr_str)?
+    } else {
+        return None;
+    };
 
-        // Extract the full value part including potential JSON objects
-        let value_start = attr_str.find("value:").unwrap_or(0) + 7;
-        
-        // If the value is a JSON object, we need to handle it separately
-        let value_str = &attr_str[value_start..];
-        let mut value_end = value_str.find(',').unwrap_or(value_str.len());
-        
-        // Handle JSON objects and arrays that might contain commas
-        if value_str[..value_end].trim().starts_with('{') {
-            // Count opening and closing braces
-            let mut brace_level = 0;
-            let mut in_quotes = false;
-            let mut found_end = false;
-            
-            for (i, c) in value_str.char_indices() {
-                if c == '"' && (i == 0 || value_str.chars().nth(i-1).unwrap_or(' ') != '\\') {
-                    in_quotes = !in_quotes;
-                    continue;
-                }
-                
-                if !in_quotes {
-                    if c == '{' {
-                        brace_level += 1;
-                    } else if c == '}' {
-                        brace_level -= 1;
-                        if brace_level == 0 {
-                            value_end = i + 1;
-                            found_end = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            if !found_end && brace_level > 0 {
-                let mut pos = value_end + 1;
-                while pos < value_str.len() {
-                    if value_str[pos..].starts_with(',') && !in_quotes {
-                        value_end = pos;
-                        break;
-                    }
-                    if value_str[pos..].starts_with('"') && 
-                       (pos == 0 || value_str.chars().nth(pos-1).unwrap_or(' ') != '\\') {
-                        in_quotes = !in_quotes;
-                    }
-                    pos += 1;
-                }
-            }
-        }
-        
-        let value = value_str[..value_end].trim().to_string();
-
-        // Clean up the value
-        let mut clean_value = value
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\")
-            .replace("\\n", "\n");
-        
-        // Special handling for quoted strings with backslashes
-        if clean_value.starts_with('\"') && clean_value.ends_with('\\') {
-            clean_value = clean_value
-                .trim_start_matches('"')
-                .trim_end_matches('\\')
-                .to_string();
-        }
-        
-        // Fix JSON objects with unbalanced braces
-        if clean_value.trim().starts_with('{') {
-            let open_braces = clean_value.chars().filter(|&c| c == '{').count();
-            let close_braces = clean_value.chars().filter(|&c| c == '}').count();
-            
-            if open_braces > close_braces {
-                for _ in 0..(open_braces - close_braces) {
-                    clean_value.push('}');
-                }
-            }
-        }
-        
-        // Special handling for fee-related fields
-        if key == "swappedBaseFeeTotal" || key == "swappedFeeTotal" || key == "swappedTipTotal" {
-            return Some((key, clean_value));
-        }
-
-        if clean_value == "{\"amount\":{}}" || clean_value.trim().is_empty() {
-            return None;
-        }
-
-        return Some((key, clean_value));
+    if raw_value.trim().is_empty() || raw_value == "{\"amount\":{}}" {
+        return None;
     }
 
-    if attr_str.contains("key:") && attr_str.contains("value:") {
-        // Extract the key
-        let key_start = attr_str.find("key:").unwrap_or(0) + 4;
-        let mut key_end = attr_str[key_start..]
-            .find(',')
-            .map_or(attr_str.len(), |pos| key_start + pos);
-            
-        // Adjust if the key contains a quoted comma
-        if attr_str[key_start..key_end].contains('"') && 
-           attr_str[key_start..key_end].matches('"').count() % 2 != 0 {
-            if let Some(next_comma) = attr_str[key_end+1..].find(',') {
-                key_end = key_end + 1 + next_comma;
-            }
-        }
-        
-        let key = attr_str[key_start..key_end]
-            .trim()
-            .trim_matches('"')
-            .to_string();
+    let processed_value = process_value(&key, &raw_value);
+    
+    Some((key, processed_value))
+}
 
-        // Extract the full value part including potential JSON objects
-        let value_start = attr_str.find("value:").unwrap_or(0) + 6;
-        
-        // If the value is a JSON object, we need to handle it separately
-        let value_str = &attr_str[value_start..];
-        let mut value_end = value_str.find(',').unwrap_or(value_str.len());
-        
-        // Handle JSON objects and arrays that might contain commas
-        if value_str[..value_end].trim().starts_with('{') {
-            // Count opening and closing braces
-            let mut brace_level = 0;
-            let mut in_quotes = false;
-            let mut found_end = false;
-            
-            for (i, c) in value_str.char_indices() {
-                if c == '"' && (i == 0 || value_str.chars().nth(i-1).unwrap_or(' ') != '\\') {
-                    in_quotes = !in_quotes;
-                    continue;
-                }
-                
-                if !in_quotes {
-                    if c == '{' {
-                        brace_level += 1;
-                    } else if c == '}' {
-                        brace_level -= 1;
-                        if brace_level == 0 {
-                            value_end = i + 1;
-                            found_end = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            // If we couldn't find the end, try to extend to the next comma after the JSON object
-            if !found_end && brace_level > 0 {
-                // Try to find the next comma that's not in quotes
-                let mut pos = value_end + 1;
-                while pos < value_str.len() {
-                    if value_str[pos..].starts_with(',') && !in_quotes {
-                        value_end = pos;
-                        break;
-                    }
-                    if value_str[pos..].starts_with('"') && 
-                       (pos == 0 || value_str.chars().nth(pos-1).unwrap_or(' ') != '\\') {
-                        in_quotes = !in_quotes;
-                    }
-                    pos += 1;
-                }
-            }
-        }
-        
-        let value = value_str[..value_end].trim().to_string();
-
-        // Clean up the value
-        let mut clean_value = value
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\")
-            .replace("\\n", "\n");
-            
-        // Special handling for quoted strings with backslashes
-        if clean_value.starts_with('\"') && clean_value.ends_with('\\') {
-            clean_value = clean_value
-                .trim_start_matches('"')
-                .trim_end_matches('\\')
-                .to_string();
-        }
-        
-        // Fix JSON objects with unbalanced braces
-        if clean_value.trim().starts_with('{') {
-            let open_braces = clean_value.chars().filter(|&c| c == '{').count();
-            let close_braces = clean_value.chars().filter(|&c| c == '}').count();
-            
-            if open_braces > close_braces {
-                for _ in 0..(open_braces - close_braces) {
-                    clean_value.push('}');
-                }
-            }
-        }
-        
-        // Special handling for fee-related fields
-        if key == "swappedBaseFeeTotal" || key == "swappedFeeTotal" || key == "swappedTipTotal" {
-            return Some((key, clean_value));
-        }
-
-        if clean_value == "{\"amount\":{}}" || clean_value.trim().is_empty() {
-            return None;
-        }
-
-        return Some((key, clean_value));
+/// Process a value string based on its content and key
+fn process_value(key: &str, value: &str) -> String {
+    if key == "swappedBaseFeeTotal" || key == "swappedFeeTotal" || key == "swappedTipTotal" {
+        return value.to_string();
     }
 
-    if attr_str.contains('{') {
-        let json_start = attr_str.find('{').unwrap_or(0);
-        let field_name = attr_str[0..json_start].trim().to_string();
+    let clean_value = clean_value_string(value);
+    
+    if clean_value.trim().starts_with('{') {
+        return process_json_value(&clean_value);
+    }
 
-        if !field_name.is_empty() {
-            // Extract the complete JSON object
-            let json_str = &attr_str[json_start..];
-            let mut end_pos = json_str.len();
-            
-            // Handle complex JSON objects with nested structures
-            let mut brace_level = 0;
-            let mut in_quotes = false;
-            let mut found_end = false;
-            
-            for (i, c) in json_str.char_indices() {
-                if c == '"' && (i == 0 || json_str.chars().nth(i-1).unwrap_or(' ') != '\\') {
-                    in_quotes = !in_quotes;
-                    continue;
-                }
-                
-                if !in_quotes {
-                    if c == '{' {
-                        brace_level += 1;
-                    } else if c == '}' {
-                        brace_level -= 1;
-                        if brace_level == 0 {
-                            end_pos = i + 1;
-                            found_end = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            let mut json_content = if found_end {
-                json_str[..end_pos].to_string()
-            } else {
-                json_str.to_string()
-            };
+    clean_value
+}
 
-            // Clean up and fix common issues
-            json_content = json_content.replace("\\\"", "\"");
-            
-            // Balance quotes
-            if json_content.matches('"').count() % 2 != 0 {
-                json_content.push('"');
-            }
-            
-            // Balance braces
-            let open_braces = json_content.chars().filter(|&c| c == '{').count();
-            let close_braces = json_content.chars().filter(|&c| c == '}').count();
+/// Clean a value string from escape sequences
+fn clean_value_string(value: &str) -> String {
+    let mut clean_value = value
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\")
+        .replace("\\n", "\n");
+    
+    if clean_value.starts_with('\"') && clean_value.ends_with('\\') {
+        clean_value = clean_value
+            .trim_start_matches('"')
+            .trim_end_matches('\\')
+            .to_string();
+    }
+    
+    if clean_value.starts_with('\"') && clean_value.ends_with('\"') {
+        clean_value = clean_value
+            .trim_start_matches('"')
+            .trim_end_matches('"')
+            .to_string();
+    }
+    
+    clean_value
+}
 
-            if open_braces > close_braces {
-                for _ in 0..(open_braces - close_braces) {
-                    json_content.push('}');
-                }
-            }
+/// Process a JSON-formatted value
+fn process_json_value(value: &str) -> String {
+    let balanced_value = ensure_balanced_braces(value);
+    
+    // Try to parse and re-serialize to ensure valid JSON
+    if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(&balanced_value) {
+        // If parsing succeeded, use the serde_json serialization to ensure valid format
+        return serde_json::to_string(&parsed_json)
+            .unwrap_or_else(|_| balanced_value.to_string());
+    }
+    
+    balanced_value
+}
 
-            // Final cleanup for special cases
-            let clean_json = json_content
+/// Ensure JSON braces are balanced
+fn ensure_balanced_braces(value: &str) -> String {
+    let mut balanced_value = value.to_string();
+    
+    let open_braces = balanced_value.chars().filter(|&c| c == '{').count();
+    let close_braces = balanced_value.chars().filter(|&c| c == '}').count();
+    
+    if open_braces > close_braces {
+        for _ in 0..(open_braces - close_braces) {
+            balanced_value.push('}');
+        }
+    }
+    
+    balanced_value
+}
+
+/// Extract key and value from an EventAttribute format string
+fn extract_key_value_from_event_attribute(attr_str: &str) -> Option<(String, String)> {
+    let key_start = attr_str.find("key:").unwrap_or(0) + 5;
+    let mut key_end = attr_str[key_start..]
+        .find(',')
+        .map_or(attr_str.len(), |pos| key_start + pos);
+        
+    if attr_str[key_start..key_end].contains('"') &&
+       attr_str[key_start..key_end].matches('"').count() % 2 != 0 {
+        if let Some(next_comma) = attr_str[key_end+1..].find(',') {
+            key_end = key_end + 1 + next_comma;
+        }
+    }
+    
+    let key = attr_str[key_start..key_end]
+        .trim()
+        .trim_matches('"')
+        .to_string();
+
+    let value_start = attr_str.find("value:").unwrap_or(0) + 7;
+    let value = extract_complex_value(&attr_str[value_start..]);
+    
+    Some((key, value))
+}
+
+/// Extract key and value from a generic key-value format string
+fn extract_key_value_from_key_value(attr_str: &str) -> Option<(String, String)> {
+    let key_start = attr_str.find("key:").unwrap_or(0) + 4;
+    let mut key_end = attr_str[key_start..]
+        .find(',')
+        .map_or(attr_str.len(), |pos| key_start + pos);
+        
+    if attr_str[key_start..key_end].contains('"') &&
+       attr_str[key_start..key_end].matches('"').count() % 2 != 0 {
+        if let Some(next_comma) = attr_str[key_end+1..].find(',') {
+            key_end = key_end + 1 + next_comma;
+        }
+    }
+    
+    let key = attr_str[key_start..key_end]
+        .trim()
+        .trim_matches('"')
+        .to_string();
+
+    let value_start = attr_str.find("value:").unwrap_or(0) + 6;
+    let value = extract_complex_value(&attr_str[value_start..]);
+    
+    Some((key, value))
+}
+
+/// Extract key and value from a JSON object format string
+fn extract_key_value_from_json(attr_str: &str) -> Option<(String, String)> {
+    let json_start = attr_str.find('{').unwrap_or(0);
+    let field_name = attr_str[0..json_start].trim().to_string();
+
+    if field_name.is_empty() {
+        return None;
+    }
+    
+    let json_content = extract_complex_value(&attr_str[json_start..]);
+    
+    Some((field_name, json_content))
+}
+
+/// Extract a potentially complex value (like JSON) accounting for nesting
+fn extract_complex_value(value_str: &str) -> String {
+    if value_str.trim().starts_with('"') && value_str.trim().contains("\\\"") &&
+       (value_str.trim().contains("{") || value_str.trim().contains("}")) {
+        let trimmed = value_str.trim();
+        if trimmed.len() > 2 && trimmed.ends_with('"') {
+            let inner_content = &trimmed[1..trimmed.len()-1];
+            let unescaped = inner_content
                 .replace("\\\"", "\"")
-                .replace("\\\\", "\\")
-                .replace("\\n", "\n");
-
-            // Filter out specific patterns that should be skipped
-            if clean_json == "{\"amount\":{}}"
-                || clean_json.trim().is_empty()
-                || clean_json.ends_with(":{")
-            {
-                return None;
+                .replace("\\\\", "\\");
+                
+            if unescaped.contains('{') {
+                let mut balanced = unescaped.to_string();
+                let open_count = balanced.chars().filter(|&c| c == '{').count();
+                let close_count = balanced.chars().filter(|&c| c == '}').count();
+                
+                if open_count > close_count {
+                    for _ in 0..(open_count - close_count) {
+                        balanced.push('}');
+                    }
+                }
+                
+                if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced) {
+                    return serde_json::to_string(&parsed_json)
+                        .unwrap_or(balanced);
+                }
+                
+                return balanced;
             }
             
-            // Check if this is an amount field but allow it if it has values
-            if clean_json.contains("{\"amount\":{") && 
-               !clean_json.contains("{\"amount\":{}}") {
-                return Some((field_name, clean_json));
-            }
-
-            return Some((field_name, clean_json));
+            return unescaped;
         }
     }
 
-    None
+    let mut value_end = value_str.find(',').unwrap_or(value_str.len());
+    
+    if value_str[..min(value_end, value_str.len())].trim().starts_with('{') {
+        let mut brace_level = 0;
+        let mut in_quotes = false;
+        let mut escaped = false;
+        let mut found_end = false;
+        
+        for (i, c) in value_str.char_indices() {
+            if in_quotes && c == '\\' {
+                escaped = !escaped;
+                continue;
+            }
+            
+            if c == '"' && !escaped {
+                in_quotes = !in_quotes;
+                escaped = false;
+                continue;
+            }
+            
+            if escaped {
+                escaped = false;
+            }
+            
+            if !in_quotes {
+                if c == '{' {
+                    brace_level += 1;
+                } else if c == '}' {
+                    brace_level -= 1;
+                    if brace_level == 0 {
+                        value_end = i + 1;
+                        found_end = true;
+                        break;
+                    }
+                } else if c == ',' && brace_level == 0 {
+                    value_end = i;
+                    found_end = true;
+                    break;
+                }
+            }
+        }
+
+        if !found_end && brace_level > 0 {
+            let mut balanced_value = value_str.to_string();
+            for _ in 0..brace_level {
+                balanced_value.push('}');
+            }
+
+            if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
+                return serde_json::to_string(&parsed_json)
+                    .unwrap_or(balanced_value.trim().to_string());
+            }
+            
+            return balanced_value.trim().to_string();
+        }
+    }
+    
+    let extracted = value_str[..min(value_end, value_str.len())].trim();
+    
+    if extracted.contains('{') {
+        if let Some(start_idx) = extracted.find('{') {
+            let json_part = &extracted[start_idx..];
+            
+            let mut balanced = json_part.to_string();
+            let open_count = balanced.chars().filter(|&c| c == '{').count();
+            let close_count = balanced.chars().filter(|&c| c == '}').count();
+            
+            if open_count > close_count {
+                for _ in 0..(open_count - close_count) {
+                    balanced.push('}');
+                }
+            }
+            
+            if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced) {
+                return serde_json::to_string(&parsed_json)
+                    .unwrap_or(balanced);
+            }
+            
+            if balanced.trim().starts_with('{') && balanced.trim().ends_with('}') {
+                return balanced;
+            }
+        }
+    }
+    
+    if extracted.starts_with('"') && extracted.ends_with('"') && extracted.len() > 2 {
+        let inner_content = &extracted[1..extracted.len()-1];
+        let unescaped = inner_content
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\");
+            
+        if unescaped.trim().starts_with('{') {
+            if let Ok(parsed_json) = serde_json::from_str::<Value>(&unescaped) {
+                return serde_json::to_string(&parsed_json)
+                    .unwrap_or(unescaped);
+            }
+            
+            let open_count = unescaped.chars().filter(|&c| c == '{').count();
+            let close_count = unescaped.chars().filter(|&c| c == '}').count();
+            if open_count == close_count && open_count > 0 {
+                return unescaped;
+            }
+        }
+        
+        return unescaped;
+    }
+    
+    extracted.to_string()
+}
+
+fn min(a: usize, b: usize) -> usize {
+    if a < b { a } else { b }
 }
 
 /// Converts a Penumbra event to JSON format
@@ -363,205 +354,69 @@ pub fn event_to_json(
                 continue;
             }
             
-            if value.trim().is_empty() || value == "{}" || value.ends_with(":{") {
+            if value.trim().is_empty() || value == "{}" || value == "{" {
                 continue;
             }
-            
-            // First clean up the value 
-            let mut fixed_value = value
-                .replace("\\\"", "\"")
-                .replace("\\\\", "\\")
-                .replace("\\n", "\n");
-            
-            // Handle special fields that we know have specific formats
-            if key == "meta" || key == "value" || key == "packet_data" || 
-               key == "gasUsed" || key == "position" || key == "state" || 
-               key == "clue" || key == "source" || key == "sender" || key == "receiver" {
-                
-                // Check if it looks like truncated JSON
-                if fixed_value.starts_with('{') && !fixed_value.contains('}') {
-                    // Try to complete the JSON object by balancing braces
-                    let open_braces = fixed_value.chars().filter(|&c| c == '{').count();
-                    let close_braces = fixed_value.chars().filter(|&c| c == '}').count();
-                    
-                    for _ in 0..(open_braces - close_braces) {
-                        fixed_value.push('}');
-                    }
-                }
-                
-                // If it ends with a backslash, fix it if it seems to be a truncated JSON string
-                if fixed_value.ends_with('\\') {
-                    fixed_value = fixed_value.trim_end_matches('\\').to_string();
-                    if fixed_value.trim().contains('{') && !fixed_value.trim().ends_with('}') {
-                        fixed_value.push('}');
-                    }
-                }
-                
-                // Specific handling for gasUsed which often has a complex structure
-                if key == "gasUsed" {
-                    // This is a special case where we should fetch the entire value again from the attribute
-                    // because this complex object often gets truncated in string representation
-                    if let Some(attr_str) = attr_str.strip_prefix("V037(EventAttribute ") {
-                        if let Some(attr_suffix) = attr_str.strip_suffix(")") {
-                            if attr_suffix.contains("gasUsed") && attr_suffix.contains("blockSpace") {
-                                // Try to extract the full JSON string, being careful about nested brackets
-                                let mut in_value = false;
-                                let mut in_json = false;
-                                let mut brace_level = 0;
-                                let mut json_text = String::new();
-                                
-                                for (i, c) in attr_suffix.char_indices() {
-                                    if !in_value && attr_suffix[i..].starts_with("value:") {
-                                        in_value = true;
-                                        continue;
-                                    }
-                                    
-                                    if in_value {
-                                        if !in_json && c == '{' {
-                                            in_json = true;
-                                            brace_level = 1;
-                                            json_text.push(c);
-                                        } else if in_json {
-                                            if c == '{' {
-                                                brace_level += 1;
-                                                json_text.push(c);
-                                            } else if c == '}' {
-                                                brace_level -= 1;
-                                                json_text.push(c);
-                                                if brace_level == 0 {
-                                                    // We have a complete JSON object
-                                                    break;
-                                                }
-                                            } else {
-                                                json_text.push(c);
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                // If we have a valid looking JSON, try to parse it
-                                if !json_text.is_empty() && json_text.starts_with('{') && json_text.ends_with('}') {
-                                    let clean_json = json_text
-                                        .replace("\\\"", "\"")
-                                        .replace("\\\\", "\\")
-                                        .replace("\\n", "\n");
-                                    
-                                    if let Ok(parsed_json) = serde_json::from_str::<Value>(&clean_json) {
-                                        attributes.push(json!({
-                                            "key": key,
-                                            "value": parsed_json
-                                        }));
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                
-                    // Fallback to the original approach if the above special handling didn't work
-                    if fixed_value.contains("blockSpace") && !fixed_value.trim().ends_with('}') {
-                        // Check if we need to close the object
-                        let open_braces = fixed_value.chars().filter(|&c| c == '{').count();
-                        let close_braces = fixed_value.chars().filter(|&c| c == '}').count();
-                        
-                        for _ in 0..(open_braces - close_braces) {
-                            fixed_value.push('}');
-                        }
-                    }
+
+            if value.trim().starts_with('{') {
+                if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
+                    attributes.push(json!({
+                        "key": key,
+                        "value": parsed_json
+                    }));
+                    continue;
                 }
             }
-
-            // Special handling for fields that tend to be problematic
-            if key == "position" && attr_str.contains("closeOnFill") {
-                // Extract the complex position data from the raw attribute
-                let event_type = event.event.kind.to_string();
-                if event_type.contains("EventPositionOpen") || event_type.contains("Position") {
-                    // Try to find the full JSON object
-                    if let Some(pos) = attr_str.find("{\"closeOnFill\"") {
-                        let mut brace_level = 0;
-                        let mut in_quotes = false;
-                        let mut json_text = String::new();
-                        let mut found_end = false;
-                        
-                        for (i, c) in attr_str[pos..].char_indices() {
-                            if c == '"' && (i == 0 || attr_str.chars().nth(pos + i - 1).unwrap_or(' ') != '\\') {
-                                in_quotes = !in_quotes;
-                                json_text.push(c);
-                                continue;
-                            }
-                            
-                            if in_quotes {
-                                json_text.push(c);
-                            } else if c == '{' {
-                                brace_level += 1;
-                                json_text.push(c);
-                            } else if c == '}' {
-                                brace_level -= 1;
-                                json_text.push(c);
-                                if brace_level == 0 {
-                                    found_end = true;
-                                    break;
-                                }
-                            } else {
-                                json_text.push(c);
-                            }
-                        }
-                        
-                        if found_end && json_text.starts_with('{') && json_text.ends_with('}') {
-                            let clean_json = json_text
-                                .replace("\\\"", "\"")
-                                .replace("\\\\", "\\")
-                                .replace("\\n", "\n");
-                                
-                            if let Ok(parsed_json) = serde_json::from_str::<Value>(&clean_json) {
-                                attributes.push(json!({
-                                    "key": key,
-                                    "value": parsed_json
-                                }));
-                                continue;
-                            }
-                        }
+            
+            let clean_value = if value.starts_with('"') && value.ends_with('"') && value.len() > 2 {
+                value[1..value.len()-1].replace("\\\"", "\"").replace("\\\\", "\\")
+            } else {
+                value.to_string()
+            };
+            
+            if clean_value.trim().starts_with('{') {
+                let mut balanced_value = clean_value.to_string();
+                let open_count = balanced_value.chars().filter(|&c| c == '{').count();
+                let close_count = balanced_value.chars().filter(|&c| c == '}').count();
+                
+                if open_count > close_count {
+                    for _ in 0..(open_count - close_count) {
+                        balanced_value.push('}');
                     }
                 }
-            } else if key == "tradingPair" && attr_str.contains("asset1") && attr_str.contains("asset2") {
-                // Extract the tradingPair data
-                if let Some(pos) = attr_str.find("{\"asset1\"") {
+                
+                if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
+                    attributes.push(json!({
+                        "key": key,
+                        "value": parsed_json
+                    }));
+                    continue;
+                }
+            }
+            
+            if value.contains("\\n") && value.contains('{') && value.contains('}') {
+                let unescaped = value.replace("\\n", "\n").replace("\\\"", "\"").replace("\\\\", "\\");
+                
+                if let Some(start) = unescaped.find('{') {
+                    let potential_json = &unescaped[start..];
                     let mut brace_level = 0;
-                    let mut in_quotes = false;
-                    let mut json_text = String::new();
-                    let mut found_end = false;
+                    let mut end_pos = 0;
                     
-                    for (i, c) in attr_str[pos..].char_indices() {
-                        if c == '"' && (i == 0 || attr_str.chars().nth(pos + i - 1).unwrap_or(' ') != '\\') {
-                            in_quotes = !in_quotes;
-                            json_text.push(c);
-                            continue;
-                        }
-                        
-                        if in_quotes {
-                            json_text.push(c);
-                        } else if c == '{' {
+                    for (i, c) in potential_json.char_indices() {
+                        if c == '{' {
                             brace_level += 1;
-                            json_text.push(c);
                         } else if c == '}' {
                             brace_level -= 1;
-                            json_text.push(c);
                             if brace_level == 0 {
-                                found_end = true;
+                                end_pos = i + 1;
                                 break;
                             }
-                        } else {
-                            json_text.push(c);
                         }
                     }
                     
-                    if found_end && json_text.starts_with('{') && json_text.ends_with('}') {
-                        let clean_json = json_text
-                            .replace("\\\"", "\"")
-                            .replace("\\\\", "\\")
-                            .replace("\\n", "\n");
-                            
-                        if let Ok(parsed_json) = serde_json::from_str::<Value>(&clean_json) {
+                    if end_pos > 0 {
+                        let json_part = &potential_json[..end_pos];
+                        if let Ok(parsed_json) = serde_json::from_str::<Value>(json_part) {
                             attributes.push(json!({
                                 "key": key,
                                 "value": parsed_json
@@ -570,178 +425,524 @@ pub fn event_to_json(
                         }
                     }
                 }
-            } else if key == "gasUsed" {
-                // Look for the full JSON structure with all fields in the original attribute
-                if attr_str.contains("blockSpace") && attr_str.contains("compactBlockSpace") && 
-                   attr_str.contains("execution") && attr_str.contains("verification") {
+            }
+            
+            if value.contains('{') {
+                if let Some(start) = value.find('{') {
+                    let substring = &value[start..];
+                    let mut brace_level = 0;
+                    let mut end_pos = 0;
+                    let mut in_quotes = false;
+                    let mut escaped = false;
                     
-                    // Extract the structured data from the original string
-                    let mut block_space = "";
-                    let mut compact_block_space = "";
-                    let mut execution = "";
-                    let mut verification = "";
-                    
-                    // Simple extraction of values (this is a bit hacky but works for our specific case)
-                    if let Some(pos) = attr_str.find("blockSpace") {
-                        if let Some(quote_pos) = attr_str[pos..].find(':') {
-                            let start = pos + quote_pos + 1;
-                            if let Some(end) = attr_str[start..].find(',') {
-                                block_space = attr_str[start..(start+end)].trim_matches('"').trim();
-                            }
+                    for (i, c) in substring.char_indices() {
+                        if in_quotes && c == '\\' {
+                            escaped = !escaped;
+                            continue;
                         }
-                    }
-                    
-                    if let Some(pos) = attr_str.find("compactBlockSpace") {
-                        if let Some(quote_pos) = attr_str[pos..].find(':') {
-                            let start = pos + quote_pos + 1;
-                            if let Some(end) = attr_str[start..].find(',') {
-                                compact_block_space = attr_str[start..(start+end)].trim_matches('"').trim();
-                            }
-                        }
-                    }
-                    
-                    if let Some(pos) = attr_str.find("execution") {
-                        if let Some(quote_pos) = attr_str[pos..].find(':') {
-                            let start = pos + quote_pos + 1;
-                            if let Some(end) = attr_str[start..].find(',') {
-                                execution = attr_str[start..(start+end)].trim_matches('"').trim();
-                            } else if let Some(end) = attr_str[start..].find('}') {
-                                execution = attr_str[start..(start+end)].trim_matches('"').trim();
-                            }
-                        }
-                    }
-                    
-                    if let Some(pos) = attr_str.find("verification") {
-                        if let Some(quote_pos) = attr_str[pos..].find(':') {
-                            let start = pos + quote_pos + 1;
-                            if let Some(end) = attr_str[start..].find(',') {
-                                verification = attr_str[start..(start+end)].trim_matches('"').trim();
-                            } else if let Some(end) = attr_str[start..].find('}') {
-                                verification = attr_str[start..(start+end)].trim_matches('"').trim();
-                            }
-                        }
-                    }
-                    
-                    // If we successfully extracted the values, create a complete JSON
-                    if !block_space.is_empty() && !compact_block_space.is_empty() && 
-                       !execution.is_empty() && !verification.is_empty() {
-                        let complete_json = json!({
-                            "blockSpace": block_space,
-                            "compactBlockSpace": compact_block_space,
-                            "execution": execution,
-                            "verification": verification
-                        });
                         
+                        if c == '"' && !escaped {
+                            in_quotes = !in_quotes;
+                            escaped = false;
+                            continue;
+                        }
+                        
+                        if escaped {
+                            escaped = false;
+                        }
+                        
+                        if !in_quotes {
+                            if c == '{' {
+                                brace_level += 1;
+                            } else if c == '}' {
+                                brace_level -= 1;
+                                if brace_level == 0 {
+                                    end_pos = i + 1;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if end_pos > 0 {
+                        let json_part = &substring[..end_pos];
+                        if let Ok(parsed_json) = serde_json::from_str::<Value>(json_part) {
+                            attributes.push(json!({
+                                "key": key,
+                                "value": parsed_json
+                            }));
+                            continue;
+                        }
+                    }
+                    
+                    if end_pos == 0 {
+                        let mut balanced_json = substring.to_string();
+                        let open_count = balanced_json.chars().filter(|&c| c == '{').count();
+                        let close_count = balanced_json.chars().filter(|&c| c == '}').count();
+                        
+                        if open_count > close_count {
+                            for _ in 0..(open_count - close_count) {
+                                balanced_json.push('}');
+                            }
+                        }
+                        
+                        if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_json) {
+                            attributes.push(json!({
+                                "key": key,
+                                "value": parsed_json
+                            }));
+                            continue;
+                        }
+                    }
+                }
+            }
+            
+            match key.as_str() {
+                "tradingPair" => {
+                    if clean_value.contains("asset1") || clean_value.contains("asset2") {
+                        if let Some(start) = clean_value.find('{') {
+                            let substring = &clean_value[start..];
+                            let mut balanced = substring.to_string();
+                            let open_count = balanced.chars().filter(|&c| c == '{').count();
+                            let close_count = balanced.chars().filter(|&c| c == '}').count();
+                            
+                            if open_count > close_count {
+                                for _ in 0..(open_count - close_count) {
+                                    balanced.push('}');
+                                }
+                            }
+                            
+                            if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced) {
+                                attributes.push(json!({
+                                    "key": key,
+                                    "value": parsed_json
+                                }));
+                                continue;
+                            }
+                        }
+                    }
+                },
+                "position" => {
+                    if value.contains("nonce") || value.contains("phi") || value.contains("reserves") {
+                        if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
+                            attributes.push(json!({
+                                "key": key,
+                                "value": parsed_json
+                            }));
+                            continue;
+                        }
+
+                        if let Some(position_data) = extract_full_position_object(&value) {
+                            attributes.push(json!({
+                                "key": key,
+                                "value": position_data
+                            }));
+                            continue;
+                        }
+                        
+                        if let Some(start) = value.find('{') {
+                            let substring = &value[start..];
+                            let mut balanced = substring.to_string();
+                            let open_count = balanced.chars().filter(|&c| c == '{').count();
+                            let close_count = balanced.chars().filter(|&c| c == '}').count();
+                            
+                            if open_count > close_count {
+                                for _ in 0..(open_count - close_count) {
+                                    balanced.push('}');
+                                }
+                            }
+                            
+                            if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced) {
+                                attributes.push(json!({
+                                    "key": key,
+                                    "value": parsed_json
+                                }));
+                                continue;
+                            }
+                            
+                            let mut position_object = json!({});
+                            
+                            if let Some(nonce_pos) = balanced.find("nonce") {
+                                if let Some(colon_pos) = balanced[nonce_pos..].find(':') {
+                                    let start_pos = nonce_pos + colon_pos + 1;
+                                    let value_start = balanced[start_pos..].trim_start();
+                                    
+                                    if value_start.starts_with('"') {
+                                        if let Some(quote_end) = value_start[1..].find('"') {
+                                            let nonce_value = value_start[1..=quote_end].trim();
+                                            if !nonce_value.is_empty() {
+                                                position_object["nonce"] = json!(nonce_value);
+                                            }
+                                        }
+                                    } else if let Some(end_pos) = value_start.find([',', '}']) {
+                                        let nonce_value = value_start[..end_pos].trim();
+                                        if !nonce_value.is_empty() {
+                                            position_object["nonce"] = json!(nonce_value);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if !position_object.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+                                attributes.push(json!({
+                                    "key": key,
+                                    "value": position_object
+                                }));
+                                continue;
+                            }
+                        }
+                    } else if value.trim().chars().all(|c| c.is_ascii_digit()) {
                         attributes.push(json!({
                             "key": key,
-                            "value": complete_json
+                            "value": value.trim_matches('"')
                         }));
                         continue;
                     }
-                }
-            }
-            
-            // General handling for all other known JSON fields
-            if key == "identityKey" || key == "anchor" || key == "root" || 
-               key == "nullifier" || key == "position" || key == "state" ||
-               key == "meta" || key == "value" || key == "packet_data" || 
-               key == "gasUsed" || key == "clue" || key == "source" || 
-               key == "sender" || key == "receiver" || key == "tx" || 
-               key == "tradingPair" || key == "output1Commitment" || 
-               key == "output2Commitment" || key == "fee" || key == "baseFee" || 
-               key == "tip" || key == "swappedBaseFeeTotal" || key == "swappedFeeTotal" || 
-               key == "swappedTipTotal" {
-                
-                // Remove any outer quotes that might be interfering with JSON parsing
-                let unquoted = if fixed_value.starts_with('"') && fixed_value.ends_with('"') {
-                    fixed_value.trim_start_matches('"').trim_end_matches('"').to_string()
-                } else {
-                    fixed_value.clone()
-                };
-                
-                // Additional cleanup for these special fields
-                let extra_clean = unquoted
-                    .replace("\\\"", "\"")
-                    .replace("\\\\", "\\")
-                    .replace("\\n", "\n");
+                },
+                "gasUsed" => {
+                    tracing::debug!("Processing gasUsed with raw value: '{}'", value);
                     
-                if let Ok(parsed_json) = serde_json::from_str::<Value>(&extra_clean) {
-                    attributes.push(json!({
-                        "key": key,
-                        "value": parsed_json
-                    }));
-                    continue;
-                }
-            }
-            
-            // General JSON parsing for any value that looks like JSON
-            if fixed_value.trim().starts_with('{') && fixed_value.trim().ends_with('}') {
-                if let Ok(parsed_json) = serde_json::from_str::<Value>(&fixed_value) {
-                    attributes.push(json!({
-                        "key": key,
-                        "value": parsed_json
-                    }));
-                    continue;
-                }
-            }
-            
-            // Handle JSON strings that are wrapped in quotes
-            if fixed_value.starts_with('"') && fixed_value.ends_with('"') {
-                let unquoted = fixed_value.trim_start_matches('"').trim_end_matches('"');
-                
-                if unquoted.trim().starts_with('{') && unquoted.trim().ends_with('}') {
-                    if let Ok(parsed_json) = serde_json::from_str::<Value>(unquoted) {
+                    if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
                         attributes.push(json!({
                             "key": key,
                             "value": parsed_json
                         }));
                         continue;
                     }
-                }
-                
-                // For plain string values, remove extra quotes
-                attributes.push(json!({
-                    "key": key,
-                    "value": unquoted
-                }));
-                continue;
-            }
-            
-            // Handle potential JSON that might be partially formatted
-            if fixed_value.contains('{') && fixed_value.contains('"') && 
-               (fixed_value.contains(':') || fixed_value.contains(',')) {
-                
-                // If it's potentially a JSON string but lacks proper quoting
-                // first attempt to fix it by ensuring it has opening and closing braces
-                let mut cleaned = fixed_value.clone();
-                if !cleaned.trim().starts_with('{') {
-                    cleaned = "{".to_string() + &cleaned;
-                }
-                if !cleaned.trim().ends_with('}') {
-                    // Count opening and closing braces to add the right number
-                    let open_braces = cleaned.chars().filter(|&c| c == '{').count();
-                    let close_braces = cleaned.chars().filter(|&c| c == '}').count();
                     
-                    for _ in 0..(open_braces - close_braces) {
-                        cleaned.push('}');
+                    if value.starts_with('"') && value.contains("\\\"") {
+                        let unescaped = value.trim_matches('"')
+                            .replace("\\\"", "\"")
+                            .replace("\\\\", "\\");
+                            
+                        tracing::debug!("Trying to parse unescaped gasUsed: {}", unescaped);
+                        
+                        if let Ok(parsed_json) = serde_json::from_str::<Value>(&unescaped) {
+                            tracing::debug!("Successfully parsed unescaped gasUsed JSON: {}", parsed_json);
+                            attributes.push(json!({
+                                "key": key,
+                                "value": parsed_json
+                            }));
+                            continue;
+                        }
                     }
-                }
-                
-                // Try to parse it after fixes
-                if let Ok(parsed_json) = serde_json::from_str::<Value>(&cleaned) {
+                    
+                    if value.contains('{') {
+                        if let Some(start) = value.find('{') {
+                            let substring = &value[start..];
+                            let mut balanced = substring.to_string();
+                            let open_count = balanced.chars().filter(|&c| c == '{').count();
+                            let close_count = balanced.chars().filter(|&c| c == '}').count();
+                            
+                            if open_count > close_count {
+                                for _ in 0..(open_count - close_count) {
+                                    balanced.push('}');
+                                }
+                            }
+                            
+                            tracing::debug!("Trying to parse balanced gasUsed JSON: {}", balanced);
+                            
+                            if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced) {
+                                tracing::debug!("Successfully parsed balanced gasUsed JSON: {}", parsed_json);
+                                attributes.push(json!({
+                                    "key": key,
+                                    "value": parsed_json
+                                }));
+                                continue;
+                            }
+                        }
+                    }
+                    
+                    if value.contains("blockSpace") || value.contains("compactBlockSpace") ||
+                       value.contains("execution") || value.contains("verification") {
+                        
+                        let mut gas_object = json!({});
+                        let fields = ["blockSpace", "compactBlockSpace", "execution", "verification"];
+                        let mut found_at_least_one = false;
+                        
+                        for field in &fields {
+                            if let Some(field_pos) = value.find(field) {
+                                if let Some(colon_pos) = value[field_pos..].find(':') {
+                                    let start_pos = field_pos + colon_pos + 1;
+                                    let value_start = value[start_pos..].trim_start();
+                                    
+                                    if value_start.starts_with('"') {
+                                        if let Some(quote_end) = value_start[1..].find('"') {
+                                            let field_value = value_start[1..(quote_end+1)].trim();
+                                            if !field_value.is_empty() {
+                                                found_at_least_one = true;
+                                                gas_object[field] = json!(field_value);
+                                            }
+                                        }
+                                    } else if let Some(end_pos) = value_start.find([',', '}']) {
+                                        let field_value = value_start[..end_pos].trim();
+                                        if !field_value.is_empty() {
+                                            found_at_least_one = true;
+                                            gas_object[field] = json!(field_value);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if found_at_least_one {
+                            tracing::debug!("Extracted gasUsed fields manually: {}", gas_object);
+                            attributes.push(json!({
+                                "key": key,
+                                "value": gas_object
+                            }));
+                            continue;
+                        }
+                    }
+                    
+                    if value.trim().chars().all(|c| c.is_ascii_digit() || c == '"') {
+                        let clean_value = value.trim().trim_matches('"');
+                        if !clean_value.is_empty() {
+                            attributes.push(json!({
+                                "key": key,
+                                "value": {
+                                    "blockSpace": clean_value
+                                }
+                            }));
+                            continue;
+                        }
+                    }
+                    
+                    tracing::debug!("No parseable gasUsed structure found, using raw value: {}", value);
                     attributes.push(json!({
                         "key": key,
-                        "value": parsed_json
+                        "value": value
                     }));
-                    continue;
-                }
+                },
+                _ => {}
             }
             
-            attributes.push(json!({
-                "key": key,
-                "value": fixed_value
-            }));
+            if value.starts_with('"') && value.ends_with('"') && value.len() > 2 {
+                attributes.push(json!({
+                    "key": key,
+                    "value": clean_value
+                }));
+            } else {
+                attributes.push(json!({
+                    "key": key,
+                    "value": value
+                }));
+            }
         }
+    }
+
+    /// Helper function to try to extract a complete position object from a partial string
+    /// This implements more aggressive position object extraction and reconstruction
+    fn extract_full_position_object(value: &str) -> Option<Value> {
+        if !value.contains("nonce") && !value.contains("phi") && !value.contains("reserves") && !value.contains("state") {
+            return None;
+        }
+        
+        if let Ok(parsed_json) = serde_json::from_str::<Value>(value) {
+            return Some(parsed_json);
+        }
+        
+        let mut position_object = json!({});
+        let mut found_at_least_one = false;
+        
+        if let Some(nonce_pos) = value.find("nonce") {
+            found_at_least_one = true;
+            if let Some(colon_pos) = value[nonce_pos..].find(':') {
+                let start_pos = nonce_pos + colon_pos + 1;
+                let value_start = value[start_pos..].trim_start();
+                
+                if value_start.starts_with('"') {
+                    if let Some(quote_end) = value_start[1..].find('"') {
+                        let nonce_value = value_start[1..=quote_end].trim();
+                        if !nonce_value.is_empty() {
+                            position_object["nonce"] = json!(nonce_value);
+                        }
+                    }
+                } else if let Some(end_pos) = value_start.find([',', '}']) {
+                    let nonce_value = value_start[..end_pos].trim();
+                    if !nonce_value.is_empty() {
+                        position_object["nonce"] = json!(nonce_value);
+                    }
+                }
+            }
+        }
+        
+        if value.contains("phi") {
+            found_at_least_one = true;
+            if let Some(phi_pos) = value.find("phi") {
+                if let Some(colon_pos) = value[phi_pos..].find(':') {
+                    let start_pos = phi_pos + colon_pos + 1;
+                    let value_start = value[start_pos..].trim_start();
+                    
+                    if value_start.starts_with('{') {
+                        let mut brace_level = 0;
+                        let mut end_pos = 0;
+                        let mut in_quotes = false;
+                        let mut escaped = false;
+                        
+                        for (i, c) in value_start.char_indices() {
+                            if in_quotes && c == '\\' {
+                                escaped = !escaped;
+                                continue;
+                            }
+                            
+                            if c == '"' && !escaped {
+                                in_quotes = !in_quotes;
+                                escaped = false;
+                                continue;
+                            }
+                            
+                            if escaped {
+                                escaped = false;
+                            }
+                            
+                            if !in_quotes {
+                                if c == '{' {
+                                    brace_level += 1;
+                                } else if c == '}' {
+                                    brace_level -= 1;
+                                    if brace_level == 0 {
+                                        end_pos = i + 1; // Include the closing brace
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if end_pos > 0 {
+                            let phi_json = &value_start[..end_pos];
+                            if let Ok(parsed_phi) = serde_json::from_str::<Value>(phi_json) {
+                                position_object["phi"] = parsed_phi;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Extract state if present
+        if value.contains("state") {
+            found_at_least_one = true;
+            if let Some(state_pos) = value.find("state") {
+                if let Some(colon_pos) = value[state_pos..].find(':') {
+                    let start_pos = state_pos + colon_pos + 1;
+                    let value_start = value[start_pos..].trim_start();
+                    
+                    if value_start.starts_with('{') {
+                        // Extract the state object
+                        let mut brace_level = 0;
+                        let mut end_pos = 0;
+                        let mut in_quotes = false;
+                        let mut escaped = false;
+                        
+                        for (i, c) in value_start.char_indices() {
+                            // Handle escaping within quotes
+                            if in_quotes && c == '\\' {
+                                escaped = !escaped;
+                                continue;
+                            }
+                            
+                            // Handle quotes, but ignore escaped quotes
+                            if c == '"' && !escaped {
+                                in_quotes = !in_quotes;
+                                escaped = false;
+                                continue;
+                            }
+                            
+                            // Reset escaped flag
+                            if escaped {
+                                escaped = false;
+                            }
+                            
+                            // Only count braces outside quoted strings
+                            if !in_quotes {
+                                if c == '{' {
+                                    brace_level += 1;
+                                } else if c == '}' {
+                                    brace_level -= 1;
+                                    if brace_level == 0 {
+                                        end_pos = i + 1; // Include the closing brace
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if end_pos > 0 {
+                            let state_json = &value_start[..end_pos];
+                            if let Ok(parsed_state) = serde_json::from_str::<Value>(state_json) {
+                                position_object["state"] = parsed_state;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Extract reserves if present
+        if value.contains("reserves") {
+            found_at_least_one = true;
+            if let Some(reserves_pos) = value.find("reserves") {
+                if let Some(colon_pos) = value[reserves_pos..].find(':') {
+                    let start_pos = reserves_pos + colon_pos + 1;
+                    let value_start = value[start_pos..].trim_start();
+                    
+                    if value_start.starts_with('{') {
+                        // Extract the reserves object
+                        let mut brace_level = 0;
+                        let mut end_pos = 0;
+                        let mut in_quotes = false;
+                        let mut escaped = false;
+                        
+                        for (i, c) in value_start.char_indices() {
+                            // Handle escaping within quotes
+                            if in_quotes && c == '\\' {
+                                escaped = !escaped;
+                                continue;
+                            }
+                            
+                            // Handle quotes, but ignore escaped quotes
+                            if c == '"' && !escaped {
+                                in_quotes = !in_quotes;
+                                escaped = false;
+                                continue;
+                            }
+                            
+                            // Reset escaped flag
+                            if escaped {
+                                escaped = false;
+                            }
+                            
+                            // Only count braces outside quoted strings
+                            if !in_quotes {
+                                if c == '{' {
+                                    brace_level += 1;
+                                } else if c == '}' {
+                                    brace_level -= 1;
+                                    if brace_level == 0 {
+                                        end_pos = i + 1; // Include the closing brace
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if end_pos > 0 {
+                            let reserves_json = &value_start[..end_pos];
+                            if let Ok(parsed_reserves) = serde_json::from_str::<Value>(reserves_json) {
+                                position_object["reserves"] = parsed_reserves;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if found_at_least_one {
+            return Some(position_object);
+        }
+        
+        None
     }
 
     let json_event = json!({
@@ -811,7 +1012,7 @@ mod tests {
         assert!(result.is_some());
         let (key, value) = result.unwrap();
         assert_eq!(key, "event_type");
-        assert_eq!(value, "{\"timestamp\": 12345, \"block\": 100}");
+        assert_eq!(value, "{\"timestamp\":12345,\"block\":100}");
 
         let incomplete_json = "position {\"closeOnFill\":true";
         let result = parse_attribute_string(incomplete_json);
@@ -819,6 +1020,33 @@ mod tests {
         let (key, value) = result.unwrap();
         assert_eq!(key, "position");
         assert_eq!(value, "{\"closeOnFill\":true}");
+
+        let trading_pair = "tradingPair {\"asset1\":{\"inner\":\"test1\"},\"asset2\":{\"inner\":\"test2\"}}";
+        let result = parse_attribute_string(trading_pair);
+        assert!(result.is_some());
+        let (key, value) = result.unwrap();
+        assert_eq!(key, "tradingPair");
+        assert!(value.contains("asset1"));
+        assert!(value.contains("asset2"));
+        assert!(value.contains("test1"));
+        assert!(value.contains("test2"));
+
+        let nested_json = "nested {\"level1\":{\"level2\":{\"value\":123}}}";
+        let result = parse_attribute_string(nested_json);
+        assert!(result.is_some());
+        let (key, value) = result.unwrap();
+        assert_eq!(key, "nested");
+        assert!(value.contains("level1"));
+        assert!(value.contains("level2"));
+        assert!(value.contains("123"));
+
+        let quoted_json = "quoted \"{ \\\"key\\\": \\\"value\\\" }\"";
+        let result = parse_attribute_string(quoted_json);
+        assert!(result.is_some());
+        let (key, value) = result.unwrap();
+        assert_eq!(key, "quoted");
+        assert!(value.contains("key"));
+        assert!(value.contains("value"));
 
         let empty_amount = "swappedFeeTotal {\"amount\":{}}";
         let result = parse_attribute_string(empty_amount);
@@ -831,5 +1059,52 @@ mod tests {
         let empty_attr = "";
         let result = parse_attribute_string(empty_attr);
         assert!(result.is_none());
+    }
+    
+    #[test]
+    fn test_extract_complex_value() {
+        assert_eq!(extract_complex_value("simple value"), "simple value");
+        
+        assert_eq!(
+            extract_complex_value("{\"key\":\"value\"}"), 
+            "{\"key\":\"value\"}"
+        );
+        
+        assert_eq!(
+            extract_complex_value("{\"key\":\"value\", \"another\":123}"), 
+            "{\"key\":\"value\", \"another\":123}"
+        );
+        
+        assert_eq!(
+            extract_complex_value("{\"outer\":{\"inner\":\"value\"}}"), 
+            "{\"outer\":{\"inner\":\"value\"}}"
+        );
+        
+        assert_eq!(
+            extract_complex_value("{\"key\":\"value\", \"unbalanced\":{\"inner\":123"), 
+            "{\"key\":\"value\", \"unbalanced\":{\"inner\":123}}"
+        );
+        
+        assert_eq!(
+            extract_complex_value("{\"key\":\"value\"}, something else"), 
+            "{\"key\":\"value\"}"
+        );
+        
+        assert_eq!(
+            extract_complex_value("\"{\\\"quoted\\\":\\\"value\\\"}\""), 
+            "\"{\\\"quoted\\\":\\\"value\\\"}\""
+        );
+    }
+    
+    #[test]
+    fn test_process_json_value() {
+        let valid_json = "{\"key\":\"value\"}";
+        assert_eq!(process_json_value(valid_json), "{\"key\":\"value\"}");
+        
+        let unbalanced_json = "{\"key\":\"value\", \"nested\":{\"inner\":123";
+        assert_eq!(process_json_value(unbalanced_json), "{\"key\":\"value\",\"nested\":{\"inner\":123}}");
+        
+        let malformed_json = "{this is not valid json}";
+        assert_eq!(process_json_value(malformed_json), "{this is not valid json}");
     }
 }
