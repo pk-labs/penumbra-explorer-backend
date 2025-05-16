@@ -13,7 +13,7 @@ use sqlx::Row;
 pub struct Block {
     pub height: i32,
     pub created_at: DateTime,
-    pub raw_json: Option<serde_json::Value>,
+    pub raw_json: serde_json::Value,
 }
 
 #[Object]
@@ -105,17 +105,13 @@ impl Block {
     #[graphql(name = "rawEvents")]
     #[allow(clippy::unused_async)]
     async fn raw_events(&self) -> Result<Vec<Event>> {
-        let events = if let Some(json) = &self.raw_json {
-            extract_events_from_block_json(json)
-        } else {
-            Vec::new()
-        };
+        let events = extract_events_from_block_json(&self.raw_json);
         Ok(events)
     }
 
     #[graphql(name = "rawJson")]
     #[allow(clippy::unused_async)]
-    async fn raw_json(&self) -> Result<Option<serde_json::Value>> {
+    async fn raw_json(&self) -> Result<serde_json::Value> {
         Ok(self.raw_json.clone())
     }
 
@@ -309,7 +305,7 @@ impl Block {
         Self {
             height,
             created_at: DateTime(created_at),
-            raw_json,
+            raw_json: raw_json.unwrap_or(serde_json::Value::Null),
         }
     }
 }
