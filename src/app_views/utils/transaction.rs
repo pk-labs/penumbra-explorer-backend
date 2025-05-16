@@ -530,38 +530,34 @@ pub fn create_transaction_json(
                         
                         if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
                             parsed_json
-                        } else {
-                            if let Some(json_start) = balanced_value.find('{') {
-                                let json_part = &balanced_value[json_start..];
-                                
-                                let mut balanced_json = json_part.to_string();
-                                let json_open_count = balanced_json.chars().filter(|&c| c == '{').count();
-                                let json_close_count = balanced_json.chars().filter(|&c| c == '}').count();
-                                
-                                if json_open_count > json_close_count {
-                                    for _ in 0..(json_open_count - json_close_count) {
-                                        balanced_json.push('}');
-                                    }
+                        } else if let Some(json_start) = balanced_value.find('{') {
+                            let json_part = &balanced_value[json_start..];
+                            
+                            let mut balanced_json = json_part.to_string();
+                            let json_open_count = balanced_json.chars().filter(|&c| c == '{').count();
+                            let json_close_count = balanced_json.chars().filter(|&c| c == '}').count();
+                            
+                            if json_open_count > json_close_count {
+                                for _ in 0..(json_open_count - json_close_count) {
+                                    balanced_json.push('}');
                                 }
-                                
-                                if let Ok(parsed_substring) = serde_json::from_str::<Value>(&balanced_json) {
-                                    parsed_substring
-                                } else {
-                                    json!(balanced_value)
-                                }
+                            }
+                            
+                            if let Ok(parsed_substring) = serde_json::from_str::<Value>(&balanced_json) {
+                                parsed_substring
                             } else {
                                 json!(balanced_value)
                             }
+                        } else {
+                            json!(balanced_value)
                         }
                     } else if key == "position" {
                         if value.trim().chars().all(|c| c.is_ascii_digit()) {
                             json!(value.trim_matches('\"'))
+                        } else if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
+                            parsed_json
                         } else {
-                            if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
-                                parsed_json
-                            } else {
-                                json!(value)
-                            }
+                            json!(value)
                         }
                     } else if value.trim().starts_with('{') && value.trim().ends_with('}') {
                         if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
