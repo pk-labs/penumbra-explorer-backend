@@ -348,6 +348,221 @@ fn min(a: usize, b: usize) -> usize {
     if a < b { a } else { b }
 }
 
+/// Helper function to try to extract a complete position object from a partial string
+/// This implements more aggressive position object extraction and reconstruction
+#[allow(clippy::too_many_lines)]
+fn extract_full_position_object(value: &str) -> Option<Value> {
+    if !value.contains("nonce") && !value.contains("phi") && !value.contains("reserves") && !value.contains("state") {
+        return None;
+    }
+    
+    if let Ok(parsed_json) = serde_json::from_str::<Value>(value) {
+        return Some(parsed_json);
+    }
+    
+    let mut position_object = json!({});
+    let mut found_at_least_one = false;
+    
+    if let Some(nonce_pos) = value.find("nonce") {
+        found_at_least_one = true;
+        if let Some(colon_pos) = value[nonce_pos..].find(':') {
+            let start_pos = nonce_pos + colon_pos + 1;
+            let value_start = value[start_pos..].trim_start();
+            
+            if let Some(stripped) = value_start.strip_prefix('"') {
+                if let Some(quote_end) = stripped.find('"') {
+                    let nonce_value = value_start[1..=quote_end].trim();
+                    if !nonce_value.is_empty() {
+                        position_object["nonce"] = json!(nonce_value);
+                    }
+                }
+            } else if let Some(end_pos) = value_start.find([',', '}']) {
+                let nonce_value = value_start[..end_pos].trim();
+                if !nonce_value.is_empty() {
+                    position_object["nonce"] = json!(nonce_value);
+                }
+            }
+        }
+    }
+    
+    if value.contains("phi") {
+        found_at_least_one = true;
+        if let Some(phi_pos) = value.find("phi") {
+            if let Some(colon_pos) = value[phi_pos..].find(':') {
+                let start_pos = phi_pos + colon_pos + 1;
+                let value_start = value[start_pos..].trim_start();
+                
+                if value_start.starts_with('{') {
+                    let mut brace_level = 0;
+                    let mut end_pos = 0;
+                    let mut in_quotes = false;
+                    let mut escaped = false;
+                    
+                    for (i, c) in value_start.char_indices() {
+                        if in_quotes && c == '\\' {
+                            escaped = !escaped;
+                            continue;
+                        }
+                        
+                        if c == '"' && !escaped {
+                            in_quotes = !in_quotes;
+                            escaped = false;
+                            continue;
+                        }
+                        
+                        if escaped {
+                            escaped = false;
+                        }
+                        
+                        if !in_quotes {
+                            if c == '{' {
+                                brace_level += 1;
+                            } else if c == '}' {
+                                brace_level -= 1;
+                                if brace_level == 0 {
+                                    end_pos = i + 1; // Include the closing brace
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if end_pos > 0 {
+                        let phi_json = &value_start[..end_pos];
+                        if let Ok(parsed_phi) = serde_json::from_str::<Value>(phi_json) {
+                            position_object["phi"] = parsed_phi;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Extract state if present
+    if value.contains("state") {
+        found_at_least_one = true;
+        if let Some(state_pos) = value.find("state") {
+            if let Some(colon_pos) = value[state_pos..].find(':') {
+                let start_pos = state_pos + colon_pos + 1;
+                let value_start = value[start_pos..].trim_start();
+                
+                if value_start.starts_with('{') {
+                    // Extract the state object
+                    let mut brace_level = 0;
+                    let mut end_pos = 0;
+                    let mut in_quotes = false;
+                    let mut escaped = false;
+                    
+                    for (i, c) in value_start.char_indices() {
+                        // Handle escaping within quotes
+                        if in_quotes && c == '\\' {
+                            escaped = !escaped;
+                            continue;
+                        }
+                        
+                        // Handle quotes, but ignore escaped quotes
+                        if c == '"' && !escaped {
+                            in_quotes = !in_quotes;
+                            escaped = false;
+                            continue;
+                        }
+                        
+                        // Reset escaped flag
+                        if escaped {
+                            escaped = false;
+                        }
+                        
+                        // Only count braces outside quoted strings
+                        if !in_quotes {
+                            if c == '{' {
+                                brace_level += 1;
+                            } else if c == '}' {
+                                brace_level -= 1;
+                                if brace_level == 0 {
+                                    end_pos = i + 1; // Include the closing brace
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if end_pos > 0 {
+                        let state_json = &value_start[..end_pos];
+                        if let Ok(parsed_state) = serde_json::from_str::<Value>(state_json) {
+                            position_object["state"] = parsed_state;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Extract reserves if present
+    if value.contains("reserves") {
+        found_at_least_one = true;
+        if let Some(reserves_pos) = value.find("reserves") {
+            if let Some(colon_pos) = value[reserves_pos..].find(':') {
+                let start_pos = reserves_pos + colon_pos + 1;
+                let value_start = value[start_pos..].trim_start();
+                
+                if value_start.starts_with('{') {
+                    // Extract the reserves object
+                    let mut brace_level = 0;
+                    let mut end_pos = 0;
+                    let mut in_quotes = false;
+                    let mut escaped = false;
+                    
+                    for (i, c) in value_start.char_indices() {
+                        // Handle escaping within quotes
+                        if in_quotes && c == '\\' {
+                            escaped = !escaped;
+                            continue;
+                        }
+                        
+                        // Handle quotes, but ignore escaped quotes
+                        if c == '"' && !escaped {
+                            in_quotes = !in_quotes;
+                            escaped = false;
+                            continue;
+                        }
+                        
+                        // Reset escaped flag
+                        if escaped {
+                            escaped = false;
+                        }
+                        
+                        // Only count braces outside quoted strings
+                        if !in_quotes {
+                            if c == '{' {
+                                brace_level += 1;
+                            } else if c == '}' {
+                                brace_level -= 1;
+                                if brace_level == 0 {
+                                    end_pos = i + 1; // Include the closing brace
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if end_pos > 0 {
+                        let reserves_json = &value_start[..end_pos];
+                        if let Ok(parsed_reserves) = serde_json::from_str::<Value>(reserves_json) {
+                            position_object["reserves"] = parsed_reserves;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    if found_at_least_one {
+        return Some(position_object);
+    }
+    
+    None
+}
+
 /// Converts a Penumbra event to JSON format
 ///
 /// # Errors
@@ -586,8 +801,8 @@ pub fn event_to_json(
                                     let start_pos = nonce_pos + colon_pos + 1;
                                     let value_start = balanced[start_pos..].trim_start();
                                     
-                                    if value_start.starts_with('"') {
-                                        if let Some(quote_end) = value_start[1..].find('"') {
+                                    if let Some(stripped) = value_start.strip_prefix('"') {
+                                        if let Some(quote_end) = stripped.find('"') {
                                             let nonce_value = value_start[1..=quote_end].trim();
                                             if !nonce_value.is_empty() {
                                                 position_object["nonce"] = json!(nonce_value);
@@ -685,9 +900,9 @@ pub fn event_to_json(
                                     let start_pos = field_pos + colon_pos + 1;
                                     let value_start = value[start_pos..].trim_start();
                                     
-                                    if value_start.starts_with('"') {
-                                        if let Some(quote_end) = value_start[1..].find('"') {
-                                            let field_value = value_start[1..(quote_end+1)].trim();
+                                    if let Some(stripped) = value_start.strip_prefix('"') {
+                                        if let Some(quote_end) = stripped.find('"') {
+                                            let field_value = value_start[1..=quote_end].trim();
                                             if !field_value.is_empty() {
                                                 found_at_least_one = true;
                                                 gas_object[field] = json!(field_value);
@@ -749,220 +964,6 @@ pub fn event_to_json(
             }
         }
     }
-
-/// Helper function to try to extract a complete position object from a partial string
-/// This implements more aggressive position object extraction and reconstruction
-fn extract_full_position_object(value: &str) -> Option<Value> {
-    if !value.contains("nonce") && !value.contains("phi") && !value.contains("reserves") && !value.contains("state") {
-        return None;
-    }
-    
-    if let Ok(parsed_json) = serde_json::from_str::<Value>(value) {
-        return Some(parsed_json);
-    }
-    
-    let mut position_object = json!({});
-    let mut found_at_least_one = false;
-    
-    if let Some(nonce_pos) = value.find("nonce") {
-        found_at_least_one = true;
-        if let Some(colon_pos) = value[nonce_pos..].find(':') {
-            let start_pos = nonce_pos + colon_pos + 1;
-            let value_start = value[start_pos..].trim_start();
-            
-            if value_start.starts_with('"') {
-                if let Some(quote_end) = value_start[1..].find('"') {
-                    let nonce_value = value_start[1..=quote_end].trim();
-                    if !nonce_value.is_empty() {
-                        position_object["nonce"] = json!(nonce_value);
-                    }
-                }
-            } else if let Some(end_pos) = value_start.find([',', '}']) {
-                let nonce_value = value_start[..end_pos].trim();
-                if !nonce_value.is_empty() {
-                    position_object["nonce"] = json!(nonce_value);
-                }
-            }
-        }
-    }
-    
-    if value.contains("phi") {
-        found_at_least_one = true;
-        if let Some(phi_pos) = value.find("phi") {
-            if let Some(colon_pos) = value[phi_pos..].find(':') {
-                let start_pos = phi_pos + colon_pos + 1;
-                let value_start = value[start_pos..].trim_start();
-                
-                if value_start.starts_with('{') {
-                    let mut brace_level = 0;
-                    let mut end_pos = 0;
-                    let mut in_quotes = false;
-                    let mut escaped = false;
-                    
-                    for (i, c) in value_start.char_indices() {
-                        if in_quotes && c == '\\' {
-                            escaped = !escaped;
-                            continue;
-                        }
-                        
-                        if c == '"' && !escaped {
-                            in_quotes = !in_quotes;
-                            escaped = false;
-                            continue;
-                        }
-                        
-                        if escaped {
-                            escaped = false;
-                        }
-                        
-                        if !in_quotes {
-                            if c == '{' {
-                                brace_level += 1;
-                            } else if c == '}' {
-                                brace_level -= 1;
-                                if brace_level == 0 {
-                                    end_pos = i + 1; // Include the closing brace
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    
-                    if end_pos > 0 {
-                        let phi_json = &value_start[..end_pos];
-                        if let Ok(parsed_phi) = serde_json::from_str::<Value>(phi_json) {
-                            position_object["phi"] = parsed_phi;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    // Extract state if present
-    if value.contains("state") {
-        found_at_least_one = true;
-        if let Some(state_pos) = value.find("state") {
-            if let Some(colon_pos) = value[state_pos..].find(':') {
-                let start_pos = state_pos + colon_pos + 1;
-                let value_start = value[start_pos..].trim_start();
-                
-                if value_start.starts_with('{') {
-                    // Extract the state object
-                    let mut brace_level = 0;
-                    let mut end_pos = 0;
-                    let mut in_quotes = false;
-                    let mut escaped = false;
-                    
-                    for (i, c) in value_start.char_indices() {
-                        // Handle escaping within quotes
-                        if in_quotes && c == '\\' {
-                            escaped = !escaped;
-                            continue;
-                        }
-                        
-                        // Handle quotes, but ignore escaped quotes
-                        if c == '"' && !escaped {
-                            in_quotes = !in_quotes;
-                            escaped = false;
-                            continue;
-                        }
-                        
-                        // Reset escaped flag
-                        if escaped {
-                            escaped = false;
-                        }
-                        
-                        // Only count braces outside quoted strings
-                        if !in_quotes {
-                            if c == '{' {
-                                brace_level += 1;
-                            } else if c == '}' {
-                                brace_level -= 1;
-                                if brace_level == 0 {
-                                    end_pos = i + 1; // Include the closing brace
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    
-                    if end_pos > 0 {
-                        let state_json = &value_start[..end_pos];
-                        if let Ok(parsed_state) = serde_json::from_str::<Value>(state_json) {
-                            position_object["state"] = parsed_state;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    // Extract reserves if present
-    if value.contains("reserves") {
-        found_at_least_one = true;
-        if let Some(reserves_pos) = value.find("reserves") {
-            if let Some(colon_pos) = value[reserves_pos..].find(':') {
-                let start_pos = reserves_pos + colon_pos + 1;
-                let value_start = value[start_pos..].trim_start();
-                
-                if value_start.starts_with('{') {
-                    // Extract the reserves object
-                    let mut brace_level = 0;
-                    let mut end_pos = 0;
-                    let mut in_quotes = false;
-                    let mut escaped = false;
-                    
-                    for (i, c) in value_start.char_indices() {
-                        // Handle escaping within quotes
-                        if in_quotes && c == '\\' {
-                            escaped = !escaped;
-                            continue;
-                        }
-                        
-                        // Handle quotes, but ignore escaped quotes
-                        if c == '"' && !escaped {
-                            in_quotes = !in_quotes;
-                            escaped = false;
-                            continue;
-                        }
-                        
-                        // Reset escaped flag
-                        if escaped {
-                            escaped = false;
-                        }
-                        
-                        // Only count braces outside quoted strings
-                        if !in_quotes {
-                            if c == '{' {
-                                brace_level += 1;
-                            } else if c == '}' {
-                                brace_level -= 1;
-                                if brace_level == 0 {
-                                    end_pos = i + 1; // Include the closing brace
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    
-                    if end_pos > 0 {
-                        let reserves_json = &value_start[..end_pos];
-                        if let Ok(parsed_reserves) = serde_json::from_str::<Value>(reserves_json) {
-                            position_object["reserves"] = parsed_reserves;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    if found_at_least_one {
-        return Some(position_object);
-    }
-    
-    None
-}
 
     let json_event = json!({
         "block_id": event.block_height,
