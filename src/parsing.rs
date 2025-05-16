@@ -1130,7 +1130,8 @@ mod tests {
             "{\"outer\":{\"inner\":\"value\"}}"
         );
 
-        let unbalanced_json = extract_complex_value("{\"key\":\"value\", \"unbalanced\":{\"inner\":123");
+        let unbalanced_json =
+            extract_complex_value("{\"key\":\"value\", \"unbalanced\":{\"inner\":123");
         let json: Value = serde_json::from_str(&unbalanced_json).unwrap();
         assert_eq!(json["key"], "value");
         assert_eq!(json["unbalanced"]["inner"], 123);
