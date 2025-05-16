@@ -257,7 +257,8 @@ impl DbRawTransaction {
             let ibc_client_id: Option<String> = row.get("ibc_client_id");
             let ibc_status: String = row.get("ibc_status");
 
-            let json_value: Option<serde_json::Value> = row.get::<Option<serde_json::Value>, _>("raw_json");
+            let json_value: Option<serde_json::Value> =
+                row.get::<Option<serde_json::Value>, _>("raw_json");
 
             Ok(Some(Self {
                 tx_hash_hex: hex::encode_upper(&tx_hash),
@@ -351,7 +352,8 @@ impl DbRawTransaction {
             let ibc_client_id: Option<String> = row.get("ibc_client_id");
             let ibc_status: String = row.get("ibc_status");
 
-            let json_value: Option<serde_json::Value> = row.get::<Option<serde_json::Value>, _>("raw_json");
+            let json_value: Option<serde_json::Value> =
+                row.get::<Option<serde_json::Value>, _>("raw_json");
 
             transactions.push(Self {
                 tx_hash_hex: hex::encode_upper(&tx_hash),
