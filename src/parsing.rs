@@ -96,9 +96,7 @@ fn clean_value_string(value: &str) -> String {
 fn process_json_value(value: &str) -> String {
     let balanced_value = ensure_balanced_braces(value);
 
-    // Try to parse and re-serialize to ensure valid JSON
     if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(&balanced_value) {
-        // If parsing succeeded, use the serde_json serialization to ensure valid format
         return serde_json::to_string(&parsed_json).unwrap_or_else(|_| balanced_value.to_string());
     }
 
@@ -307,7 +305,6 @@ fn extract_complex_value(value_str: &str) -> String {
         }
     }
 
-    // Find potentially JSON content
     let mut value_end = value_str.find(',').unwrap_or(value_str.len());
 
     if value_str[..min(value_end, value_str.len())]
@@ -334,14 +331,12 @@ fn extract_complex_value(value_str: &str) -> String {
 
     let extracted = value_str[..min(value_end, value_str.len())].trim();
 
-    // Try to extract JSON if the string contains braces
     if extracted.contains('{') {
         if let Some(result) = process_json_containing_string(extracted) {
             return result;
         }
     }
 
-    // Process quoted strings
     if let Some(result) = process_quoted_content(extracted) {
         return result;
     }
@@ -433,7 +428,7 @@ fn extract_full_position_object(value: &str) -> Option<Value> {
                             } else if c == '}' {
                                 brace_level -= 1;
                                 if brace_level == 0 {
-                                    end_pos = i + 1; // Include the closing brace
+                                    end_pos = i + 1;
                                     break;
                                 }
                             }
@@ -451,7 +446,6 @@ fn extract_full_position_object(value: &str) -> Option<Value> {
         }
     }
 
-    // Extract state if present
     if value.contains("state") {
         found_at_least_one = true;
         if let Some(state_pos) = value.find("state") {
@@ -460,39 +454,34 @@ fn extract_full_position_object(value: &str) -> Option<Value> {
                 let value_start = value[start_pos..].trim_start();
 
                 if value_start.starts_with('{') {
-                    // Extract the state object
                     let mut brace_level = 0;
                     let mut end_pos = 0;
                     let mut in_quotes = false;
                     let mut escaped = false;
 
                     for (i, c) in value_start.char_indices() {
-                        // Handle escaping within quotes
                         if in_quotes && c == '\\' {
                             escaped = !escaped;
                             continue;
                         }
 
-                        // Handle quotes, but ignore escaped quotes
                         if c == '"' && !escaped {
                             in_quotes = !in_quotes;
                             escaped = false;
                             continue;
                         }
 
-                        // Reset escaped flag
                         if escaped {
                             escaped = false;
                         }
 
-                        // Only count braces outside quoted strings
                         if !in_quotes {
                             if c == '{' {
                                 brace_level += 1;
                             } else if c == '}' {
                                 brace_level -= 1;
                                 if brace_level == 0 {
-                                    end_pos = i + 1; // Include the closing brace
+                                    end_pos = i + 1;
                                     break;
                                 }
                             }
@@ -510,7 +499,6 @@ fn extract_full_position_object(value: &str) -> Option<Value> {
         }
     }
 
-    // Extract reserves if present
     if value.contains("reserves") {
         found_at_least_one = true;
         if let Some(reserves_pos) = value.find("reserves") {
@@ -519,39 +507,34 @@ fn extract_full_position_object(value: &str) -> Option<Value> {
                 let value_start = value[start_pos..].trim_start();
 
                 if value_start.starts_with('{') {
-                    // Extract the reserves object
                     let mut brace_level = 0;
                     let mut end_pos = 0;
                     let mut in_quotes = false;
                     let mut escaped = false;
 
                     for (i, c) in value_start.char_indices() {
-                        // Handle escaping within quotes
                         if in_quotes && c == '\\' {
                             escaped = !escaped;
                             continue;
                         }
 
-                        // Handle quotes, but ignore escaped quotes
                         if c == '"' && !escaped {
                             in_quotes = !in_quotes;
                             escaped = false;
                             continue;
                         }
 
-                        // Reset escaped flag
                         if escaped {
                             escaped = false;
                         }
 
-                        // Only count braces outside quoted strings
                         if !in_quotes {
                             if c == '{' {
                                 brace_level += 1;
                             } else if c == '}' {
                                 brace_level -= 1;
                                 if brace_level == 0 {
-                                    end_pos = i + 1; // Include the closing brace
+                                    end_pos = i + 1;
                                     break;
                                 }
                             }
