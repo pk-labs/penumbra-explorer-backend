@@ -97,11 +97,7 @@ impl AppView for Explorer {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn init_chain(
-        &self,
-        dbtx: &mut PgTransaction,
-        _: &Value,
-    ) -> Result<(), anyhow::Error> {
+    async fn init_chain(&self, dbtx: &mut PgTransaction, _: &Value) -> Result<(), anyhow::Error> {
         tracing::info!(
             "Initializing Explorer with chain_id = {}",
             self.get_chain_id()
@@ -826,7 +822,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 *tx_hash, tx_bytes, *height, *timestamp, *tx_index, tx_events,
             );
 
-            let fee_amount = transaction::extract_fee_amount(&formatted_tx_json["transaction_view"]);
+            let fee_amount =
+                transaction::extract_fee_amount(&formatted_tx_json["transaction_view"]);
 
             let chain_id = self
                 .chain_id
