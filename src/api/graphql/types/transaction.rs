@@ -212,7 +212,7 @@ pub struct DbRawTransaction {
     pub fee_amount: Option<String>,
     pub chain_id: Option<String>,
     pub raw_data_hex: Option<String>,
-    pub raw_json: Option<serde_json::Value>,
+    pub raw_json: serde_json::Value,
     pub client_id: Option<String>,
     pub ibc_status: String,
 }
@@ -257,8 +257,9 @@ impl DbRawTransaction {
             let ibc_client_id: Option<String> = row.get("ibc_client_id");
             let ibc_status: String = row.get("ibc_status");
 
-            let json_value: Option<serde_json::Value> =
-                row.get::<Option<serde_json::Value>, _>("raw_json");
+            let json_value: serde_json::Value = row
+                .get::<Option<serde_json::Value>, _>("raw_json")
+                .unwrap_or(serde_json::Value::Null);
 
             Ok(Some(Self {
                 tx_hash_hex: hex::encode_upper(&tx_hash),
@@ -352,8 +353,9 @@ impl DbRawTransaction {
             let ibc_client_id: Option<String> = row.get("ibc_client_id");
             let ibc_status: String = row.get("ibc_status");
 
-            let json_value: Option<serde_json::Value> =
-                row.get::<Option<serde_json::Value>, _>("raw_json");
+            let json_value: serde_json::Value = row
+                .get::<Option<serde_json::Value>, _>("raw_json")
+                .unwrap_or(serde_json::Value::Null);
 
             transactions.push(Self {
                 tx_hash_hex: hex::encode_upper(&tx_hash),
