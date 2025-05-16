@@ -59,7 +59,9 @@ pub async fn resolve_transaction(
         let ibc_status_str: String = r.get("ibc_status");
         let ibc_status = string_to_ibc_status(Some(&ibc_status_str));
 
-        let json_value: serde_json::Value = r.get::<Option<serde_json::Value>, _>("raw_json").unwrap_or_else(|| serde_json::json!({}));
+        let json_value: serde_json::Value = r
+            .get::<Option<serde_json::Value>, _>("raw_json")
+            .unwrap_or_else(|| serde_json::json!({}));
 
         let hash = hex::encode_upper(&tx_hash);
 
@@ -305,9 +307,9 @@ fn process_transaction_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Tran
         let ibc_status_str: String = row.get("ibc_status");
         let ibc_status = string_to_ibc_status(Some(&ibc_status_str));
 
-        let json_value_opt: Option<serde_json::Value> = row.get::<Option<serde_json::Value>, _>("raw_json");
+        let json_value_opt: Option<serde_json::Value> =
+            row.get::<Option<serde_json::Value>, _>("raw_json");
         if let Some(json_value) = json_value_opt {
-
             let hash = hex::encode_upper(&tx_hash);
 
             transactions.push(Transaction {
