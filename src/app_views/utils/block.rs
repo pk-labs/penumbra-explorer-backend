@@ -412,16 +412,12 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                                         continue;
                                     }
                                     
-                                    if key == "position" && value_str.contains("closeOnFill") {
-                                        if value_str.starts_with('{') && !value_str.trim().ends_with('}') {
-                                            continue;
-                                        }
+                                    if key == "position" && value_str.contains("closeOnFill") && value_str.starts_with('{') && !value_str.trim().ends_with('}') {
+                                        continue;
                                     }
                                     
-                                    if key == "tradingPair" && value_str.contains("asset1") {
-                                        if value_str.starts_with('{') && !value_str.trim().ends_with('}') {
-                                            continue;
-                                        }
+                                    if key == "tradingPair" && value_str.contains("asset1") && value_str.starts_with('{') && !value_str.trim().ends_with('}') {
+                                        continue;
                                     }
                                     
                                     if (value_str.starts_with('"') && value_str.ends_with('"')) &&
