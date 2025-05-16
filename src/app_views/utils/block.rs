@@ -22,7 +22,11 @@ pub struct Metadata<'a> {
 ///
 /// # Errors
 /// Returns an error if there are issues processing the events
-#[allow(clippy::needless_lifetimes, clippy::unused_async, clippy::too_many_lines)]
+#[allow(
+    clippy::needless_lifetimes,
+    clippy::unused_async,
+    clippy::too_many_lines
+)]
 pub async fn process_block_events<'a>(
     batch: &'a cometindex::index::EventBatch,
 ) -> Result<
@@ -68,22 +72,32 @@ pub async fn process_block_events<'a>(
             }
 
             let mut event_json = event_to_json(event, event.tx_hash())?;
-            
-            if let Some(attrs) = event_json.get_mut("attributes").and_then(|a| a.as_array_mut()) {
+
+            if let Some(attrs) = event_json
+                .get_mut("attributes")
+                .and_then(|a| a.as_array_mut())
+            {
                 for attr in attrs {
-                    let key = attr.get("key").and_then(|k| k.as_str()).unwrap_or("").to_string();
+                    let key = attr
+                        .get("key")
+                        .and_then(|k| k.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     if let Some(value) = attr.get("value").and_then(|v| v.as_str()) {
-                        if (key == "identityKey" || key == "anchor" || key == "root") && value.contains("inner") {
-                            let clean_value = value.replace("\\\"", "\"")
+                        if (key == "identityKey" || key == "anchor" || key == "root")
+                            && value.contains("inner")
+                        {
+                            let clean_value = value
+                                .replace("\\\"", "\"")
                                 .replace("\\\\", "\\")
                                 .replace("\\n", "\n");
-                            
+
                             if let Ok(json_value) = serde_json::from_str::<Value>(&clean_value) {
                                 attr["value"] = json_value;
                                 continue;
                             }
                         }
-                        
+
                         if value.trim().starts_with('{') && value.trim().ends_with('}') {
                             if let Ok(json_value) = serde_json::from_str::<Value>(value) {
                                 attr["value"] = json_value;
@@ -126,16 +140,21 @@ pub async fn process_block_events<'a>(
             .collect();
 
         let mut all_events = Vec::new();
-        
+
         for event in &block_events {
             let _event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            
+
             let mut event_copy = event.clone();
-            if let Some(attrs) = event_copy.get_mut("attributes").and_then(|a| a.as_array_mut()) {
+            if let Some(attrs) = event_copy
+                .get_mut("attributes")
+                .and_then(|a| a.as_array_mut())
+            {
                 for attr in attrs {
                     let key = attr.get("key").and_then(|k| k.as_str()).unwrap_or("");
                     if let Some(val_str) = attr.get("value").and_then(|v| v.as_str()) {
-                        if (key == "identityKey" || key == "anchor" || key == "root") && val_str.contains("inner") {
+                        if (key == "identityKey" || key == "anchor" || key == "root")
+                            && val_str.contains("inner")
+                        {
                             if let Ok(json_value) = serde_json::from_str::<Value>(val_str) {
                                 attr["value"] = json_value;
                             }
@@ -143,10 +162,10 @@ pub async fn process_block_events<'a>(
                     }
                 }
             }
-            
+
             all_events.push(event_copy);
         }
-        
+
         all_events.extend(tx_events);
 
         let raw_json = json!({
@@ -185,66 +204,73 @@ pub fn create_block_json(
     transactions: &[Value],
     events: &[Value],
 ) -> Value {
-    let processed_events = events.iter().map(|event| {
-        let event_type = event["type"].as_str().unwrap_or("unknown").to_string();
-        
-        let attributes = if let Some(attrs) = event["attributes"].as_array() {
-            attrs.iter().map(|attr| {
-                let key = attr["key"].as_str().unwrap_or("").to_string();
-                let value = attr["value"].clone();
-                
-                if let Some(val_str) = value.as_str() {
-                    if val_str.trim().starts_with('{') && val_str.trim().ends_with('}') {
-                        if let Ok(json_value) = serde_json::from_str::<Value>(val_str) {
+    let processed_events = events
+        .iter()
+        .map(|event| {
+            let event_type = event["type"].as_str().unwrap_or("unknown").to_string();
+
+            let attributes = if let Some(attrs) = event["attributes"].as_array() {
+                attrs
+                    .iter()
+                    .map(|attr| {
+                        let key = attr["key"].as_str().unwrap_or("").to_string();
+                        let value = attr["value"].clone();
+
+                        if let Some(val_str) = value.as_str() {
+                            if val_str.trim().starts_with('{') && val_str.trim().ends_with('}') {
+                                if let Ok(json_value) = serde_json::from_str::<Value>(val_str) {
+                                    return json!({
+                                        "key": key,
+                                        "value": json_value
+                                    });
+                                }
+                            }
+
+                            let mut clean_val = val_str
+                                .replace("\\\"", "\"")
+                                .replace("\\\\", "\\")
+                                .replace("\\n", "\n");
+
+                            if clean_val.starts_with('"') && clean_val.ends_with('\\') {
+                                clean_val = clean_val
+                                    .trim_start_matches('"')
+                                    .trim_end_matches('\\')
+                                    .to_string();
+                            }
+
+                            if clean_val.trim().starts_with('{') && clean_val.trim().ends_with('}')
+                            {
+                                if let Ok(json_value) = serde_json::from_str::<Value>(&clean_val) {
+                                    return json!({
+                                        "key": key,
+                                        "value": json_value
+                                    });
+                                }
+                            }
+
                             return json!({
                                 "key": key,
-                                "value": json_value
+                                "value": clean_val
                             });
                         }
-                    }
-                    
-                    let mut clean_val = val_str
-                        .replace("\\\"", "\"")
-                        .replace("\\\\", "\\")
-                        .replace("\\n", "\n");
-                        
-                    if clean_val.starts_with('"') && clean_val.ends_with('\\') {
-                        clean_val = clean_val
-                            .trim_start_matches('"')
-                            .trim_end_matches('\\')
-                            .to_string();
-                    }
-                        
-                    if clean_val.trim().starts_with('{') && clean_val.trim().ends_with('}') {
-                        if let Ok(json_value) = serde_json::from_str::<Value>(&clean_val) {
-                            return json!({
-                                "key": key,
-                                "value": json_value
-                            });
-                        }
-                    }
-                    
-                    return json!({
-                        "key": key,
-                        "value": clean_val
-                    });
-                }
-                
-                json!({
-                    "key": key,
-                    "value": value
-                })
-            }).collect::<Vec<Value>>()
-        } else {
-            Vec::new()
-        };
-        
-        json!({
-            "type": event_type,
-            "attributes": attributes
+
+                        json!({
+                            "key": key,
+                            "value": value
+                        })
+                    })
+                    .collect::<Vec<Value>>()
+            } else {
+                Vec::new()
+            };
+
+            json!({
+                "type": event_type,
+                "attributes": attributes
+            })
         })
-    }).collect::<Vec<Value>>();
-    
+        .collect::<Vec<Value>>();
+
     json!({
         "height": height,
         "chain_id": chain_id,
@@ -367,13 +393,13 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                     if let Some(attrs) = event.get("attributes").and_then(|a| a.as_array()) {
                         for attr in attrs {
                             let key = attr.get("key").and_then(|k| k.as_str()).unwrap_or("");
-                            
+
                             if key.trim().is_empty() {
                                 continue;
                             }
-                            
+
                             let attr_value = attr.get("value");
-                            
+
                             if let Some(value) = attr_value {
                                 if value.is_object() {
                                     if key == "gasUsed" {
@@ -381,9 +407,10 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                                             let mut full_gas_used = serde_json::json!({
                                                 "blockSpace": block_space,
                                             });
-                                            
+
                                             if let Some(compact) = value.get("compactBlockSpace") {
-                                                full_gas_used["compactBlockSpace"] = compact.clone();
+                                                full_gas_used["compactBlockSpace"] =
+                                                    compact.clone();
                                             }
                                             if let Some(exec) = value.get("execution") {
                                                 full_gas_used["execution"] = exec.clone();
@@ -391,7 +418,7 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                                             if let Some(verify) = value.get("verification") {
                                                 full_gas_used["verification"] = verify.clone();
                                             }
-                                            
+
                                             attributes.push(json!({
                                                 "key": key,
                                                 "value": full_gas_used
@@ -399,31 +426,44 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                                             continue;
                                         }
                                     }
-                                    
+
                                     attributes.push(json!({
                                         "key": key,
                                         "value": value
                                     }));
                                     continue;
                                 }
-                                
+
                                 if let Some(value_str) = value.as_str() {
                                     if value_str.contains("{\"amount\":{}}") {
                                         continue;
                                     }
-                                    
-                                    if key == "position" && value_str.contains("closeOnFill") && value_str.starts_with('{') && !value_str.trim().ends_with('}') {
+
+                                    if key == "position"
+                                        && value_str.contains("closeOnFill")
+                                        && value_str.starts_with('{')
+                                        && !value_str.trim().ends_with('}')
+                                    {
                                         continue;
                                     }
-                                    
-                                    if key == "tradingPair" && value_str.contains("asset1") && value_str.starts_with('{') && !value_str.trim().ends_with('}') {
+
+                                    if key == "tradingPair"
+                                        && value_str.contains("asset1")
+                                        && value_str.starts_with('{')
+                                        && !value_str.trim().ends_with('}')
+                                    {
                                         continue;
                                     }
-                                    
-                                    if (value_str.starts_with('"') && value_str.ends_with('"')) &&
-                                       value_str.contains('{') && value_str.contains('}') {
-                                        let unquoted = value_str.trim_start_matches('"').trim_end_matches('"');
-                                        if let Ok(parsed_json) = serde_json::from_str::<Value>(unquoted) {
+
+                                    if (value_str.starts_with('"') && value_str.ends_with('"'))
+                                        && value_str.contains('{')
+                                        && value_str.contains('}')
+                                    {
+                                        let unquoted =
+                                            value_str.trim_start_matches('"').trim_end_matches('"');
+                                        if let Ok(parsed_json) =
+                                            serde_json::from_str::<Value>(unquoted)
+                                        {
                                             attributes.push(json!({
                                                 "key": key,
                                                 "value": parsed_json
@@ -431,9 +471,13 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                                             continue;
                                         }
                                     }
-                                    
-                                    if value_str.trim().starts_with('{') && value_str.trim().ends_with('}') {
-                                        if let Ok(parsed_json) = serde_json::from_str::<Value>(value_str) {
+
+                                    if value_str.trim().starts_with('{')
+                                        && value_str.trim().ends_with('}')
+                                    {
+                                        if let Ok(parsed_json) =
+                                            serde_json::from_str::<Value>(value_str)
+                                        {
                                             attributes.push(json!({
                                                 "key": key,
                                                 "value": parsed_json
@@ -441,20 +485,21 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                                             continue;
                                         }
                                     }
-                                    
-                                    let clean_str = if value_str.starts_with('"') && value_str.ends_with('"') {
-                                        value_str.trim_start_matches('"').trim_end_matches('"')
-                                    } else {
-                                        value_str
-                                    };
-                                    
+
+                                    let clean_str =
+                                        if value_str.starts_with('"') && value_str.ends_with('"') {
+                                            value_str.trim_start_matches('"').trim_end_matches('"')
+                                        } else {
+                                            value_str
+                                        };
+
                                     attributes.push(json!({
                                         "key": key,
                                         "value": clean_str
                                     }));
                                     continue;
                                 }
-                                
+
                                 attributes.push(json!({
                                     "key": key,
                                     "value": value
