@@ -10,43 +10,59 @@ use crate::parsing::{encode_to_hex, parse_attribute_string};
 /// Helper function to extract a field value from a JSON-like string
 /// This handles escaped quotes and complex JSON structures
 /// Returns the field value as a String to avoid lifetime issues
-#[allow(clippy::redundant_else, clippy::manual_strip, clippy::range_plus_one, clippy::manual_pattern_char_comparison)]
+#[allow(
+    clippy::redundant_else,
+    clippy::manual_strip,
+    clippy::range_plus_one,
+    clippy::manual_pattern_char_comparison
+)]
 fn extract_json_field(json_str: &str, field_name: &str) -> Option<String> {
-    tracing::debug!("Extracting field '{}' from JSON string: {}", field_name, json_str);
-    
+    tracing::debug!(
+        "Extracting field '{}' from JSON string: {}",
+        field_name,
+        json_str
+    );
+
     if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(json_str) {
         if let Some(field_value) = parsed_json.get(field_name) {
             if let Some(value_str) = field_value.as_str() {
-                tracing::debug!("Found field '{}' from parsed JSON: {}", field_name, value_str);
+                tracing::debug!(
+                    "Found field '{}' from parsed JSON: {}",
+                    field_name,
+                    value_str
+                );
                 return Some(value_str.to_string());
             } else {
                 let value_str = field_value.to_string();
-                tracing::debug!("Found field '{}' from parsed JSON (non-string): {}", field_name, value_str);
+                tracing::debug!(
+                    "Found field '{}' from parsed JSON (non-string): {}",
+                    field_name,
+                    value_str
+                );
                 return Some(value_str);
             }
         }
     }
-    
+
     if let Some(field_pos) = json_str.find(field_name) {
         if let Some(colon_pos) = json_str[field_pos..].find(':') {
             let start_pos = field_pos + colon_pos + 1;
             let value_start = json_str[start_pos..].trim_start();
-            
+
             if value_start.starts_with('"') {
                 if let Some(quote_end) = value_start[1..].find('"') {
-                    let result = value_start[1..(quote_end+1)].trim().to_string();
+                    let result = value_start[1..(quote_end + 1)].trim().to_string();
                     tracing::debug!("Extracted quoted field '{}': {}", field_name, result);
                     return Some(result);
                 }
-            }
-            else if let Some(end_pos) = value_start.find(|c| c == ',' || c == '}') {
+            } else if let Some(end_pos) = value_start.find(|c| c == ',' || c == '}') {
                 let result = value_start[..end_pos].trim().to_string();
                 tracing::debug!("Extracted non-quoted field '{}': {}", field_name, result);
                 return Some(result);
             }
         }
     }
-    
+
     tracing::debug!("Field '{}' not found in JSON string", field_name);
     None
 }
@@ -55,7 +71,10 @@ fn extract_json_field(json_str: &str, field_name: &str) -> Option<String> {
 /// by only including fields that are present in the raw data
 fn extract_gas_used_values(value: &str) -> serde_json::Value {
     let clean_value = if value.starts_with('"') && value.contains("\\\"") {
-        value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+        value
+            .trim_matches('"')
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
     } else {
         value.to_string()
     };
@@ -67,20 +86,24 @@ fn extract_gas_used_values(value: &str) -> serde_json::Value {
             if let Some(block_space) = obj.get("blockSpace") {
                 gas_used["blockSpace"] = block_space.clone();
             }
-            
+
             if let Some(compact) = obj.get("compactBlockSpace") {
                 gas_used["compactBlockSpace"] = compact.clone();
             }
-            
+
             if let Some(exec) = obj.get("execution") {
                 gas_used["execution"] = exec.clone();
             }
-            
+
             if let Some(verify) = obj.get("verification") {
                 gas_used["verification"] = verify.clone();
             }
 
-            if !gas_used.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+            if !gas_used
+                .as_object()
+                .unwrap_or(&serde_json::Map::new())
+                .is_empty()
+            {
                 return gas_used;
             }
 
@@ -94,40 +117,44 @@ fn extract_gas_used_values(value: &str) -> serde_json::Value {
         let mut balanced_value = clean_value.to_string();
         let open_count = balanced_value.chars().filter(|&c| c == '{').count();
         let close_count = balanced_value.chars().filter(|&c| c == '}').count();
-        
+
         if open_count > close_count {
             for _ in 0..(open_count - close_count) {
                 balanced_value.push('}');
             }
         }
-        
+
         if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(&balanced_value) {
             if let Some(obj) = parsed_json.as_object() {
                 let mut gas_used = serde_json::json!({});
-                
+
                 if let Some(block_space) = obj.get("blockSpace") {
                     gas_used["blockSpace"] = block_space.clone();
                 }
-                
+
                 if let Some(compact) = obj.get("compactBlockSpace") {
                     gas_used["compactBlockSpace"] = compact.clone();
                 }
-                
+
                 if let Some(exec) = obj.get("execution") {
                     gas_used["execution"] = exec.clone();
                 }
-                
+
                 if let Some(verify) = obj.get("verification") {
                     gas_used["verification"] = verify.clone();
                 }
-                
-                if !gas_used.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+
+                if !gas_used
+                    .as_object()
+                    .unwrap_or(&serde_json::Map::new())
+                    .is_empty()
+                {
                     return gas_used;
                 }
-                
+
                 return parsed_json;
             }
-            
+
             return parsed_json;
         }
     }
@@ -137,20 +164,24 @@ fn extract_gas_used_values(value: &str) -> serde_json::Value {
     if let Some(block_space) = extract_json_field(value, "blockSpace") {
         gas_object["blockSpace"] = json!(block_space);
     }
-    
+
     if let Some(execution) = extract_json_field(value, "execution") {
         gas_object["execution"] = json!(execution);
     }
-    
+
     if let Some(verification) = extract_json_field(value, "verification") {
         gas_object["verification"] = json!(verification);
     }
-    
+
     if let Some(compact_block_space) = extract_json_field(value, "compactBlockSpace") {
         gas_object["compactBlockSpace"] = json!(compact_block_space);
     }
 
-    if !gas_object.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+    if !gas_object
+        .as_object()
+        .unwrap_or(&serde_json::Map::new())
+        .is_empty()
+    {
         tracing::debug!("Extracted gas object with found fields: {}", gas_object);
         return gas_object;
     }
@@ -167,7 +198,10 @@ fn extract_trading_pair_from_tx_view(tx_json: &Value) -> Option<Value> {
                     if let Some(position) = position_open.get("position") {
                         if let Some(phi) = position.get("phi") {
                             if let Some(pair) = phi.get("pair") {
-                                tracing::debug!("Found trading pair in position.phi.pair: {}", pair);
+                                tracing::debug!(
+                                    "Found trading pair in position.phi.pair: {}",
+                                    pair
+                                );
                                 return Some(pair.clone());
                             }
                         }
@@ -185,14 +219,14 @@ fn extract_trading_pair_from_tx_view(tx_json: &Value) -> Option<Value> {
                     return Some(trading_pair.clone());
                 }
             }
-            
+
             if let Some(position_open) = action.get("PositionOpen") {
                 if let Some(trading_pair) = position_open.get("trading_pair") {
                     tracing::debug!("Found trading pair in PositionOpen: {}", trading_pair);
                     return Some(trading_pair.clone());
                 }
             }
-            
+
             if let Some(position_close) = action.get("PositionClose") {
                 if let Some(trading_pair) = position_close.get("trading_pair") {
                     tracing::debug!("Found trading pair in PositionClose: {}", trading_pair);
@@ -201,7 +235,7 @@ fn extract_trading_pair_from_tx_view(tx_json: &Value) -> Option<Value> {
             }
         }
     }
-    
+
     None
 }
 
@@ -220,7 +254,7 @@ fn extract_position_from_tx_view(tx_json: &Value) -> Option<Value> {
             }
         }
     }
-    
+
     if let Some(view) = tx_json.get("view") {
         if let Some(action) = view.get("action") {
             if let Some(position_open) = action.get("PositionOpen") {
@@ -231,7 +265,7 @@ fn extract_position_from_tx_view(tx_json: &Value) -> Option<Value> {
             }
         }
     }
-    
+
     None
 }
 
@@ -242,29 +276,29 @@ fn try_extract_nested_json(json_str: &str, field_name: &str) -> Value {
         if let Some(colon_pos) = json_str[field_pos..].find(':') {
             let start_pos = field_pos + colon_pos + 1;
             let value_start = json_str[start_pos..].trim_start();
-            
+
             if value_start.starts_with('{') {
                 let mut brace_level = 0;
                 let mut end_pos = 0;
                 let mut in_quotes = false;
                 let mut escaped = false;
-                
+
                 for (i, c) in value_start.char_indices() {
                     if in_quotes && c == '\\' {
                         escaped = !escaped;
                         continue;
                     }
-                    
+
                     if c == '"' && !escaped {
                         in_quotes = !in_quotes;
                         escaped = false;
                         continue;
                     }
-                    
+
                     if escaped {
                         escaped = false;
                     }
-                    
+
                     if !in_quotes {
                         if c == '{' {
                             brace_level += 1;
@@ -277,7 +311,7 @@ fn try_extract_nested_json(json_str: &str, field_name: &str) -> Value {
                         }
                     }
                 }
-                
+
                 if end_pos > 0 {
                     let json_part = &value_start[..end_pos];
                     if let Ok(parsed_json) = serde_json::from_str::<Value>(json_part) {
@@ -287,7 +321,7 @@ fn try_extract_nested_json(json_str: &str, field_name: &str) -> Value {
             }
         }
     }
-    
+
     Value::Null
 }
 
@@ -422,13 +456,16 @@ pub fn create_transaction_json(
 ) -> Value {
     let tx_result_decoded = decode(tx_hash, tx_bytes);
     let trading_pair_info = extract_trading_pair_from_tx_view(&tx_result_decoded);
-    tracing::debug!("Extracted trading pair from transaction view: {:?}", trading_pair_info);
-    
+    tracing::debug!(
+        "Extracted trading pair from transaction view: {:?}",
+        trading_pair_info
+    );
+
     let mut processed_events = Vec::with_capacity(tx_events.len() + 1);
-    
+
     let mut tx_attributes = vec![
         json!({"key": "hash", "value": encode_to_hex(tx_hash)}),
-        json!({"key": "height", "value": height.to_string()})
+        json!({"key": "height", "value": height.to_string()}),
     ];
 
     for event in tx_events {
@@ -446,28 +483,32 @@ pub fn create_transaction_json(
 
                     let processed_value = if key == "gasUsed" {
                         tracing::debug!("Processing gasUsed in tx attributes: {}", value);
-                        
+
                         if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
                             if let Some(obj) = parsed_json.as_object() {
                                 let mut full_gas_used = serde_json::json!({});
-                                
+
                                 if let Some(block_space) = obj.get("blockSpace") {
                                     full_gas_used["blockSpace"] = block_space.clone();
                                 }
-                                
+
                                 if let Some(compact) = obj.get("compactBlockSpace") {
                                     full_gas_used["compactBlockSpace"] = compact.clone();
                                 }
-                                
+
                                 if let Some(exec) = obj.get("execution") {
                                     full_gas_used["execution"] = exec.clone();
                                 }
-                                
+
                                 if let Some(verify) = obj.get("verification") {
                                     full_gas_used["verification"] = verify.clone();
                                 }
-                                
-                                if full_gas_used.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+
+                                if full_gas_used
+                                    .as_object()
+                                    .unwrap_or(&serde_json::Map::new())
+                                    .is_empty()
+                                {
                                     parsed_json
                                 } else {
                                     full_gas_used
@@ -482,27 +523,37 @@ pub fn create_transaction_json(
                         }
                     } else if key == "tradingPair" {
                         if let Some(trading_pair) = &trading_pair_info {
-                            tracing::debug!("Using trading pair from transaction view: {}", trading_pair);
+                            tracing::debug!(
+                                "Using trading pair from transaction view: {}",
+                                trading_pair
+                            );
                             trading_pair.clone()
                         } else {
                             let clean_value = if value.starts_with('"') && value.contains("\\\"") {
-                                value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                                value
+                                    .trim_matches('"')
+                                    .replace("\\\"", "\"")
+                                    .replace("\\\\", "\\")
                             } else {
                                 value.to_string()
                             };
-                            
+
                             if clean_value.trim().starts_with('{') {
                                 let mut balanced_value = clean_value.to_string();
-                                let open_count = balanced_value.chars().filter(|&c| c == '{').count();
-                                let close_count = balanced_value.chars().filter(|&c| c == '}').count();
-                                
+                                let open_count =
+                                    balanced_value.chars().filter(|&c| c == '{').count();
+                                let close_count =
+                                    balanced_value.chars().filter(|&c| c == '}').count();
+
                                 if open_count > close_count {
                                     for _ in 0..(open_count - close_count) {
                                         balanced_value.push('}');
                                     }
                                 }
-                                
-                                if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
+
+                                if let Ok(parsed_json) =
+                                    serde_json::from_str::<Value>(&balanced_value)
+                                {
                                     parsed_json
                                 } else {
                                     json!(clean_value)
@@ -511,39 +562,48 @@ pub fn create_transaction_json(
                                 json!(clean_value)
                             }
                         }
-                    } else if value.trim().starts_with('{') || (value.starts_with('"') && value.contains("\\\"") && value.contains("{")) {
+                    } else if value.trim().starts_with('{')
+                        || (value.starts_with('"') && value.contains("\\\"") && value.contains("{"))
+                    {
                         let clean_value = if value.starts_with('"') && value.contains("\\\"") {
-                            value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                            value
+                                .trim_matches('"')
+                                .replace("\\\"", "\"")
+                                .replace("\\\\", "\\")
                         } else {
                             value.to_string()
                         };
-                        
+
                         let mut balanced_value = clean_value;
                         let open_count = balanced_value.chars().filter(|&c| c == '{').count();
                         let close_count = balanced_value.chars().filter(|&c| c == '}').count();
-                        
+
                         if open_count > close_count {
                             for _ in 0..(open_count - close_count) {
                                 balanced_value.push('}');
                             }
                         }
-                        
+
                         if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
                             parsed_json
                         } else if let Some(json_start) = balanced_value.find('{') {
                             let json_part = &balanced_value[json_start..];
-                            
+
                             let mut balanced_json = json_part.to_string();
-                            let json_open_count = balanced_json.chars().filter(|&c| c == '{').count();
-                            let json_close_count = balanced_json.chars().filter(|&c| c == '}').count();
-                            
+                            let json_open_count =
+                                balanced_json.chars().filter(|&c| c == '{').count();
+                            let json_close_count =
+                                balanced_json.chars().filter(|&c| c == '}').count();
+
                             if json_open_count > json_close_count {
                                 for _ in 0..(json_open_count - json_close_count) {
                                     balanced_json.push('}');
                                 }
                             }
-                            
-                            if let Ok(parsed_substring) = serde_json::from_str::<Value>(&balanced_json) {
+
+                            if let Ok(parsed_substring) =
+                                serde_json::from_str::<Value>(&balanced_json)
+                            {
                                 parsed_substring
                             } else {
                                 json!(balanced_value)
@@ -580,7 +640,6 @@ pub fn create_transaction_json(
             continue;
         }
 
-
         for attr in &event.event.attributes {
             let attr_str = format!("{attr:?}");
 
@@ -588,15 +647,15 @@ pub fn create_transaction_json(
                 if value.contains("{\"amount\":{}}") || value.trim().is_empty() {
                     continue;
                 }
-                
+
                 if key == "gasUsed" {
                     if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
                         if let Some(obj) = parsed_json.as_object() {
                             let mut full_gas_used = serde_json::json!({});
-                            
+
                             if let Some(block_space) = obj.get("blockSpace") {
                                 full_gas_used["blockSpace"] = block_space.clone();
-                                
+
                                 if let Some(compact) = obj.get("compactBlockSpace") {
                                     full_gas_used["compactBlockSpace"] = compact.clone();
                                 }
@@ -606,16 +665,16 @@ pub fn create_transaction_json(
                                 if let Some(verify) = obj.get("verification") {
                                     full_gas_used["verification"] = verify.clone();
                                 }
-                                
+
                                 attributes.push(json!({
                                     "key": key,
                                     "value": full_gas_used
                                 }));
                                 continue;
                             }
-                            
+
                             let mut has_fields = false;
-                            
+
                             if let Some(compact) = obj.get("compactBlockSpace") {
                                 full_gas_used["compactBlockSpace"] = compact.clone();
                                 has_fields = true;
@@ -628,7 +687,7 @@ pub fn create_transaction_json(
                                 full_gas_used["verification"] = verify.clone();
                                 has_fields = true;
                             }
-                            
+
                             if has_fields {
                                 attributes.push(json!({
                                     "key": key,
@@ -636,14 +695,14 @@ pub fn create_transaction_json(
                                 }));
                                 continue;
                             }
-                            
+
                             attributes.push(json!({
                                 "key": key,
                                 "value": parsed_json
                             }));
                             continue;
                         }
-                        
+
                         if let Some(block_space_str) = parsed_json.as_str() {
                             attributes.push(json!({
                                 "key": key,
@@ -651,23 +710,30 @@ pub fn create_transaction_json(
                             }));
                             continue;
                         }
-                        
+
                         attributes.push(json!({
                             "key": key,
                             "value": parsed_json
                         }));
                         continue;
                     }
-                    
+
                     let clean_value = if value.starts_with('"') && value.contains("\\\"") {
-                        value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                        value
+                            .trim_matches('"')
+                            .replace("\\\"", "\"")
+                            .replace("\\\\", "\\")
                     } else {
                         value.to_string()
                     };
-                    
+
                     if let Ok(parsed_clean) = serde_json::from_str::<Value>(&clean_value) {
                         let extracted = extract_gas_used_values(&clean_value);
-                        if extracted.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+                        if extracted
+                            .as_object()
+                            .unwrap_or(&serde_json::Map::new())
+                            .is_empty()
+                        {
                             attributes.push(json!({
                                 "key": key,
                                 "value": parsed_clean
@@ -680,9 +746,13 @@ pub fn create_transaction_json(
                         }
                         continue;
                     }
-                    
+
                     let extracted = extract_gas_used_values(&value);
-                    if extracted.as_object().unwrap_or(&serde_json::Map::new()).is_empty() {
+                    if extracted
+                        .as_object()
+                        .unwrap_or(&serde_json::Map::new())
+                        .is_empty()
+                    {
                         attributes.push(json!({
                             "key": key,
                             "value": value
@@ -695,7 +765,7 @@ pub fn create_transaction_json(
                     }
                     continue;
                 }
-                
+
                 if key == "tradingPair" {
                     if let Some(trading_pair) = &trading_pair_info {
                         tracing::debug!("Using complete trading pair from transaction view for event attribute: {}", trading_pair);
@@ -705,24 +775,27 @@ pub fn create_transaction_json(
                         }));
                         continue;
                     }
-                    
+
                     let clean_value = if value.starts_with('"') && value.contains("\\\"") {
-                        value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                        value
+                            .trim_matches('"')
+                            .replace("\\\"", "\"")
+                            .replace("\\\\", "\\")
                     } else {
                         value.to_string()
                     };
-                    
+
                     if clean_value.trim().starts_with('{') {
                         let mut balanced_value = clean_value.to_string();
                         let open_count = balanced_value.chars().filter(|&c| c == '{').count();
                         let close_count = balanced_value.chars().filter(|&c| c == '}').count();
-                        
+
                         if open_count > close_count {
                             for _ in 0..(open_count - close_count) {
                                 balanced_value.push('}');
                             }
                         }
-                        
+
                         if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
                             attributes.push(json!({
                                 "key": key,
@@ -730,21 +803,24 @@ pub fn create_transaction_json(
                             }));
                             continue;
                         }
-                        
+
                         if let Some(json_start) = balanced_value.find('{') {
                             let json_fragment = &balanced_value[json_start..];
                             let mut balanced_fragment = json_fragment.to_string();
-                            
+
                             let frag_open = balanced_fragment.chars().filter(|&c| c == '{').count();
-                            let frag_close = balanced_fragment.chars().filter(|&c| c == '}').count();
-                            
+                            let frag_close =
+                                balanced_fragment.chars().filter(|&c| c == '}').count();
+
                             if frag_open > frag_close {
                                 for _ in 0..(frag_open - frag_close) {
                                     balanced_fragment.push('}');
                                 }
                             }
-                            
-                            if let Ok(parsed_fragment) = serde_json::from_str::<Value>(&balanced_fragment) {
+
+                            if let Ok(parsed_fragment) =
+                                serde_json::from_str::<Value>(&balanced_fragment)
+                            {
                                 attributes.push(json!({
                                     "key": key,
                                     "value": parsed_fragment
@@ -753,31 +829,36 @@ pub fn create_transaction_json(
                             }
                         }
                     }
-                    
+
                     attributes.push(json!({
                         "key": key,
                         "value": clean_value
                     }));
                     continue;
                 }
-                
-                if value.trim().starts_with('{') || (value.starts_with('"') && value.contains("\\\"") && value.contains("{")) {
+
+                if value.trim().starts_with('{')
+                    || (value.starts_with('"') && value.contains("\\\"") && value.contains("{"))
+                {
                     let clean_value = if value.starts_with('"') && value.contains("\\\"") {
-                        value.trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\")
+                        value
+                            .trim_matches('"')
+                            .replace("\\\"", "\"")
+                            .replace("\\\\", "\\")
                     } else {
                         value.to_string()
                     };
-                    
+
                     let mut balanced_value = clean_value;
                     let open_count = balanced_value.chars().filter(|&c| c == '{').count();
                     let close_count = balanced_value.chars().filter(|&c| c == '}').count();
-                    
+
                     if open_count > close_count {
                         for _ in 0..(open_count - close_count) {
                             balanced_value.push('}');
                         }
                     }
-                    
+
                     if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
                         attributes.push(json!({
                             "key": key,
@@ -785,21 +866,22 @@ pub fn create_transaction_json(
                         }));
                         continue;
                     }
-                    
+
                     if let Some(json_start) = balanced_value.find('{') {
                         let json_part = &balanced_value[json_start..];
-                        
+
                         let mut balanced_json = json_part.to_string();
                         let json_open_count = balanced_json.chars().filter(|&c| c == '{').count();
                         let json_close_count = balanced_json.chars().filter(|&c| c == '}').count();
-                        
+
                         if json_open_count > json_close_count {
                             for _ in 0..(json_open_count - json_close_count) {
                                 balanced_json.push('}');
                             }
                         }
-                        
-                        if let Ok(parsed_substring) = serde_json::from_str::<Value>(&balanced_json) {
+
+                        if let Ok(parsed_substring) = serde_json::from_str::<Value>(&balanced_json)
+                        {
                             attributes.push(json!({
                                 "key": key,
                                 "value": parsed_substring
@@ -807,7 +889,7 @@ pub fn create_transaction_json(
                             continue;
                         }
                     }
-                    
+
                     attributes.push(json!({
                         "key": key,
                         "value": balanced_value
@@ -821,7 +903,7 @@ pub fn create_transaction_json(
                         }));
                         continue;
                     }
-                    
+
                     if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
                         attributes.push(json!({
                             "key": key,
@@ -829,26 +911,29 @@ pub fn create_transaction_json(
                         }));
                         continue;
                     }
-                    
+
                     tracing::debug!("Original position value from DB: {}", value);
-                    
+
                     let clean_value = if value.starts_with('\"') && value.contains("\\\"") {
-                        value.trim_matches('\"').replace("\\\"", "\"").replace("\\\\", "\\")
+                        value
+                            .trim_matches('\"')
+                            .replace("\\\"", "\"")
+                            .replace("\\\\", "\\")
                     } else {
                         value.to_string()
                     };
-                    
+
                     if clean_value.trim().starts_with('{') {
                         let mut balanced_value = clean_value.to_string();
                         let open_count = balanced_value.chars().filter(|&c| c == '{').count();
                         let close_count = balanced_value.chars().filter(|&c| c == '}').count();
-                        
+
                         if open_count > close_count {
                             for _ in 0..(open_count - close_count) {
                                 balanced_value.push('}');
                             }
                         }
-                        
+
                         if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
                             attributes.push(json!({
                                 "key": key,
@@ -857,14 +942,14 @@ pub fn create_transaction_json(
                             continue;
                         }
                     }
-                    
+
                     attributes.push(json!({
                         "key": key,
                         "value": value.trim_matches('\"')
                     }));
                     continue;
                 }
-                
+
                 if value.trim().starts_with('{') && value.trim().ends_with('}') {
                     if let Ok(parsed_json) = serde_json::from_str::<Value>(&value) {
                         attributes.push(json!({
@@ -874,7 +959,6 @@ pub fn create_transaction_json(
                         continue;
                     }
                 }
-                
 
                 if value.starts_with('\"') && value.contains("\\\"") && value.contains("{") {
                     let clean_value = value
@@ -882,19 +966,20 @@ pub fn create_transaction_json(
                         .trim_end_matches('\"')
                         .replace("\\\"", "\"")
                         .replace("\\\\", "\\");
-                        
-                    if clean_value.starts_with('{') && 
-                       (clean_value.ends_with('}') || clean_value.contains("inner")) {
+
+                    if clean_value.starts_with('{')
+                        && (clean_value.ends_with('}') || clean_value.contains("inner"))
+                    {
                         let mut balanced_value = clean_value;
                         let open_count = balanced_value.chars().filter(|&c| c == '{').count();
                         let close_count = balanced_value.chars().filter(|&c| c == '}').count();
-                        
+
                         if open_count > close_count {
                             for _ in 0..(open_count - close_count) {
                                 balanced_value.push('}');
                             }
                         }
-                        
+
                         if let Ok(parsed_json) = serde_json::from_str::<Value>(&balanced_value) {
                             attributes.push(json!({
                                 "key": key,
@@ -904,9 +989,11 @@ pub fn create_transaction_json(
                         }
                     }
                 }
-                
-                if (value.starts_with('\"') && value.ends_with('\"')) &&
-                   value.contains('{') && value.contains('}') {
+
+                if (value.starts_with('\"') && value.ends_with('\"'))
+                    && value.contains('{')
+                    && value.contains('}')
+                {
                     let unquoted = value.trim_start_matches('\"').trim_end_matches('\"');
                     if let Ok(parsed_json) = serde_json::from_str::<Value>(unquoted) {
                         attributes.push(json!({
@@ -916,7 +1003,7 @@ pub fn create_transaction_json(
                         continue;
                     }
                 }
-                
+
                 if value.starts_with('\"') && value.ends_with('\"') {
                     let clean_value = value.trim_matches('\"');
                     attributes.push(json!({
@@ -925,7 +1012,7 @@ pub fn create_transaction_json(
                     }));
                     continue;
                 }
-                
+
                 attributes.push(json!({
                     "key": key,
                     "value": value
@@ -945,7 +1032,7 @@ pub fn create_transaction_json(
             }));
         }
     }
-    
+
     processed_events.push(json!({
         "type": "tx",
         "attributes": tx_attributes
