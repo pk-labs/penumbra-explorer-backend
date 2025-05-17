@@ -132,7 +132,7 @@ fn simplified_event_to_json(
 ///
 /// # Errors
 /// Returns an error if there are issues processing the events
-#[allow(clippy::needless_lifetimes)]
+#[allow(clippy::needless_lifetimes, clippy::unused_async)]
 pub async fn process_block_events<'a>(
     batch: &'a cometindex::index::EventBatch,
 ) -> Result<Vec<(
@@ -348,7 +348,6 @@ pub fn collect_block_transactions(raw_json: &Value, timestamp: DateTime<Utc>) ->
 /// Extract events from block JSON
 #[must_use]
 /// Extract events from block JSON
-#[must_use]
 pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
     raw_json
         .get("block")

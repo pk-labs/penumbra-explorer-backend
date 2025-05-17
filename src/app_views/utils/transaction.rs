@@ -54,9 +54,8 @@ fn process_value(raw_value: &str) -> Value {
 
         if unescaped.trim().starts_with('{') || unescaped.trim().starts_with('[') {
             let balanced = ensure_balanced_json(&unescaped);
-            match serde_json::from_str::<Value>(&balanced) {
-                Ok(json_value) => return json_value,
-                Err(_) => {}
+            if let Ok(json_value) = serde_json::from_str::<Value>(&balanced) {
+                return json_value;
             }
         }
 
