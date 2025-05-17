@@ -41,7 +41,10 @@ fn extract_attribute_kv(attr_str: &str) -> Option<(String, String)> {
     // Handle simple key-value format
     else if let Some(colon_pos) = attr_str.find(':') {
         let key = attr_str[..colon_pos].trim().trim_matches('"').to_string();
-        let value = attr_str[colon_pos + 1..].trim().trim_matches('"').to_string();
+        let value = attr_str[colon_pos + 1..]
+            .trim()
+            .trim_matches('"')
+            .to_string();
         return Some((key, value));
     }
 
@@ -49,7 +52,10 @@ fn extract_attribute_kv(attr_str: &str) -> Option<(String, String)> {
 }
 
 fn process_event_attributes(event: &ContextualizedEvent<'_>) -> Vec<Value> {
-    event.event.attributes.iter()
+    event
+        .event
+        .attributes
+        .iter()
         .filter_map(|attr| {
             let attr_str = format!("{attr:?}");
 
@@ -116,7 +122,7 @@ fn process_event_attributes(event: &ContextualizedEvent<'_>) -> Vec<Value> {
 /// Convert an event to JSON with minimal processing
 fn simplified_event_to_json(
     event: &ContextualizedEvent<'_>,
-    _tx_hash: Option<[u8; 32]>,  // Added underscore to silence the warning
+    _tx_hash: Option<[u8; 32]>, // Added underscore to silence the warning
 ) -> Value {
     let event_type = event.event.kind.to_string();
     let attributes = process_event_attributes(event);
@@ -135,15 +141,18 @@ fn simplified_event_to_json(
 #[allow(clippy::needless_lifetimes, clippy::unused_async)]
 pub async fn process_block_events<'a>(
     batch: &'a cometindex::index::EventBatch,
-) -> Result<Vec<(
-    u64,
-    Vec<u8>,
-    DateTime<Utc>,
-    usize,
-    Option<String>,
-    Value,
-    Vec<([u8; 32], Vec<u8>, u64, Vec<ContextualizedEvent<'static>>)>,
-)>, anyhow::Error> {
+) -> Result<
+    Vec<(
+        u64,
+        Vec<u8>,
+        DateTime<Utc>,
+        usize,
+        Option<String>,
+        Value,
+        Vec<([u8; 32], Vec<u8>, u64, Vec<ContextualizedEvent<'static>>)>,
+    )>,
+    anyhow::Error,
+> {
     let mut results = Vec::new();
 
     for block_data in batch.events_by_block() {
@@ -265,9 +274,9 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
     let exists = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM explorer_block_details WHERE height = $1)",
     )
-        .bind(height_i64)
-        .fetch_one(dbtx.as_mut())
-        .await?;
+    .bind(height_i64)
+    .fetch_one(dbtx.as_mut())
+    .await?;
 
     let validator_key = None::<String>;
     let previous_hash = None::<Vec<u8>>;
@@ -286,14 +295,14 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
             WHERE height = $1
             ",
         )
-            .bind(height_i64)
-            .bind(&meta.root)
-            .bind(meta.timestamp)
-            .bind(i32::try_from(meta.tx_count).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(&meta.raw_json)
-            .execute(dbtx.as_mut())
-            .await?;
+        .bind(height_i64)
+        .bind(&meta.root)
+        .bind(meta.timestamp)
+        .bind(i32::try_from(meta.tx_count).unwrap_or(0))
+        .bind(meta.chain_id)
+        .bind(&meta.raw_json)
+        .execute(dbtx.as_mut())
+        .await?;
 
         tracing::debug!("Updated block {}", meta.height);
     } else {
@@ -305,17 +314,17 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ",
         )
-            .bind(height_i64)
-            .bind(&meta.root)
-            .bind(meta.timestamp)
-            .bind(i32::try_from(meta.tx_count).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(validator_key)
-            .bind(previous_hash)
-            .bind(block_hash)
-            .bind(&meta.raw_json)
-            .execute(dbtx.as_mut())
-            .await?;
+        .bind(height_i64)
+        .bind(&meta.root)
+        .bind(meta.timestamp)
+        .bind(i32::try_from(meta.tx_count).unwrap_or(0))
+        .bind(meta.chain_id)
+        .bind(validator_key)
+        .bind(previous_hash)
+        .bind(block_hash)
+        .bind(&meta.raw_json)
+        .execute(dbtx.as_mut())
+        .await?;
 
         tracing::debug!("Inserted block {}", meta.height);
     }
@@ -372,7 +381,8 @@ pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
                             attrs
                                 .iter()
                                 .filter_map(|attr| {
-                                    let key = attr.get("key").and_then(|k| k.as_str()).unwrap_or("");
+                                    let key =
+                                        attr.get("key").and_then(|k| k.as_str()).unwrap_or("");
 
                                     if key.trim().is_empty() {
                                         return None;

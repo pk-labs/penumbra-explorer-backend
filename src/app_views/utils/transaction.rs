@@ -35,10 +35,12 @@ fn extract_attribute_kv(attr_str: &str) -> Option<(String, String)> {
                 }
             }
         }
-    }
-    else if let Some(colon_pos) = attr_str.find(':') {
+    } else if let Some(colon_pos) = attr_str.find(':') {
         let key = attr_str[..colon_pos].trim().trim_matches('"').to_string();
-        let value = attr_str[colon_pos + 1..].trim().trim_matches('"').to_string();
+        let value = attr_str[colon_pos + 1..]
+            .trim()
+            .trim_matches('"')
+            .to_string();
         return Some((key, value));
     }
 
@@ -48,9 +50,7 @@ fn extract_attribute_kv(attr_str: &str) -> Option<(String, String)> {
 /// Process a raw value to handle potential JSON objects
 fn process_value(raw_value: &str) -> Value {
     if raw_value.contains("\\\"") {
-        let unescaped = raw_value
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\");
+        let unescaped = raw_value.replace("\\\"", "\"").replace("\\\\", "\\");
 
         if unescaped.trim().starts_with('{') || unescaped.trim().starts_with('[') {
             let balanced = ensure_balanced_json(&unescaped);
@@ -64,18 +64,15 @@ fn process_value(raw_value: &str) -> Value {
         }
 
         json!(unescaped)
-    }
-    else if raw_value.trim().starts_with('{') || raw_value.trim().starts_with('[') {
+    } else if raw_value.trim().starts_with('{') || raw_value.trim().starts_with('[') {
         let balanced = ensure_balanced_json(raw_value);
         match serde_json::from_str::<Value>(&balanced) {
             Ok(json_value) => json_value,
-            Err(_) => json!(raw_value)
+            Err(_) => json!(raw_value),
         }
-    }
-    else if raw_value.starts_with('"') && raw_value.ends_with('"') {
+    } else if raw_value.starts_with('"') && raw_value.ends_with('"') {
         json!(raw_value.trim_matches('"'))
-    }
-    else {
+    } else {
         json!(raw_value)
     }
 }
@@ -107,7 +104,10 @@ fn ensure_balanced_json(json_str: &str) -> String {
 
 /// Process event attributes into JSON
 fn process_event_attributes(event: &ContextualizedEvent<'_>) -> Vec<Value> {
-    event.event.attributes.iter()
+    event
+        .event
+        .attributes
+        .iter()
         .filter_map(|attr| {
             let attr_str = format!("{attr:?}");
 
@@ -130,10 +130,7 @@ fn process_event_attributes(event: &ContextualizedEvent<'_>) -> Vec<Value> {
 }
 
 /// Convert an event to JSON with minimal processing
-fn simplified_event_to_json(
-    event: &ContextualizedEvent<'_>,
-    _tx_hash: Option<[u8; 32]>,
-) -> Value {
+fn simplified_event_to_json(event: &ContextualizedEvent<'_>, _tx_hash: Option<[u8; 32]>) -> Value {
     let event_type = event.event.kind.to_string();
     let attributes = process_event_attributes(event);
 
@@ -211,13 +208,20 @@ pub fn create_transaction_json(
         if event.event.kind == "tx" {
             for attr in process_event_attributes(event) {
                 let key = attr["key"].as_str().unwrap_or("");
-                if !tx_attributes.iter().any(|a| a["key"].as_str().unwrap_or("") == key) {
+                if !tx_attributes
+                    .iter()
+                    .any(|a| a["key"].as_str().unwrap_or("") == key)
+                {
                     tx_attributes.push(attr);
                 }
             }
         } else {
             let event_json = simplified_event_to_json(event, Some(tx_hash));
-            if !event_json["attributes"].as_array().unwrap_or(&Vec::new()).is_empty() {
+            if !event_json["attributes"]
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .is_empty()
+            {
                 processed_events.push(event_json);
             }
         }
@@ -244,18 +248,19 @@ pub fn create_transaction_json(
 /// # Errors
 /// Returns an error if the database query fails
 pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<(), sqlx::Error> {
-    let height_i64 = i64::try_from(meta.height)
-        .map_err(|_| sqlx::Error::Decode(Box::new(std::io::Error::new(
+    let height_i64 = i64::try_from(meta.height).map_err(|_| {
+        sqlx::Error::Decode(Box::new(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("Height value too large: {}", meta.height),
-        ))))?;
+        )))
+    })?;
 
     let exists = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM explorer_transactions WHERE tx_hash = $1)",
     )
-        .bind(meta.tx_hash.as_ref())
-        .fetch_one(dbtx.as_mut())
-        .await?;
+    .bind(meta.tx_hash.as_ref())
+    .fetch_one(dbtx.as_mut())
+    .await?;
 
     if exists {
         sqlx::query(
@@ -271,15 +276,15 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
             WHERE tx_hash = $1
             ",
         )
-            .bind(meta.tx_hash.as_ref())
-            .bind(height_i64)
-            .bind(meta.timestamp)
-            .bind(i64::try_from(meta.fee_amount).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(&meta.tx_bytes_base64)
-            .bind(&meta.decoded_tx_json)
-            .execute(dbtx.as_mut())
-            .await?;
+        .bind(meta.tx_hash.as_ref())
+        .bind(height_i64)
+        .bind(meta.timestamp)
+        .bind(i64::try_from(meta.fee_amount).unwrap_or(0))
+        .bind(meta.chain_id)
+        .bind(&meta.tx_bytes_base64)
+        .bind(&meta.decoded_tx_json)
+        .execute(dbtx.as_mut())
+        .await?;
     } else {
         sqlx::query(
             r"
@@ -288,15 +293,15 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             ",
         )
-            .bind(meta.tx_hash.as_ref())
-            .bind(height_i64)
-            .bind(meta.timestamp)
-            .bind(i64::try_from(meta.fee_amount).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(&meta.tx_bytes_base64)
-            .bind(&meta.decoded_tx_json)
-            .execute(dbtx.as_mut())
-            .await?;
+        .bind(meta.tx_hash.as_ref())
+        .bind(height_i64)
+        .bind(meta.timestamp)
+        .bind(i64::try_from(meta.fee_amount).unwrap_or(0))
+        .bind(meta.chain_id)
+        .bind(&meta.tx_bytes_base64)
+        .bind(&meta.decoded_tx_json)
+        .execute(dbtx.as_mut())
+        .await?;
     }
 
     Ok(())
