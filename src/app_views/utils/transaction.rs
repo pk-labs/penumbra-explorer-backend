@@ -197,42 +197,13 @@ pub fn create_transaction_json(
 ) -> Value {
     let tx_result_decoded = decode(tx_hash, tx_bytes);
 
-    let mut tx_attributes = vec![
-        json!({"key": "hash", "value": encode_to_hex(tx_hash)}),
-        json!({"key": "height", "value": height.to_string()}),
-    ];
+    // Process all events consistently - no special handling for tx events
+    let processed_events: Vec<Value> = tx_events
+        .iter()
+        .map(|event| simplified_event_to_json(event, Some(tx_hash)))
+        .collect();
 
-    let mut processed_events = Vec::with_capacity(tx_events.len() + 1);
-
-    for event in tx_events {
-        if event.event.kind == "tx" {
-            for attr in process_event_attributes(event) {
-                let key = attr["key"].as_str().unwrap_or("");
-                if !tx_attributes
-                    .iter()
-                    .any(|a| a["key"].as_str().unwrap_or("") == key)
-                {
-                    tx_attributes.push(attr);
-                }
-            }
-        } else {
-            let event_json = simplified_event_to_json(event, Some(tx_hash));
-            if !event_json["attributes"]
-                .as_array()
-                .unwrap_or(&Vec::new())
-                .is_empty()
-            {
-                processed_events.push(event_json);
-            }
-        }
-    }
-
-    processed_events.push(json!({
-        "event_id": null,
-        "type": "tx",
-        "attributes": tx_attributes
-    }));
-
+    // Construct the final transaction JSON
     json!({
         "hash": encode_to_hex(tx_hash),
         "block_height": height.to_string(),
