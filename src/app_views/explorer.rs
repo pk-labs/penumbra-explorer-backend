@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use crate::app_views::utils::block::Metadata as BlockMetadata;
 use crate::app_views::utils::transaction::Metadata as TransactionMetadata;
-use crate::app_views::utils::{block, ibc, transaction};
+use crate::app_views::utils::{block, ibc, transaction, validator};
+use crate::app_views::utils::validator::ValidatorParams;
 use crate::parsing::encode_to_base64;
 
 #[derive(Debug)]
@@ -69,20 +70,30 @@ impl Explorer {
             return None;
         }
 
+        // Parse genesis JSON as a generic Value
         let genesis: Result<Value, _> = serde_json::from_str(&contents);
         if let Err(e) = genesis {
             tracing::error!("Failed to parse genesis.json: {}", e);
             return None;
         }
-
+        
         let genesis = genesis.unwrap();
+        
+        // Try to get the chain_id from the top level first
         let chain_id = genesis["chain_id"].as_str().map(String::from);
-
+        
         if chain_id.is_none() {
-            tracing::error!("Could not find chain_id in genesis.json");
+            // Fallback to app_state.genesisContent.chainId (the expected format in Penumbra genesis)
+            let app_chain_id = genesis["app_state"]["genesisContent"]["chainId"].as_str().map(String::from);
+            
+            if app_chain_id.is_none() {
+                tracing::error!("Could not find chain_id in genesis.json");
+            }
+            
+            app_chain_id
+        } else {
+            chain_id
         }
-
-        chain_id
     }
 
     fn get_chain_id(&self) -> &str {
@@ -330,6 +341,24 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             r"
             CREATE INDEX IF NOT EXISTS idx_ibc_transfers_status
             ON ibc_transfers(status)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS validator_staking_parameters (
+                chain_id TEXT PRIMARY KEY,
+                active_validator_limit BIGINT NOT NULL,
+                min_validator_stake TEXT NOT NULL,
+                total_staked TEXT NOT NULL,
+                uptime_blocks_window BIGINT NOT NULL,
+                uptime_min_required TEXT NOT NULL,
+                slashing_penalty_downtime TEXT,
+                slashing_penalty_misbehavior TEXT NOT NULL,
+                unbonding_delay TEXT NOT NULL
+            )
             ",
         )
         .execute(dbtx.as_mut())
@@ -765,6 +794,29 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             .execute(dbtx.as_mut())
             .await?;
 
+        // Initialize validator staking parameters from genesis file
+        // This only runs once during chain initialization
+        tracing::info!("Reading genesis file to initialize validator staking parameters");
+        
+        // Extract validator parameters directly from genesis.json without fallbacks
+        match ValidatorParams::from_genesis_json() {
+            Ok(validator_params) => {
+                tracing::info!(
+                    "Initializing validator staking parameters for chain_id = {}",
+                    validator_params.chain_id
+                );
+                
+                if let Err(e) = validator_params.initialize_table(dbtx).await {
+                    tracing::error!("Failed to initialize validator staking parameters: {}", e);
+                }
+            },
+            Err(e) => {
+                // This will fail the initialization if parameters are missing or invalid
+                tracing::error!("Failed to extract validator staking parameters: {}", e);
+                return Err(e);
+            }
+        }
+
         Ok(())
     }
 
@@ -877,8 +929,14 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             let timestamp = *height_to_timestamp.get(&height).unwrap_or(&Utc::now());
 
             if !events.is_empty() {
+                // Process IBC events
                 if let Err(e) = ibc::process_events(dbtx, &events, height, timestamp).await {
                     tracing::error!("Error processing IBC events for block {}: {:?}", height, e);
+                }
+                
+                // Process validator parameter change events
+                if let Err(e) = validator::ValidatorParams::process_events(dbtx, &events, height, timestamp).await {
+                    tracing::error!("Error processing validator parameter events for block {}: {:?}", height, e);
                 }
             }
         }
