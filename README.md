@@ -59,7 +59,7 @@ Backend indexer for exploring the Penumbra blockchain built with Rust
 | `migrations/`     | Database migration scripts                                    |
 | `src/api/`        | API implementation (GraphQL resolvers, handlers)              |
 | `src/api/graphql/`| GraphQL schema, resolvers, and types                          |
-| `src/app_views/`  | The heart of the blockchain indexing process                 |
+| `src/app_views/`  | The heart of the blockchain indexing process                  |
 | `src/`            | Core application code                                         |
 
 ## Docker
