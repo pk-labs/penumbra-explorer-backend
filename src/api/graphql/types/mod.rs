@@ -1,6 +1,7 @@
 mod asset;
 mod block;
 mod event;
+pub mod ibc;
 pub mod inputs;
 mod stats;
 #[allow(clippy::module_name_repetitions)]
@@ -11,14 +12,15 @@ pub mod unions;
 pub use asset::*;
 pub use block::*;
 pub use event::*;
+pub use ibc::Stats as IbcStats;
 pub use inputs::{
-    BlockFilter, BlockHeightRange, BlocksSelector, CollectionLimit, LatestBlock,
+    BlockFilter, BlockHeightRange, BlocksSelector, CollectionLimit, IbcStatsFilter, LatestBlock,
     LatestTransactions, TransactionFilter, TransactionRange, TransactionsSelector,
 };
 pub use stats::*;
 pub use subscription::*;
 pub use transaction::{
-    extract_transaction_body, DbRawTransaction, Fee, RangeDirection, Transaction, TransactionBody,
-    TransactionParameters,
+    extract_transaction_body, string_to_ibc_status, DbRawTransaction, Fee, IbcStatus,
+    RangeDirection, Transaction, TransactionBody, TransactionParameters,
 };
 pub use unions::*;

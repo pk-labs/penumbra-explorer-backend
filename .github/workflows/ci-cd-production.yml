@@ -1,28 +1,34 @@
-name: Rust CI/CD Pipeline
+name: Rust CI/CD Pipeline (Production)
+
 on:
   release:
     types: [published]
   workflow_dispatch:
+
 env:
   APP_NAME: penumbra-explorer
   SERVER_USER: deploy-penumbra-explorer
   SERVER_HOST: ${{ secrets.SERVER_HOST }}
+
 jobs:
   code-quality:
+    if: ${{ github.event.release.target_commitish == 'main' }}
     name: Code Quality
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout at release tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
-      - name: Install Rust toolchain
+      - name: Install Rust toolchain & components
         uses: actions-rs/toolchain@v1
         with:
           toolchain: 1.83.0
           override: true
           components: rustfmt, clippy
 
-      - name: Cache dependencies
+      - name: Cache dependencies & build artifact
         uses: actions/cache@v3
         with:
           path: |
@@ -34,23 +40,27 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run clippy with pedantic settings
+      - name: Run clippy (pedantic + deny warnings)
         run: cargo clippy --all-targets --all-features --workspace -- -W clippy::pedantic -D warnings
+
   test:
+    if: ${{ github.event.release.target_commitish == 'main' }}
     name: Run Tests
     runs-on: ubuntu-latest
     needs: code-quality
     steps:
-      - name: Checkout repository
+      - name: Checkout at release tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: 1.81.0
+          toolchain: 1.83.0
           override: true
 
-      - name: Cache dependencies
+      - name: Cache dependencies & build artifact
         uses: actions/cache@v3
         with:
           path: |
@@ -61,36 +71,43 @@ jobs:
 
       - name: Run tests
         run: cargo test --all
+
   deploy:
-    name: Deploy to Hetzner
+    if: ${{ github.event.release.target_commitish == 'main' }}
+    name: Deploy to Hetzner (Production)
     runs-on: ubuntu-latest
     needs: [code-quality, test]
-    if: github.event_name == 'release' && github.event.release.target_commitish == 'main'
     steps:
-      - name: Checkout code
+      - name: Checkout at release tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Build Docker image
+
+      - name: Build Docker image (tarball)
         uses: docker/build-push-action@v5
         with:
           context: .
           push: false
           tags: ${{ env.APP_NAME }}:latest
           outputs: type=docker,dest=/tmp/${{ env.APP_NAME }}.tar
+
       - name: Install SSH key
         uses: shimataro/ssh-key-action@v2
         with:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           known_hosts: unnecessary
-      - name: Add server to known hosts
+
+      - name: Add server to known_hosts
         run: ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
       - name: Transfer Docker image
-        run: |
-          scp /tmp/${{ env.APP_NAME }}.tar ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:~/deployments/
+        run: scp /tmp/${{ env.APP_NAME }}.tar ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:~/deployments/
+
       - name: Deploy with Blue-Green mechanism
-        run: |
-          ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} 'sudo /opt/deployment/deploy.sh'
+        run: ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} 'sudo /opt/deployment/deploy.sh'
+
       - name: Check deployment status
-        run: |
-          ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} 'cat /opt/deployment/deploy.log | tail -20'
+        run: ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} 'tail -n 20 /opt/deployment/deploy.log'

@@ -15,12 +15,13 @@ services:
   api:
     build: .
     ports:
-      - "${po}:${API_PORT}"
+      - "${PORT}:${PORT}"
     depends_on:
       - db
     environment:
+      - SOURCE_DB_URL=postgresql://username:password@hostname:port/database?sslmode=require
       - DEST_DB_URL=postgres://postgres:postgres@db:5432/explorer
-      - PORT=${API_PORT}
+      - PORT=${PORT}
     restart: always
 
 volumes:

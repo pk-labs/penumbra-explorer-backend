@@ -1,0 +1,129 @@
+name: Rust CI/CD Pipeline (Development)
+
+on:
+  push:
+    branches:
+      - development
+  pull_request:
+    branches:
+      - development
+  workflow_dispatch:
+
+env:
+  APP_NAME_DEV: penumbra-explorer-dev
+  SERVER_USER_DEV: deploy-penumbra-explorer-dev
+  SERVER_HOST_DEV: ${{ secrets.SERVER_HOST_DEV }}
+  DEST_DB_URL_DEV: ${{ secrets.DEST_DB_URL_DEV }}
+  SOURCE_DB_URL_DEV: ${{ secrets.SOURCE_DB_URL_DEV }}
+
+jobs:
+  code-quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.83.0
+          override: true
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy with pedantic settings
+        run: cargo clippy --all-targets --all-features --workspace -- -W clippy::pedantic -D warnings
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: code-quality
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.83.0
+          override: true
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run tests
+        run: cargo test --all
+
+  deploy:
+    name: Deploy to Hetzner (Development)
+    runs-on: ubuntu-latest
+    needs: [code-quality, test]
+    if: github.ref == 'refs/heads/development'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: ${{ env.APP_NAME_DEV }}:latest
+          outputs: type=docker,dest=/tmp/${{ env.APP_NAME_DEV }}.tar
+
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.DEPLOY_SSH_KEY_DEV }}
+          known_hosts: unnecessary
+          config: |
+            Host ${{ env.SERVER_HOST_DEV }}
+              User ${{ env.SERVER_USER_DEV }}
+              IdentityFile ~/.ssh/id_rsa
+              StrictHostKeyChecking no
+
+      - name: Add server to known hosts
+        run: ssh-keyscan -H ${{ env.SERVER_HOST_DEV }} >> ~/.ssh/known_hosts
+
+      - name: Test SSH connection
+        run: ssh ${{ env.SERVER_USER_DEV }}@${{ env.SERVER_HOST_DEV }} 'echo "SSH connection successful"'
+
+      - name: Transfer Docker image and genesis file
+        run: |
+          scp /tmp/${{ env.APP_NAME_DEV }}.tar ${{ env.SERVER_USER_DEV }}@${{ env.SERVER_HOST_DEV }}:~/deployments/
+          scp genesis.json ${{ env.SERVER_USER_DEV }}@${{ env.SERVER_HOST_DEV }}:~/deployments/
+
+      - name: Deploy using single container
+        run: |
+          ssh ${{ env.SERVER_USER_DEV }}@${{ env.SERVER_HOST_DEV }} 'cd ~/deployments && \
+          docker load -i ${{ env.APP_NAME_DEV }}.tar && \
+          docker rm -f ${{ env.APP_NAME_DEV }} || true && \
+          docker run -d --name ${{ env.APP_NAME_DEV }} \
+            --network penumbra-dev-net \
+            -p 8080:8080 \
+            -e SOURCE_DB_URL="${{ env.SOURCE_DB_URL_DEV }}" \
+            -e DEST_DB_URL="${{ env.DEST_DB_URL_DEV }}" \
+            -v /home/${{ env.SERVER_USER_DEV }}/deployments/genesis.json:/app/genesis.json \
+            --restart unless-stopped \
+            ${{ env.APP_NAME_DEV }}:latest'

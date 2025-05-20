@@ -19,3 +19,27 @@ pub struct TransactionUpdate {
 pub struct TransactionCountUpdate {
     pub count: i64,
 }
+
+#[derive(SimpleObject)]
+#[graphql(rename_fields = "camelCase")]
+pub struct IbcTransactionUpdate {
+    pub tx_hash: String,
+
+    pub client_id: String,
+
+    pub status: String,
+
+    pub block_height: i64,
+
+    pub timestamp: DateTime,
+
+    pub is_status_update: bool,
+
+    pub raw: String,
+}
+
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
+pub struct TotalShieldedVolumeUpdate {
+    pub value: String,
+}

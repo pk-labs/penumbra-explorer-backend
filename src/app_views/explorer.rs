@@ -4,351 +4,89 @@ use cometindex::{
     index::{EventBatch, EventBatchContext},
     sqlx, AppView, ContextualizedEvent, PgTransaction,
 };
-
-use penumbra_sdk_proto::core::component::sct::v1 as pb;
-use penumbra_sdk_proto::core::transaction::v1::{Transaction, TransactionView};
-use penumbra_sdk_proto::event::ProtoEvent;
-use prost::Message;
-use serde_json::{json, Map, Value};
-use sqlx::types::chrono::DateTime;
+use serde_json::Value;
+use sqlx::{
+    postgres::PgPool,
+    types::chrono::{DateTime, Utc},
+};
 use std::collections::HashMap;
-use std::time::Instant;
+use std::fs::File;
+use std::io::Read;
+use std::sync::Arc;
 
-use crate::parsing::{encode_to_base64, encode_to_hex, event_to_json, parse_attribute_string};
+use crate::app_views::utils::block::Metadata as BlockMetadata;
+use crate::app_views::utils::transaction::Metadata as TransactionMetadata;
+use crate::app_views::utils::{block, ibc, transaction};
+use crate::parsing::encode_to_base64;
 
-#[derive(Debug, Default)]
-pub struct Explorer {}
-
-struct BlockMetadata<'a> {
-    height: u64,
-    root: Vec<u8>,
-    timestamp: DateTime<sqlx::types::chrono::Utc>,
-    tx_count: usize,
-    chain_id: &'a str,
-    raw_json: Value,
+#[derive(Debug)]
+pub struct Explorer {
+    source_pool: Option<Arc<PgPool>>,
+    chain_id: Option<String>,
 }
 
-struct TransactionMetadata<'a> {
-    tx_hash: [u8; 32],
-    height: u64,
-    timestamp: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>,
-    fee_amount: u64,
-    chain_id: &'a str,
-    tx_bytes_base64: String,
-    decoded_tx_json: Value,
+impl Default for Explorer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Explorer {
     #[must_use]
     pub fn new() -> Self {
-        Self {}
-    }
+        let chain_id = Self::read_chain_id_from_genesis();
 
-    async fn insert_block(
-        &self,
-        dbtx: &mut PgTransaction<'_>,
-        meta: BlockMetadata<'_>,
-    ) -> Result<(), anyhow::Error> {
-        let height_i64 = match i64::try_from(meta.height) {
-            Ok(h) => h,
-            Err(e) => return Err(anyhow::anyhow!("Height conversion error: {}", e)),
-        };
-
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM explorer_block_details WHERE height = $1)",
-        )
-        .bind(height_i64)
-        .fetch_one(dbtx.as_mut())
-        .await?;
-
-        let validator_key = None::<String>;
-        let previous_hash = None::<Vec<u8>>;
-        let block_hash = None::<Vec<u8>>;
-
-        let raw_json_str = serde_json::to_string(&meta.raw_json)?;
-
-        if exists {
-            sqlx::query(
-                r"
-            UPDATE explorer_block_details
-            SET
-                root = $2,
-                timestamp = $3,
-                num_transactions = $4,
-                chain_id = $5,
-                raw_json = $6::jsonb
-            WHERE height = $1
-            ",
-            )
-            .bind(height_i64)
-            .bind(&meta.root)
-            .bind(meta.timestamp)
-            .bind(i32::try_from(meta.tx_count).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(&raw_json_str)
-            .execute(dbtx.as_mut())
-            .await?;
-
-            tracing::debug!("Updated block {}", meta.height);
+        if let Some(id) = &chain_id {
+            tracing::info!("Initialized Explorer with chain_id = {}", id);
         } else {
-            sqlx::query(
-                r"
-            INSERT INTO explorer_block_details
-            (height, root, timestamp, num_transactions, chain_id,
-             validator_identity_key, previous_block_hash, block_hash, raw_json)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
-            ",
-            )
-            .bind(height_i64)
-            .bind(&meta.root)
-            .bind(meta.timestamp)
-            .bind(i32::try_from(meta.tx_count).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(validator_key)
-            .bind(previous_hash)
-            .bind(block_hash)
-            .bind(&raw_json_str)
-            .execute(dbtx.as_mut())
-            .await?;
-
-            tracing::debug!("Inserted block {}", meta.height);
+            tracing::warn!("Failed to read chain ID from genesis.json, will use 'unknown'");
         }
 
-        Ok(())
-    }
-
-    async fn insert_transaction(
-        &self,
-        dbtx: &mut PgTransaction<'_>,
-        meta: TransactionMetadata<'_>,
-    ) -> Result<(), sqlx::Error> {
-        let Ok(height_i64) = i64::try_from(meta.height) else {
-            return Err(sqlx::Error::Decode(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Height value too large: {}", meta.height),
-            ))));
-        };
-
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM explorer_transactions WHERE tx_hash = $1)",
-        )
-        .bind(meta.tx_hash.as_ref())
-        .fetch_one(dbtx.as_mut())
-        .await?;
-
-        let json_str = serde_json::to_string(&meta.decoded_tx_json).map_err(|e| {
-            sqlx::Error::Decode(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("JSON serialization error: {e}"),
-            )))
-        })?;
-
-        if exists {
-            sqlx::query(
-                r"
-            UPDATE explorer_transactions
-            SET
-                block_height = $2,
-                timestamp = $3,
-                fee_amount = $4,
-                chain_id = $5,
-                raw_data = $6,
-                raw_json = $7::jsonb
-            WHERE tx_hash = $1
-            ",
-            )
-            .bind(meta.tx_hash.as_ref())
-            .bind(height_i64)
-            .bind(meta.timestamp)
-            .bind(i64::try_from(meta.fee_amount).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(&meta.tx_bytes_base64)
-            .bind(&json_str)
-            .execute(dbtx.as_mut())
-            .await?;
-        } else {
-            sqlx::query(
-                r"
-            INSERT INTO explorer_transactions
-            (tx_hash, block_height, timestamp, fee_amount, chain_id, raw_data, raw_json)
-            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-            ",
-            )
-            .bind(meta.tx_hash.as_ref())
-            .bind(height_i64)
-            .bind(meta.timestamp)
-            .bind(i64::try_from(meta.fee_amount).unwrap_or(0))
-            .bind(meta.chain_id)
-            .bind(&meta.tx_bytes_base64)
-            .bind(&json_str)
-            .execute(dbtx.as_mut())
-            .await?;
+        Self {
+            source_pool: None,
+            chain_id,
         }
-
-        Ok(())
     }
 
-    fn extract_fee_amount(tx_result: &Value) -> u64 {
-        tx_result
-            .get("body")
-            .and_then(|body| body.get("transactionParameters"))
-            .and_then(|params| params.get("fee"))
-            .and_then(|fee| fee.get("amount"))
-            .and_then(|amount| amount.get("lo"))
-            .and_then(|lo| lo.as_str())
-            .and_then(|lo_str| lo_str.parse::<u64>().ok())
-            .unwrap_or(0)
+    #[must_use]
+    pub fn with_source_pool(mut self, pool: Arc<PgPool>) -> Self {
+        self.source_pool = Some(pool);
+        self
     }
 
-    fn extract_chain_id(tx_result: &Value) -> Option<String> {
-        tx_result
-            .get("body")
-            .and_then(|body| body.get("transactionParameters"))
-            .and_then(|params| params.get("chainId"))
-            .and_then(|chain_id| chain_id.as_str())
-            .map(std::string::ToString::to_string)
-    }
-
-    fn decode_transaction(tx_hash: [u8; 32], tx_bytes: &[u8]) -> Value {
-        let start = Instant::now();
-        let hash_hex = encode_to_hex(tx_hash);
-
-        match TransactionView::decode(tx_bytes) {
-            Ok(tx_view) => {
-                tracing::debug!(
-                    "Decoded tx {} with TransactionView in {:?}",
-                    hash_hex,
-                    start.elapsed()
-                );
-                serde_json::to_value(&tx_view).unwrap_or(json!({}))
-            }
+    fn read_chain_id_from_genesis() -> Option<String> {
+        let file = match File::open("genesis.json") {
+            Ok(f) => f,
             Err(e) => {
-                tracing::debug!(
-                    "Error decoding tx {} with TransactionView: {:?}, trying Transaction",
-                    hash_hex,
-                    e
-                );
-
-                match Transaction::decode(tx_bytes) {
-                    Ok(tx) => {
-                        tracing::debug!(
-                            "Decoded tx {} with Transaction in {:?}",
-                            hash_hex,
-                            start.elapsed()
-                        );
-                        serde_json::to_value(&tx).unwrap_or(json!({}))
-                    }
-                    Err(e2) => {
-                        tracing::warn!(
-                            "Failed to decode tx {} with both methods: {:?}",
-                            hash_hex,
-                            e2
-                        );
-                        json!({})
-                    }
-                }
+                tracing::error!("Failed to open genesis.json: {}", e);
+                return None;
             }
+        };
+
+        let mut contents = String::new();
+        if let Err(e) = file.take(10_000_000).read_to_string(&mut contents) {
+            tracing::error!("Failed to read genesis.json: {}", e);
+            return None;
         }
+
+        let genesis: Result<Value, _> = serde_json::from_str(&contents);
+        if let Err(e) = genesis {
+            tracing::error!("Failed to parse genesis.json: {}", e);
+            return None;
+        }
+
+        let genesis = genesis.unwrap();
+        let chain_id = genesis["chain_id"].as_str().map(String::from);
+
+        if chain_id.is_none() {
+            tracing::error!("Could not find chain_id in genesis.json");
+        }
+
+        chain_id
     }
 
-    fn create_transaction_json(
-        tx_hash: [u8; 32],
-        tx_bytes: &[u8],
-        height: u64,
-        timestamp: sqlx::types::chrono::DateTime<sqlx::types::chrono::Utc>,
-        tx_index: u64,
-        tx_events: &[ContextualizedEvent<'_>],
-    ) -> Value {
-        let mut processed_events = Vec::with_capacity(tx_events.len() + 1);
-
-        processed_events.push(json!({
-            "type": "tx",
-            "attributes": [
-                {"key": "hash", "value": encode_to_hex(tx_hash)},
-                {"key": "height", "value": height.to_string()}
-            ]
-        }));
-
-        for event in tx_events {
-            let attr_capacity = event.event.attributes.len();
-            let mut attributes = Vec::with_capacity(attr_capacity);
-
-            for attr in &event.event.attributes {
-                let attr_str = format!("{attr:?}");
-
-                if let Some((key, value)) = parse_attribute_string(&attr_str) {
-                    attributes.push(json!({
-                        "key": key,
-                        "value": value
-                    }));
-                } else {
-                    attributes.push(json!({
-                        "key": attr_str,
-                        "value": "Unknown"
-                    }));
-                }
-            }
-
-            processed_events.push(json!({
-                "type": event.event.kind,
-                "attributes": attributes
-            }));
-        }
-
-        let tx_result_decoded = Self::decode_transaction(tx_hash, tx_bytes);
-
-        let mut ordered_map = Map::with_capacity(7);
-        ordered_map.insert("hash".to_string(), json!(encode_to_hex(tx_hash)));
-        ordered_map.insert("height".to_string(), json!(height.to_string()));
-        ordered_map.insert("index".to_string(), json!(tx_index.to_string()));
-        ordered_map.insert("timestamp".to_string(), json!(timestamp));
-        ordered_map.insert("tx_result".to_string(), json!(encode_to_hex(tx_bytes)));
-        ordered_map.insert("tx_result_decoded".to_string(), tx_result_decoded);
-        ordered_map.insert("events".to_string(), json!(processed_events));
-
-        Value::Object(ordered_map)
-    }
-}
-
-fn extract_chain_id_from_bytes(tx_bytes: &[u8]) -> Option<String> {
-    use penumbra_sdk_proto::core::transaction::v1::{Transaction, TransactionView};
-    use prost::Message;
-
-    match TransactionView::decode(tx_bytes) {
-        Ok(tx_view) => {
-            if let Some(body) = &tx_view.body_view {
-                if let Some(params) = &body.transaction_parameters {
-                    return Some(params.chain_id.clone());
-                }
-            }
-        }
-        Err(_) => {
-            if let Ok(tx) = Transaction::decode(tx_bytes) {
-                if let Some(body) = &tx.body {
-                    if let Some(params) = &body.transaction_parameters {
-                        return Some(params.chain_id.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
-fn clone_event(event: ContextualizedEvent<'_>) -> ContextualizedEvent<'static> {
-    let event_clone = event.event.clone();
-
-    let tx_clone = event.tx.map(|(hash, bytes)| (hash, bytes.to_vec()));
-
-    ContextualizedEvent {
-        block_height: event.block_height,
-        event: &*Box::leak(Box::new(event_clone)),
-        tx: tx_clone.map(|(hash, bytes)| {
-            let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-            (hash, static_bytes)
-        }),
-        local_rowid: event.local_rowid,
+    fn get_chain_id(&self) -> &str {
+        self.chain_id.as_deref().unwrap_or("unknown")
     }
 }
 
@@ -359,11 +97,12 @@ impl AppView for Explorer {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn init_chain(
-        &self,
-        dbtx: &mut PgTransaction,
-        _: &serde_json::Value,
-    ) -> Result<(), anyhow::Error> {
+    async fn init_chain(&self, dbtx: &mut PgTransaction, _: &Value) -> Result<(), anyhow::Error> {
+        tracing::info!(
+            "Initializing Explorer with chain_id = {}",
+            self.get_chain_id()
+        );
+
         sqlx::query(
             r"
             CREATE TABLE IF NOT EXISTS explorer_block_details (
@@ -385,7 +124,7 @@ impl AppView for Explorer {
 
         sqlx::query(
             r"
-            CREATE INDEX IF NOT EXISTS idx_explorer_block_details_timestamp 
+            CREATE INDEX IF NOT EXISTS idx_explorer_block_details_timestamp
             ON explorer_block_details(timestamp DESC)
             ",
         )
@@ -394,7 +133,7 @@ impl AppView for Explorer {
 
         sqlx::query(
             r"
-            CREATE INDEX IF NOT EXISTS idx_explorer_block_details_validator 
+            CREATE INDEX IF NOT EXISTS idx_explorer_block_details_validator
             ON explorer_block_details(validator_identity_key)
             ",
         )
@@ -411,6 +150,12 @@ impl AppView for Explorer {
                 chain_id TEXT,
                 raw_data TEXT,
                 raw_json JSONB,
+                -- IBC fields
+                ibc_channel_id TEXT,
+                ibc_client_id TEXT,
+                ibc_status TEXT,
+                ibc_direction TEXT,
+                ibc_sequence TEXT,
                 FOREIGN KEY (block_height) REFERENCES explorer_block_details(height)
                     DEFERRABLE INITIALLY DEFERRED
             )
@@ -421,7 +166,7 @@ impl AppView for Explorer {
 
         sqlx::query(
             r"
-            CREATE INDEX IF NOT EXISTS idx_explorer_transactions_block_height 
+            CREATE INDEX IF NOT EXISTS idx_explorer_transactions_block_height
             ON explorer_transactions(block_height)
             ",
         )
@@ -430,7 +175,7 @@ impl AppView for Explorer {
 
         sqlx::query(
             r"
-            CREATE INDEX IF NOT EXISTS idx_explorer_transactions_timestamp 
+            CREATE INDEX IF NOT EXISTS idx_explorer_transactions_timestamp
             ON explorer_transactions(timestamp DESC)
             ",
         )
@@ -466,7 +211,12 @@ impl AppView for Explorer {
                 t.timestamp,
                 t.fee_amount,
                 t.chain_id,
-                t.raw_json
+                t.raw_json,
+                t.ibc_channel_id,
+                t.ibc_client_id,
+                t.ibc_status,
+                t.ibc_direction,
+                t.ibc_sequence
             FROM
                 explorer_transactions t
             ORDER BY
@@ -476,6 +226,545 @@ impl AppView for Explorer {
         .execute(dbtx.as_mut())
         .await?;
 
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS ibc_clients (
+                client_id TEXT PRIMARY KEY,
+                status TEXT DEFAULT 'Unknown',
+                channel_id TEXT,
+                counterparty_channel_id TEXT,
+                last_active_height BIGINT,
+                last_active_time TIMESTAMP WITH TIME ZONE
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS ibc_connections (
+                connection_id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL REFERENCES ibc_clients(client_id),
+                counterparty_connection_id TEXT,
+                state TEXT DEFAULT 'unknown'
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS ibc_channels (
+                channel_id TEXT PRIMARY KEY,
+                client_id TEXT REFERENCES ibc_clients(client_id),
+                connection_id TEXT REFERENCES ibc_connections(connection_id),
+                counterparty_channel_id TEXT
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+    CREATE TABLE IF NOT EXISTS asset_prices (
+        asset_id BYTEA PRIMARY KEY,
+        price_usd DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+        last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
+        symbol TEXT
+    )
+    ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+CREATE TABLE IF NOT EXISTS ibc_transfers (
+    id SERIAL PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES ibc_clients(client_id),
+    channel_id TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    amount NUMERIC NOT NULL DEFAULT 0,
+    asset_id BYTEA,
+    usd_amount DOUBLE PRECISION, -- New field for storing USD amount
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    tx_hash BYTEA,
+    status TEXT
+)
+",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_ibc_transfers_client_id
+            ON ibc_transfers(client_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_ibc_transfers_timestamp
+            ON ibc_transfers(timestamp DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_ibc_transfers_direction
+            ON ibc_transfers(direction)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_ibc_transfers_status
+            ON ibc_transfers(status)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS ibc_stats (
+                client_id TEXT PRIMARY KEY REFERENCES ibc_clients(client_id),
+                shielded_volume BIGINT NOT NULL DEFAULT 0,
+                shielded_tx_count BIGINT NOT NULL DEFAULT 0,
+                unshielded_volume BIGINT NOT NULL DEFAULT 0,
+                unshielded_tx_count BIGINT NOT NULL DEFAULT 0,
+                pending_tx_count BIGINT NOT NULL DEFAULT 0,
+                expired_tx_count BIGINT NOT NULL DEFAULT 0,
+                last_updated TIMESTAMP WITH TIME ZONE
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_ibc_transactions_client_id ON explorer_transactions(ibc_client_id)
+            "
+        )
+            .execute(dbtx.as_mut())
+            .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_ibc_transactions_channel_id ON explorer_transactions(ibc_channel_id)
+            "
+        )
+            .execute(dbtx.as_mut())
+            .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_ibc_transactions_status ON explorer_transactions(ibc_status)
+            ",
+        )
+            .execute(dbtx.as_mut())
+            .await?;
+
+        sqlx::query(
+            r"
+        CREATE OR REPLACE VIEW ibc_client_summary AS
+        WITH volume_stats AS (
+            SELECT
+                t.client_id,
+                SUM(CASE
+                    WHEN t.direction = 'inbound' AND t.status = 'completed'
+                    -- Add upper bound to prevent extreme values
+                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    ELSE 0
+                END) as shielded_volume,
+                SUM(CASE
+                    WHEN t.direction = 'outbound' AND t.status = 'completed'
+                    -- Add upper bound to prevent extreme values
+                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    ELSE 0
+                END) as unshielded_volume
+            FROM
+                ibc_transfers t
+            GROUP BY
+                t.client_id
+        ),
+        tx_stats AS (
+            SELECT
+                t.ibc_client_id as client_id,
+                -- Shielded: Inbound token transfers with status completed
+                COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                -- Unshielded: Outbound token transfers with status completed
+                COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                -- Total: ALL transactions (regardless of status)
+                COUNT(DISTINCT t.tx_hash) as completed_tx_count,
+                -- Pending: All transactions with status pending
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                -- Expired: All transactions with status expired
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                -- Last transaction timestamp for this client
+                MAX(t.timestamp) as last_updated
+            FROM
+                explorer_transactions t
+            WHERE
+                t.ibc_client_id IS NOT NULL
+            GROUP BY
+                t.ibc_client_id
+        )
+        SELECT
+            c.client_id,
+            c.status,
+            c.channel_id,
+            c.counterparty_channel_id,
+            COALESCE(v.shielded_volume, 0) as shielded_volume,
+            COALESCE(t.shielded_tx_count, 0) as shielded_tx_count,
+            COALESCE(v.unshielded_volume, 0) as unshielded_volume,
+            COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
+            (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
+            COALESCE(t.completed_tx_count, 0) as total_tx_count,
+            COALESCE(t.pending_tx_count, 0) as pending_tx_count,
+            COALESCE(t.expired_tx_count, 0) as expired_tx_count,
+            t.last_updated
+        FROM
+            ibc_clients c
+        LEFT JOIN
+            volume_stats v ON c.client_id = v.client_id
+        LEFT JOIN
+            tx_stats t ON c.client_id = t.client_id
+        ORDER BY
+            total_volume DESC
+        ",
+        )
+            .execute(dbtx.as_mut())
+            .await?;
+
+        // Create or replace the 24h summary view
+        sqlx::query(
+            r"
+        CREATE OR REPLACE VIEW ibc_client_summary_24h AS
+        WITH volume_stats AS (
+            SELECT
+                t.client_id,
+                SUM(CASE
+                    WHEN t.direction = 'inbound' AND t.status = 'completed'
+                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    ELSE 0
+                END) as shielded_volume,
+                SUM(CASE
+                    WHEN t.direction = 'outbound' AND t.status = 'completed'
+                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    ELSE 0
+                END) as unshielded_volume
+            FROM
+                ibc_transfers t
+            WHERE
+                t.timestamp > NOW() - INTERVAL '24 hours'
+            GROUP BY
+                t.client_id
+        ),
+        tx_stats AS (
+            SELECT
+                t.ibc_client_id as client_id,
+                -- Shielded: Inbound token transfers with status completed
+                COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                -- Unshielded: Outbound token transfers with status completed
+                COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                -- Total: ALL transactions (regardless of status)
+                COUNT(DISTINCT t.tx_hash) as completed_tx_count,
+                -- Pending: All transactions with status pending
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                -- Expired: All transactions with status expired
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                -- Last transaction timestamp for this client in the 24h period
+                MAX(t.timestamp) as last_updated
+            FROM
+                explorer_transactions t
+            WHERE
+                t.ibc_client_id IS NOT NULL
+                AND t.timestamp > NOW() - INTERVAL '24 hours'
+            GROUP BY
+                t.ibc_client_id
+        )
+        SELECT
+            c.client_id,
+            c.status,
+            c.channel_id,
+            c.counterparty_channel_id,
+            COALESCE(v.shielded_volume, 0) as shielded_volume,
+            COALESCE(t.shielded_tx_count, 0) as shielded_tx_count,
+            COALESCE(v.unshielded_volume, 0) as unshielded_volume,
+            COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
+            (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
+            COALESCE(t.completed_tx_count, 0) as total_tx_count,
+            COALESCE(t.pending_tx_count, 0) as pending_tx_count,
+            COALESCE(t.expired_tx_count, 0) as expired_tx_count,
+            t.last_updated
+        FROM
+            ibc_clients c
+        LEFT JOIN
+            volume_stats v ON c.client_id = v.client_id
+        LEFT JOIN
+            tx_stats t ON c.client_id = t.client_id
+        ORDER BY
+            total_volume DESC
+        ",
+        )
+            .execute(dbtx.as_mut())
+            .await?;
+
+        sqlx::query(
+            r"
+        CREATE OR REPLACE VIEW ibc_client_summary_30d AS
+        WITH volume_stats AS (
+            SELECT
+                t.client_id,
+                SUM(CASE
+                    WHEN t.direction = 'inbound' AND t.status = 'completed'
+                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    ELSE 0
+                END) as shielded_volume,
+                SUM(CASE
+                    WHEN t.direction = 'outbound' AND t.status = 'completed'
+                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    ELSE 0
+                END) as unshielded_volume
+            FROM
+                ibc_transfers t
+            WHERE
+                t.timestamp > NOW() - INTERVAL '30 days'
+            GROUP BY
+                t.client_id
+        ),
+        tx_stats AS (
+            SELECT
+                t.ibc_client_id as client_id,
+                -- Shielded: Inbound token transfers with status completed
+                COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                -- Unshielded: Outbound token transfers with status completed
+                COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                -- Total: ALL transactions (regardless of status)
+                COUNT(DISTINCT t.tx_hash) as completed_tx_count,
+                -- Pending: All transactions with status pending
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                -- Expired: All transactions with status expired
+                COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                -- Last transaction timestamp for this client in the 30d period
+                MAX(t.timestamp) as last_updated
+            FROM
+                explorer_transactions t
+            WHERE
+                t.ibc_client_id IS NOT NULL
+                AND t.timestamp > NOW() - INTERVAL '30 days'
+            GROUP BY
+                t.ibc_client_id
+        )
+        SELECT
+            c.client_id,
+            c.status,
+            c.channel_id,
+            c.counterparty_channel_id,
+            COALESCE(v.shielded_volume, 0) as shielded_volume,
+            COALESCE(t.shielded_tx_count, 0) as shielded_tx_count,
+            COALESCE(v.unshielded_volume, 0) as unshielded_volume,
+            COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
+            (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
+            COALESCE(t.completed_tx_count, 0) as total_tx_count,
+            COALESCE(t.pending_tx_count, 0) as pending_tx_count,
+            COALESCE(t.expired_tx_count, 0) as expired_tx_count,
+            t.last_updated
+        FROM
+            ibc_clients c
+        LEFT JOIN
+            volume_stats v ON c.client_id = v.client_id
+        LEFT JOIN
+            tx_stats t ON c.client_id = t.client_id
+        ORDER BY
+            total_volume DESC
+        ",
+        )
+            .execute(dbtx.as_mut())
+            .await?;
+
+        sqlx::query(
+            r"
+            CREATE OR REPLACE VIEW ibc_client_stats_with_periods AS
+            -- All-time stats
+            SELECT
+                c.client_id,
+                'all_time' AS period,
+                c.status,
+                c.channel_id,
+                c.counterparty_channel_id,
+                COALESCE(v.shielded_volume, 0) as shielded_volume,
+                COALESCE(t.shielded_tx_count, 0) as shielded_tx_count,
+                COALESCE(v.unshielded_volume, 0) as unshielded_volume,
+                COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
+                (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
+                COALESCE(t.completed_tx_count, 0) as total_tx_count,
+                COALESCE(t.pending_tx_count, 0) as pending_tx_count,
+                COALESCE(t.expired_tx_count, 0) as expired_tx_count,
+                t.last_updated
+            FROM
+                ibc_clients c
+            LEFT JOIN (
+                SELECT
+                    t.client_id,
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume
+                FROM
+                    ibc_transfers t
+                GROUP BY
+                    t.client_id
+            ) v ON c.client_id = v.client_id
+            LEFT JOIN (
+                SELECT
+                    t.ibc_client_id as client_id,
+                    -- Shielded: Inbound token transfers with status completed
+                    COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                    -- Unshielded: Outbound token transfers with status completed
+                    COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                    -- Total: ALL transactions with status completed (all directions)
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                    -- Pending: All transactions with status pending
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                    -- Expired: All transactions with status expired
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                    -- Last transaction timestamp for this client
+                    MAX(t.timestamp) as last_updated
+                FROM
+                    explorer_transactions t
+                WHERE
+                    t.ibc_client_id IS NOT NULL
+                GROUP BY
+                    t.ibc_client_id
+            ) t ON c.client_id = t.client_id
+
+            UNION ALL
+
+            -- 24h stats
+            SELECT
+                c.client_id,
+                '24h' AS period,
+                c.status,
+                c.channel_id,
+                c.counterparty_channel_id,
+                COALESCE(v.shielded_volume, 0) as shielded_volume,
+                COALESCE(t.shielded_tx_count, 0) as shielded_tx_count,
+                COALESCE(v.unshielded_volume, 0) as unshielded_volume,
+                COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
+                (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
+                COALESCE(t.completed_tx_count, 0) as total_tx_count,
+                COALESCE(t.pending_tx_count, 0) as pending_tx_count,
+                COALESCE(t.expired_tx_count, 0) as expired_tx_count,
+                t.last_updated
+            FROM
+                ibc_clients c
+            LEFT JOIN (
+                SELECT
+                    t.client_id,
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume
+                FROM
+                    ibc_transfers t
+                WHERE
+                    t.timestamp > NOW() - INTERVAL '24 hours'
+                GROUP BY
+                    t.client_id
+            ) v ON c.client_id = v.client_id
+            LEFT JOIN (
+                SELECT
+                    t.ibc_client_id as client_id,
+                    -- Shielded: Inbound token transfers with status completed
+                    COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                    -- Unshielded: Outbound token transfers with status completed
+                    COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                    -- Total: ALL transactions with status completed (all directions)
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                    -- Pending: All transactions with status pending
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                    -- Expired: All transactions with status expired
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                    -- Last transaction timestamp for this client
+                    MAX(t.timestamp) as last_updated
+                FROM
+                    explorer_transactions t
+                WHERE
+                    t.ibc_client_id IS NOT NULL
+                    AND t.timestamp > NOW() - INTERVAL '24 hours'
+                GROUP BY
+                    t.ibc_client_id
+            ) t ON c.client_id = t.client_id
+
+            UNION ALL
+
+            -- 30d stats
+            SELECT
+                c.client_id,
+                '30d' AS period,
+                c.status,
+                c.channel_id,
+                c.counterparty_channel_id,
+                COALESCE(v.shielded_volume, 0) as shielded_volume,
+                COALESCE(t.shielded_tx_count, 0) as shielded_tx_count,
+                COALESCE(v.unshielded_volume, 0) as unshielded_volume,
+                COALESCE(t.unshielded_tx_count, 0) as unshielded_tx_count,
+                (COALESCE(v.shielded_volume, 0) + COALESCE(v.unshielded_volume, 0)) as total_volume,
+                COALESCE(t.completed_tx_count, 0) as total_tx_count,
+                COALESCE(t.pending_tx_count, 0) as pending_tx_count,
+                COALESCE(t.expired_tx_count, 0) as expired_tx_count,
+                t.last_updated
+            FROM
+                ibc_clients c
+            LEFT JOIN (
+                SELECT
+                    t.client_id,
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume
+                FROM
+                    ibc_transfers t
+                WHERE
+                    t.timestamp > NOW() - INTERVAL '30 days'
+                GROUP BY
+                    t.client_id
+            ) v ON c.client_id = v.client_id
+            LEFT JOIN (
+                SELECT
+                    t.ibc_client_id as client_id,
+                    -- Shielded: Inbound token transfers with status completed
+                    COUNT(DISTINCT CASE WHEN t.ibc_direction = 'inbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as shielded_tx_count,
+                    -- Unshielded: Outbound token transfers with status completed
+                    COUNT(DISTINCT CASE WHEN t.ibc_direction = 'outbound' AND t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as unshielded_tx_count,
+                    -- Total: ALL transactions with status completed (all directions)
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'completed' THEN t.tx_hash ELSE NULL END) as completed_tx_count,
+                    -- Pending: All transactions with status pending
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'pending' THEN t.tx_hash ELSE NULL END) as pending_tx_count,
+                    -- Expired: All transactions with status expired
+                    COUNT(DISTINCT CASE WHEN t.ibc_status = 'expired' THEN t.tx_hash ELSE NULL END) as expired_tx_count,
+                    -- Last transaction timestamp for this client
+                    MAX(t.timestamp) as last_updated
+                FROM
+                    explorer_transactions t
+                WHERE
+                    t.ibc_client_id IS NOT NULL
+                    AND t.timestamp > NOW() - INTERVAL '30 days'
+                GROUP BY
+                    t.ibc_client_id
+            ) t ON c.client_id = t.client_id
+            ",
+        )
+            .execute(dbtx.as_mut())
+            .await?;
+
         Ok(())
     }
 
@@ -484,365 +773,122 @@ impl AppView for Explorer {
         &self,
         dbtx: &mut PgTransaction,
         batch: EventBatch,
-        _ctx: EventBatchContext,
+        ctx: EventBatchContext,
     ) -> Result<(), anyhow::Error> {
         let mut block_data_to_process = Vec::new();
         let mut transactions_to_process = Vec::new();
 
-        let block_results = process_block_events(&batch).await?;
+        let block_results = block::process_block_events(&batch).await?;
 
         tracing::info!("Processed {} blocks from batch", block_results.len());
 
-        for (height, root, ts, tx_count, chain_id, raw_json, block_txs) in block_results {
-            block_data_to_process.push((height, root, ts, tx_count, chain_id.clone(), raw_json));
+        for (height, root, ts, tx_count, _, raw_json, block_txs) in block_results {
+            let formatted_block_json = block::create_block_json(
+                height,
+                self.get_chain_id(),
+                ts,
+                &block::collect_block_transactions(&raw_json, ts),
+                &block::collect_block_events(&raw_json),
+            );
+
+            block_data_to_process.push((height, root, ts, tx_count, formatted_block_json));
 
             for (tx_hash, tx_bytes, tx_index, tx_events) in block_txs {
-                transactions_to_process.push((
-                    tx_hash,
-                    tx_bytes,
-                    tx_index,
-                    height,
-                    ts,
-                    tx_events,
-                    chain_id.clone(),
-                ));
+                transactions_to_process.push((tx_hash, tx_bytes, tx_index, height, ts, tx_events));
             }
         }
 
-        for (height, root, ts, tx_count, chain_id, raw_json) in block_data_to_process {
+        for (height, root, ts, tx_count, formatted_json) in block_data_to_process {
             let meta = BlockMetadata {
                 height,
                 root,
                 timestamp: ts,
                 tx_count,
-                chain_id: chain_id.as_deref().unwrap_or("unknown"),
-                raw_json,
+                chain_id: self.get_chain_id(),
+                raw_json: formatted_json,
             };
 
-            self.insert_block(dbtx, meta).await?;
+            block::insert(dbtx, meta).await?;
         }
 
-        for (tx_hash, tx_bytes, tx_index, height, timestamp, tx_events, chain_id_opt) in
-            transactions_to_process
+        let mut height_to_timestamp: HashMap<u64, DateTime<Utc>> = HashMap::new();
+        for (_, _, _, height, ts, _) in &transactions_to_process {
+            height_to_timestamp.insert(*height, *ts);
+        }
+
+        for (tx_hash, tx_bytes, tx_index, height, timestamp, tx_events) in &transactions_to_process
         {
-            process_transaction(
-                self,
-                tx_hash,
-                &tx_bytes,
-                tx_index,
-                height,
-                timestamp,
-                &tx_events,
-                chain_id_opt,
-                dbtx,
-            )
-            .await?;
+            let formatted_tx_json = transaction::create_transaction_json(
+                *tx_hash, tx_bytes, *height, *timestamp, *tx_index, tx_events,
+            );
+
+            let fee_amount =
+                transaction::extract_fee_amount(&formatted_tx_json["transaction_view"]);
+
+            let chain_id = self
+                .chain_id
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let tx_bytes_base64 = encode_to_base64(tx_bytes);
+
+            let meta = TransactionMetadata {
+                tx_hash: *tx_hash,
+                height: *height,
+                timestamp: *timestamp,
+                fee_amount,
+                chain_id: &chain_id,
+                tx_bytes_base64,
+                decoded_tx_json: formatted_tx_json,
+            };
+
+            if let Err(e) = transaction::insert(dbtx, meta).await {
+                let tx_hash_hex = crate::parsing::encode_to_hex(*tx_hash);
+
+                let is_fk_error = match e.as_database_error() {
+                    Some(dbe) => {
+                        if let Some(pg_err) =
+                            dbe.try_downcast_ref::<sqlx::postgres::PgDatabaseError>()
+                        {
+                            pg_err.code() == "23503"
+                        } else {
+                            false
+                        }
+                    }
+                    None => false,
+                };
+
+                if is_fk_error {
+                    tracing::warn!(
+                        "Block {} not found for transaction {}. Foreign key constraint failed.",
+                        height,
+                        tx_hash_hex
+                    );
+                } else {
+                    tracing::error!("Error inserting transaction {}: {:?}", tx_hash_hex, e);
+                }
+            }
+        }
+
+        for block_events in batch.events_by_block() {
+            let height = block_events.height();
+            let events: Vec<ContextualizedEvent> = block_events.events().collect();
+
+            let timestamp = *height_to_timestamp.get(&height).unwrap_or(&Utc::now());
+
+            if !events.is_empty() {
+                if let Err(e) = ibc::process_events(dbtx, &events, height, timestamp).await {
+                    tracing::error!("Error processing IBC events for block {}: {:?}", height, e);
+                }
+            }
+        }
+
+        if ctx.is_last() {
+            if let Err(e) = ibc::update_old_pending_transactions(dbtx).await {
+                tracing::error!("Error updating old pending transactions: {:?}", e);
+            }
         }
 
         Ok(())
-    }
-}
-
-#[allow(clippy::needless_lifetimes, clippy::unused_async)]
-async fn process_block_events<'a>(
-    batch: &'a EventBatch,
-) -> Result<
-    Vec<(
-        u64,
-        Vec<u8>,
-        DateTime<sqlx::types::chrono::Utc>,
-        usize,
-        Option<String>,
-        Value,
-        Vec<([u8; 32], Vec<u8>, u64, Vec<ContextualizedEvent<'static>>)>,
-    )>,
-    anyhow::Error,
-> {
-    let mut results = Vec::new();
-
-    for block_data in batch.events_by_block() {
-        let height = block_data.height();
-        let tx_count = block_data.transactions().count();
-
-        tracing::info!(
-            "Processing block height {} with {} transactions",
-            height,
-            tx_count
-        );
-
-        let mut block_root = None;
-        let mut timestamp = None;
-        let mut chain_id: Option<String> = None;
-        let mut block_events = Vec::new();
-        let mut tx_events = Vec::new();
-
-        let mut events_by_tx_hash: HashMap<[u8; 32], Vec<ContextualizedEvent>> = HashMap::new();
-
-        for event in block_data.events() {
-            if let Ok(pe) = pb::EventBlockRoot::from_event(event.event) {
-                let timestamp_proto = pe.timestamp.unwrap_or_default();
-                timestamp = DateTime::from_timestamp(
-                    timestamp_proto.seconds,
-                    u32::try_from(timestamp_proto.nanos)?,
-                );
-                block_root = pe.root.map(|r| r.inner);
-            }
-
-            let event_json = event_to_json(event, event.tx_hash())?;
-
-            if let Some(tx_hash) = event.tx_hash() {
-                let owned_event = clone_event(event);
-
-                events_by_tx_hash
-                    .entry(tx_hash)
-                    .or_default()
-                    .push(owned_event);
-                tx_events.push(event_json);
-            } else {
-                block_events.push(event_json);
-            }
-        }
-
-        if tx_count > 0 {
-            if let Some((_, tx_bytes)) = block_data.transactions().next() {
-                chain_id = extract_chain_id_from_bytes(tx_bytes);
-            }
-        }
-
-        let transactions: Vec<Value> = block_data
-            .transactions()
-            .enumerate()
-            .map(|(index, (tx_hash, _))| {
-                json!({
-                    "block_id": height,
-                    "index": index,
-                    "created_at": timestamp,
-                    "tx_hash": encode_to_hex(tx_hash)
-                })
-            })
-            .collect();
-
-        let mut all_events = Vec::new();
-        all_events.extend(block_events);
-        all_events.extend(tx_events);
-
-        let raw_json = json!({
-            "block": {
-                "height": height,
-                "chain_id": chain_id.as_deref().unwrap_or("unknown"),
-                "created_at": timestamp,
-                "transactions": transactions,
-                "events": all_events
-            }
-        });
-
-        if let (Some(root), Some(ts)) = (block_root, timestamp) {
-            let mut block_txs = Vec::new();
-
-            for (tx_index, (tx_hash, tx_bytes)) in block_data.transactions().enumerate() {
-                let tx_bytes_vec = tx_bytes.to_vec();
-                let tx_events = events_by_tx_hash.get(&tx_hash).cloned().unwrap_or_default();
-
-                block_txs.push((tx_hash, tx_bytes_vec, tx_index as u64, tx_events));
-            }
-
-            results.push((height, root, ts, tx_count, chain_id, raw_json, block_txs));
-        }
-    }
-
-    Ok(results)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn process_transaction(
-    explorer: &Explorer,
-    tx_hash: [u8; 32],
-    tx_bytes: &[u8],
-    tx_index: u64,
-    height: u64,
-    timestamp: DateTime<sqlx::types::chrono::Utc>,
-    tx_events: &[ContextualizedEvent<'_>],
-    chain_id_opt: Option<String>,
-    dbtx: &mut PgTransaction<'_>,
-) -> Result<(), anyhow::Error> {
-    let decoded_tx_json = Explorer::create_transaction_json(
-        tx_hash, tx_bytes, height, timestamp, tx_index, tx_events,
-    );
-
-    let fee_amount = Explorer::extract_fee_amount(&decoded_tx_json["tx_result_decoded"]);
-    let chain_id = Explorer::extract_chain_id(&decoded_tx_json["tx_result_decoded"])
-        .or(chain_id_opt)
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let tx_bytes_base64 = encode_to_base64(tx_bytes);
-
-    let meta = TransactionMetadata {
-        tx_hash,
-        height,
-        timestamp,
-        fee_amount,
-        chain_id: &chain_id,
-        tx_bytes_base64,
-        decoded_tx_json,
-    };
-
-    if let Err(e) = explorer.insert_transaction(dbtx, meta).await {
-        let tx_hash_hex = encode_to_hex(tx_hash);
-
-        let is_fk_error = match e.as_database_error() {
-            Some(dbe) => {
-                if let Some(pg_err) = dbe.try_downcast_ref::<sqlx::postgres::PgDatabaseError>() {
-                    pg_err.code() == "23503"
-                } else {
-                    false
-                }
-            }
-            None => false,
-        };
-
-        if is_fk_error {
-            tracing::warn!(
-                "Block {} not found for transaction {}. Foreign key constraint failed.",
-                height,
-                tx_hash_hex
-            );
-        } else {
-            tracing::error!("Error inserting transaction {}: {:?}", tx_hash_hex, e);
-        }
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::Utc;
-    use serde_json::json;
-
-    #[test]
-    fn test_extract_chain_id_from_bytes_returns_none_for_empty_bytes() {
-        let empty_bytes: &[u8] = &[];
-        assert_eq!(extract_chain_id_from_bytes(empty_bytes), None);
-    }
-
-    #[test]
-    fn test_extract_chain_id_from_bytes_returns_none_for_invalid_bytes() {
-        let invalid_bytes: &[u8] = &[1, 2, 3, 4, 5];
-        assert_eq!(extract_chain_id_from_bytes(invalid_bytes), None);
-    }
-
-    #[test]
-    fn test_extract_fee_amount() {
-        let tx_result = json!({
-            "body": {
-                "transactionParameters": {
-                    "fee": {
-                        "amount": {
-                            "lo": "1000"
-                        }
-                    }
-                }
-            }
-        });
-
-        assert_eq!(Explorer::extract_fee_amount(&tx_result), 1000);
-
-        let tx_result_missing_fee = json!({
-            "body": {
-                "transactionParameters": {}
-            }
-        });
-
-        assert_eq!(Explorer::extract_fee_amount(&tx_result_missing_fee), 0);
-
-        let empty_json = json!({});
-        assert_eq!(Explorer::extract_fee_amount(&empty_json), 0);
-    }
-
-    #[test]
-    fn test_extract_chain_id() {
-        let tx_result = json!({
-            "body": {
-                "transactionParameters": {
-                    "chainId": "penumbra-testnet"
-                }
-            }
-        });
-
-        assert_eq!(
-            Explorer::extract_chain_id(&tx_result),
-            Some("penumbra-testnet".to_string())
-        );
-
-        let tx_result_missing_chain_id = json!({
-            "body": {
-                "transactionParameters": {}
-            }
-        });
-
-        assert_eq!(
-            Explorer::extract_chain_id(&tx_result_missing_chain_id),
-            None
-        );
-
-        let empty_json = json!({});
-        assert_eq!(Explorer::extract_chain_id(&empty_json), None);
-    }
-
-    #[test]
-    fn test_decode_transaction_with_invalid_data() {
-        let tx_hash = [0u8; 32];
-        let invalid_tx_bytes = vec![1, 2, 3, 4];
-
-        let result = Explorer::decode_transaction(tx_hash, &invalid_tx_bytes);
-
-        assert!(result.is_object());
-        assert!(result.as_object().unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_create_transaction_json() {
-        let tx_hash = [1u8; 32];
-        let tx_bytes = vec![1, 2, 3, 4];
-        let height = 100;
-        let timestamp = Utc::now();
-        let tx_index = 2;
-        let tx_events = vec![];
-
-        let result = Explorer::create_transaction_json(
-            tx_hash, &tx_bytes, height, timestamp, tx_index, &tx_events,
-        );
-
-        let obj = result.as_object().unwrap();
-
-        assert_eq!(
-            obj.get("hash").unwrap().as_str().unwrap(),
-            "0101010101010101010101010101010101010101010101010101010101010101"
-        );
-        assert_eq!(obj.get("height").unwrap().as_str().unwrap(), "100");
-        assert_eq!(obj.get("index").unwrap().as_str().unwrap(), "2");
-        assert!(obj.contains_key("timestamp"));
-        assert_eq!(obj.get("tx_result").unwrap().as_str().unwrap(), "01020304");
-        assert!(obj.contains_key("tx_result_decoded"));
-        assert!(obj.contains_key("events"));
-
-        let events = obj.get("events").unwrap().as_array().unwrap();
-        assert_eq!(events.len(), 1);
-
-        let tx_event = &events[0];
-        assert_eq!(tx_event.get("type").unwrap(), "tx");
-
-        let attrs = tx_event.get("attributes").unwrap().as_array().unwrap();
-        assert_eq!(attrs.len(), 2);
-
-        assert_eq!(attrs[0].get("key").unwrap(), "hash");
-        assert_eq!(
-            attrs[0].get("value").unwrap(),
-            "0101010101010101010101010101010101010101010101010101010101010101"
-        );
-
-        assert_eq!(attrs[1].get("key").unwrap(), "height");
-        assert_eq!(attrs[1].get("value").unwrap(), "100");
     }
 }

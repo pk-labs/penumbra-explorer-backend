@@ -1,5 +1,5 @@
 use crate::api::graphql::{
-    resolvers::{block::resolve_block, transaction::resolve_transaction},
+    resolvers::{block::get, transaction::resolve_transaction},
     types::SearchResult,
 };
 use async_graphql::{Context, Result};
@@ -11,7 +11,7 @@ use async_graphql::{Context, Result};
 #[allow(clippy::module_name_repetitions)]
 pub async fn resolve_search(ctx: &Context<'_>, slug: String) -> Result<Option<SearchResult>> {
     if let Ok(height) = slug.parse::<i32>() {
-        if let Some(block) = resolve_block(ctx, height).await? {
+        if let Some(block) = get(ctx, height).await? {
             return Ok(Some(SearchResult::Block(block)));
         }
     }

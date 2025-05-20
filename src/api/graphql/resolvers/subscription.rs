@@ -1,13 +1,18 @@
 use crate::api::graphql::{
+    pubsub::ibc,
     pubsub::PubSub,
     scalars::DateTime,
-    types::subscription::{BlockUpdate, TransactionCountUpdate, TransactionUpdate},
+    types::ibc::TotalShieldedVolume,
+    types::subscription::{
+        BlockUpdate, IbcTransactionUpdate, TotalShieldedVolumeUpdate, TransactionCountUpdate,
+        TransactionUpdate,
+    },
 };
 use async_graphql::{Context, Result, Subscription};
-use futures_util::stream::Stream;
-use futures_util::StreamExt;
+use futures_util::stream::{Stream, StreamExt};
 use sqlx::PgPool;
 use std::sync::Arc;
+use tracing::error;
 
 pub struct Root;
 
@@ -114,6 +119,157 @@ impl Root {
         Ok(futures_util::stream::select(initial, real_time).filter_map(|x| async move { x }))
     }
 
+    #[allow(clippy::unused_async)]
+    async fn ibc_transactions(
+        &self,
+        ctx: &Context<'_>,
+        client_id: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<impl Stream<Item = IbcTransactionUpdate>> {
+        let pubsub = ctx.data::<PubSub>()?.clone();
+        let pool = Arc::new(ctx.data::<PgPool>()?.clone());
+
+        let limit = limit.unwrap_or(10);
+        let offset = offset.unwrap_or(0);
+
+        let initial_txs = match &client_id {
+            Some(id) => {
+                match ibc::get_ibc_transactions_by_client(pool.as_ref(), id, limit, offset).await {
+                    Ok(txs) => txs
+                        .into_iter()
+                        .map(
+                            |(tx_hash, client_id, status, block_height, timestamp, raw_data)| {
+                                IbcTransactionUpdate {
+                                    tx_hash: hex::encode_upper(&tx_hash),
+                                    client_id,
+                                    status,
+                                    block_height,
+                                    timestamp: DateTime(timestamp),
+                                    is_status_update: false,
+                                    raw: raw_data,
+                                }
+                            },
+                        )
+                        .collect::<Vec<_>>(),
+                    Err(e) => {
+                        error!("Failed to get initial IBC transactions by client: {}", e);
+                        Vec::new()
+                    }
+                }
+            }
+            None => match ibc::get_all_ibc_transactions(pool.as_ref(), limit, offset).await {
+                Ok(txs) => txs
+                    .into_iter()
+                    .map(
+                        |(tx_hash, client_id, status, block_height, timestamp, raw_data)| {
+                            IbcTransactionUpdate {
+                                tx_hash: hex::encode_upper(&tx_hash),
+                                client_id,
+                                status,
+                                block_height,
+                                timestamp: DateTime(timestamp),
+                                is_status_update: false,
+                                raw: raw_data,
+                            }
+                        },
+                    )
+                    .collect::<Vec<_>>(),
+                Err(e) => {
+                    error!("Failed to get all initial IBC transactions: {}", e);
+                    Vec::new()
+                }
+            },
+        };
+
+        let initial_stream = futures_util::stream::iter(initial_txs);
+
+        let receiver = pubsub.ibc_transactions_subscribe();
+        let stream = tokio_stream::wrappers::BroadcastStream::new(receiver);
+
+        let real_time_stream = stream.filter_map(move |result| {
+            let pool_clone = Arc::clone(&pool);
+            let client_filter = client_id.clone();
+
+            async move {
+                match result {
+                    Ok(event) => {
+                        if let Some(filter) = &client_filter {
+                            if event.client_id != *filter {
+                                return None;
+                            }
+                        }
+
+                        match get_ibc_tx_details(&pool_clone, &event.tx_hash).await {
+                            Ok((block_height, timestamp, status, raw_data)) => {
+                                Some(IbcTransactionUpdate {
+                                    tx_hash: hex::encode_upper(&event.tx_hash),
+                                    client_id: event.client_id,
+                                    status,
+                                    block_height,
+                                    timestamp: DateTime(timestamp),
+                                    is_status_update: event.is_status_update,
+                                    raw: raw_data,
+                                })
+                            }
+                            Err(e) => {
+                                error!("Failed to get transaction details: {}", e);
+                                None
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error receiving IBC transaction update: {}", e);
+                        None
+                    }
+                }
+            }
+        });
+
+        let combined_stream = initial_stream.chain(real_time_stream);
+
+        Ok(combined_stream)
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn total_shielded_volume(
+        &self,
+        ctx: &Context<'_>,
+    ) -> Result<impl Stream<Item = TotalShieldedVolumeUpdate>> {
+        let pubsub = ctx.data::<PubSub>()?.clone();
+
+        let _pool = Arc::new(ctx.data::<PgPool>()?.clone());
+
+        let initial_value = match TotalShieldedVolume::get(ctx).await {
+            Ok(value) => value.value,
+            Err(e) => {
+                error!("Failed to get initial total shielded volume: {:?}", e);
+                "0".to_string()
+            }
+        };
+
+        let initial_stream = futures_util::stream::once(async move {
+            TotalShieldedVolumeUpdate {
+                value: initial_value,
+            }
+        });
+
+        let receiver = pubsub.total_shielded_volume_subscribe();
+        let stream = tokio_stream::wrappers::BroadcastStream::new(receiver);
+
+        let real_time_stream = stream.filter_map(move |result| async move {
+            match result {
+                Ok(value) => Some(TotalShieldedVolumeUpdate { value }),
+                Err(e) => {
+                    error!("Error receiving total shielded volume update: {}", e);
+                    None
+                }
+            }
+        });
+
+        Ok(initial_stream.chain(real_time_stream))
+    }
+
     async fn latest_blocks(
         &self,
         ctx: &Context<'_>,
@@ -197,6 +353,68 @@ impl Root {
 
         Ok(combined_stream)
     }
+
+    async fn latest_ibc_transactions(
+        &self,
+        ctx: &Context<'_>,
+        limit: Option<i32>,
+        client_id: Option<String>,
+    ) -> Result<impl Stream<Item = IbcTransactionUpdate> + '_> {
+        let pubsub = ctx.data::<PubSub>()?.clone();
+        let pool = Arc::new(ctx.data::<sqlx::PgPool>()?.clone());
+
+        let limit = limit.unwrap_or(10);
+
+        let initial_transactions = match &client_id {
+            Some(id) => get_latest_ibc_transactions_by_client(Arc::clone(&pool), id, limit).await?,
+            None => get_latest_ibc_transactions(Arc::clone(&pool), limit).await?,
+        };
+
+        let initial_stream = futures_util::stream::iter(initial_transactions);
+
+        let receiver = pubsub.ibc_transactions_subscribe();
+        let stream = tokio_stream::wrappers::BroadcastStream::new(receiver);
+
+        let real_time_stream = stream.filter_map(move |result| {
+            let pool_clone = Arc::clone(&pool);
+            let client_filter = client_id.clone();
+
+            async move {
+                match result {
+                    Ok(event) => {
+                        if let Some(filter) = &client_filter {
+                            if event.client_id != *filter {
+                                return None;
+                            }
+                        }
+
+                        match get_ibc_tx_details(&pool_clone, &event.tx_hash).await {
+                            Ok((block_height, timestamp, status, raw_data)) => {
+                                Some(IbcTransactionUpdate {
+                                    tx_hash: hex::encode_upper(&event.tx_hash),
+                                    client_id: event.client_id,
+                                    status,
+                                    block_height,
+                                    timestamp: DateTime(timestamp),
+                                    is_status_update: event.is_status_update,
+                                    raw: raw_data,
+                                })
+                            }
+                            Err(e) => {
+                                error!("Failed to get transaction details: {}", e);
+                                None
+                            }
+                        }
+                    }
+                    Err(_) => None,
+                }
+            }
+        });
+
+        let combined_stream = StreamExt::chain(initial_stream, real_time_stream);
+
+        Ok(combined_stream)
+    }
 }
 
 async fn get_block_data(
@@ -227,6 +445,18 @@ async fn get_transaction_data(
     let hash_hex = hex::encode_upper(&row.0);
 
     Ok((hash_hex, row.1))
+}
+
+async fn get_ibc_tx_details(
+    pool: &Arc<PgPool>,
+    tx_hash: &[u8],
+) -> Result<(i64, chrono::DateTime<chrono::Utc>, String, String), sqlx::Error> {
+    sqlx::query_as::<_, (i64, chrono::DateTime<chrono::Utc>, String, String)>(
+        "SELECT block_height, timestamp, ibc_status, raw_data FROM explorer_transactions WHERE tx_hash = $1"
+    )
+        .bind(tx_hash)
+        .fetch_one(pool.as_ref())
+        .await
 }
 
 async fn get_latest_blocks(pool: Arc<PgPool>, limit: i32) -> Result<Vec<BlockUpdate>, sqlx::Error> {
@@ -265,7 +495,7 @@ async fn get_latest_transactions(
 
     let transactions = rows
         .into_iter()
-        .rev() // Reverse the order to make oldest first, newest last
+        .rev()
         .map(|(block_height, tx_hash, raw_data)| {
             let hash = hex::encode_upper(&tx_hash);
 
@@ -275,6 +505,100 @@ async fn get_latest_transactions(
                 raw: raw_data,
             }
         })
+        .collect();
+
+    Ok(transactions)
+}
+
+async fn get_latest_ibc_transactions(
+    pool: Arc<PgPool>,
+    limit: i32,
+) -> Result<Vec<IbcTransactionUpdate>, sqlx::Error> {
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Vec<u8>,
+            String,
+            String,
+            i64,
+            chrono::DateTime<chrono::Utc>,
+            String,
+        ),
+    >(
+        "SELECT tx_hash, ibc_client_id, ibc_status, block_height, timestamp, raw_data
+         FROM explorer_transactions
+         WHERE ibc_client_id IS NOT NULL
+         ORDER BY timestamp DESC LIMIT $1",
+    )
+    .bind(i64::from(limit))
+    .fetch_all(pool.as_ref())
+    .await?;
+
+    let transactions = rows
+        .into_iter()
+        .map(
+            |(tx_hash, client_id, status, block_height, timestamp, raw_data)| {
+                let hash = hex::encode_upper(&tx_hash);
+
+                IbcTransactionUpdate {
+                    tx_hash: hash,
+                    client_id,
+                    status,
+                    block_height,
+                    timestamp: DateTime(timestamp),
+                    is_status_update: false,
+                    raw: raw_data,
+                }
+            },
+        )
+        .collect();
+
+    Ok(transactions)
+}
+
+async fn get_latest_ibc_transactions_by_client(
+    pool: Arc<PgPool>,
+    client_id: &str,
+    limit: i32,
+) -> Result<Vec<IbcTransactionUpdate>, sqlx::Error> {
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Vec<u8>,
+            String,
+            String,
+            i64,
+            chrono::DateTime<chrono::Utc>,
+            String,
+        ),
+    >(
+        "SELECT tx_hash, ibc_client_id, ibc_status, block_height, timestamp, raw_data
+         FROM explorer_transactions
+         WHERE ibc_client_id = $1
+         ORDER BY timestamp DESC LIMIT $2",
+    )
+    .bind(client_id)
+    .bind(i64::from(limit))
+    .fetch_all(pool.as_ref())
+    .await?;
+
+    let transactions = rows
+        .into_iter()
+        .map(
+            |(tx_hash, client_id, status, block_height, timestamp, raw_data)| {
+                let hash = hex::encode_upper(&tx_hash);
+
+                IbcTransactionUpdate {
+                    tx_hash: hash,
+                    client_id,
+                    status,
+                    block_height,
+                    timestamp: DateTime(timestamp),
+                    is_status_update: false,
+                    raw: raw_data,
+                }
+            },
+        )
         .collect();
 
     Ok(transactions)
