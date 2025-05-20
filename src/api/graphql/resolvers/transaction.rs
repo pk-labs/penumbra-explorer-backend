@@ -55,15 +55,13 @@ pub async fn resolve_transaction(
         let _fee_amount_str: String = r.get("fee_amount_str");
         let _chain_id: Option<String> = r.get("chain_id");
         let raw_data: String = r.get("raw_data");
-        let raw_json_str: String = r.get("raw_json");
         let client_id: Option<String> = r.get("ibc_client_id");
         let ibc_status_str: String = r.get("ibc_status");
         let ibc_status = string_to_ibc_status(Some(&ibc_status_str));
 
-        let json_value = match serde_json::from_str::<serde_json::Value>(&raw_json_str) {
-            Ok(value) => value,
-            Err(_) => serde_json::json!({}),
-        };
+        let json_value: serde_json::Value = r
+            .get::<Option<serde_json::Value>, _>("raw_json")
+            .unwrap_or_else(|| serde_json::json!({}));
 
         let hash = hex::encode_upper(&tx_hash);
 
@@ -305,20 +303,13 @@ fn process_transaction_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Tran
         let block_height: i64 = row.get("block_height");
         let timestamp: chrono::DateTime<chrono::Utc> = row.get("block_timestamp");
         let raw_data: String = row.get("raw_data");
-        let raw_json_str: String = row.get("raw_json");
         let client_id: Option<String> = row.get("ibc_client_id");
         let ibc_status_str: String = row.get("ibc_status");
         let ibc_status = string_to_ibc_status(Some(&ibc_status_str));
 
-        if !raw_json_str.is_empty() {
-            let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&raw_json_str) else {
-                tracing::warn!(
-                    "Failed to parse JSON for transaction: {}",
-                    hex::encode_upper(&tx_hash)
-                );
-                continue;
-            };
-
+        let json_value_opt: Option<serde_json::Value> =
+            row.get::<Option<serde_json::Value>, _>("raw_json");
+        if let Some(json_value) = json_value_opt {
             let hash = hex::encode_upper(&tx_hash);
 
             transactions.push(Transaction {

@@ -13,7 +13,7 @@ use sqlx::Row;
 pub struct Block {
     pub height: i32,
     pub created_at: DateTime,
-    pub raw_json: Option<serde_json::Value>,
+    pub raw_json: serde_json::Value,
 }
 
 #[Object]
@@ -73,30 +73,26 @@ impl Block {
             let _timestamp: chrono::DateTime<chrono::Utc> = row.get("timestamp");
             let _fee_amount_str: String = row.get("fee_amount_str");
             let raw_data: String = row.get("raw_data");
-            let raw_json_str: String = row.get("raw_json");
+            let raw_json: serde_json::Value = row.get("raw_json");
             let client_id: Option<String> = row.get("ibc_client_id");
             let ibc_status_str: String = row.get("ibc_status");
             let ibc_status = string_to_ibc_status(Some(&ibc_status_str));
 
-            if !raw_json_str.is_empty() {
-                // First parse the JSON for metadata extraction, but use the original string for storage
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw_json_str) {
-                    let hash = hex::encode_upper(&tx_hash);
-                    transactions.push(Transaction {
-                        hash: hash.clone(),
-                        anchor: String::new(),
-                        binding_sig: String::new(),
-                        index: extract_index_from_json(&json).unwrap_or(0),
-                        raw: raw_data.clone(),
-                        block: self.clone(),
-                        body: crate::api::graphql::types::extract_transaction_body(&json),
-                        raw_events: extract_events_from_json(&json),
-                        // Store the original string to preserve DB ordering
-                        raw_json: serde_json::Value::String(raw_json_str.clone()),
-                        client_id,
-                        ibc_status,
-                    });
-                }
+            if raw_json != serde_json::Value::Null {
+                let hash = hex::encode_upper(&tx_hash);
+                transactions.push(Transaction {
+                    hash: hash.clone(),
+                    anchor: String::new(),
+                    binding_sig: String::new(),
+                    index: extract_index_from_json(&raw_json).unwrap_or(0),
+                    raw: raw_data.clone(),
+                    block: self.clone(),
+                    body: crate::api::graphql::types::extract_transaction_body(&raw_json),
+                    raw_events: extract_events_from_json(&raw_json),
+                    raw_json,
+                    client_id,
+                    ibc_status,
+                });
             }
         }
 
@@ -105,26 +101,14 @@ impl Block {
     #[graphql(name = "rawEvents")]
     #[allow(clippy::unused_async)]
     async fn raw_events(&self) -> Result<Vec<Event>> {
-        let events = if let Some(json) = &self.raw_json {
-            extract_events_from_block_json(json)
-        } else {
-            Vec::new()
-        };
+        let events = extract_events_from_block_json(&self.raw_json);
         Ok(events)
     }
 
     #[graphql(name = "rawJson")]
     #[allow(clippy::unused_async)]
-    async fn raw_json(&self) -> Result<Option<String>> {
-        if let Some(json_value) = &self.raw_json {
-            if let Some(raw_str) = json_value.as_str() {
-                Ok(Some(raw_str.to_string()))
-            } else {
-                Ok(Some(serde_json::to_string(json_value)?))
-            }
-        } else {
-            Ok(None)
-        }
+    async fn raw_json(&self) -> Result<serde_json::Value> {
+        Ok(self.raw_json.clone())
     }
 
     #[graphql(name = "chainId")]
@@ -317,7 +301,7 @@ impl Block {
         Self {
             height,
             created_at: DateTime(created_at),
-            raw_json,
+            raw_json: raw_json.unwrap_or(serde_json::Value::Null),
         }
     }
 }

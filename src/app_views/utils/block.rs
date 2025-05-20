@@ -7,15 +7,131 @@ use sqlx::types::chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
 use crate::app_views::utils::transaction;
-use crate::parsing::{encode_to_hex, event_to_json, parse_attribute_string};
+use crate::parsing::encode_to_hex;
 
+/// Metadata for a block to be inserted into the database
 pub struct Metadata<'a> {
     pub height: u64,
     pub root: Vec<u8>,
     pub timestamp: DateTime<Utc>,
     pub tx_count: usize,
     pub chain_id: &'a str,
-    pub raw_json: String,
+    pub raw_json: Value,
+}
+
+/// Extract key-value pair from an attribute string
+/// This handles common formats while doing minimal processing
+fn extract_attribute_kv(attr_str: &str) -> Option<(String, String)> {
+    if attr_str.contains("EventAttribute") {
+        if let Some(key_start) = attr_str.find("key: \"") {
+            let key_start = key_start + 6;
+            if let Some(key_end) = attr_str[key_start..].find('"') {
+                let key = attr_str[key_start..key_start + key_end].to_string();
+
+                if let Some(value_start) = attr_str.find("value: \"") {
+                    let value_start = value_start + 8;
+                    if let Some(value_end) = attr_str[value_start..].rfind('"') {
+                        let value = attr_str[value_start..value_start + value_end].to_string();
+                        return Some((key, value));
+                    }
+                }
+            }
+        }
+    }
+    // Handle simple key-value format
+    else if let Some(colon_pos) = attr_str.find(':') {
+        let key = attr_str[..colon_pos].trim().trim_matches('"').to_string();
+        let value = attr_str[colon_pos + 1..]
+            .trim()
+            .trim_matches('"')
+            .to_string();
+        return Some((key, value));
+    }
+
+    None
+}
+
+fn process_event_attributes(event: &ContextualizedEvent<'_>) -> Vec<Value> {
+    event
+        .event
+        .attributes
+        .iter()
+        .filter_map(|attr| {
+            let attr_str = format!("{attr:?}");
+
+            if let Some((key, raw_value)) = extract_attribute_kv(&attr_str) {
+                // Skip empty values or certain known empty patterns
+                if raw_value.trim().is_empty() {
+                    return None;
+                }
+
+                // The actual value processing - preserve structure but ensure valid JSON
+                let processed_value = if raw_value.contains("\\\"") {
+                    // Handle double-escaped JSON strings
+                    let unescaped = raw_value.replace("\\\"", "\"").replace("\\\\", "\\");
+
+                    if unescaped.trim().starts_with('{') && unescaped.trim().ends_with('}') {
+                        // Try to parse as JSON object
+                        serde_json::from_str(&unescaped).unwrap_or(json!(unescaped))
+                    } else if unescaped.trim().starts_with('[') && unescaped.trim().ends_with(']') {
+                        // Try to parse as JSON array
+                        serde_json::from_str(&unescaped).unwrap_or(json!(unescaped))
+                    } else if unescaped.starts_with('"') && unescaped.ends_with('"') {
+                        // Handle quoted strings - try to extract inner value
+                        let inner = unescaped.trim_matches('"');
+
+                        // Check if inner content might be JSON
+                        if inner.trim().starts_with('{') || inner.trim().starts_with('[') {
+                            serde_json::from_str(inner).unwrap_or(json!(inner))
+                        } else {
+                            json!(inner)
+                        }
+                    } else {
+                        // Any other format
+                        json!(unescaped)
+                    }
+                } else if raw_value.trim().starts_with('{') || raw_value.trim().starts_with('[') {
+                    // Direct JSON objects or arrays
+                    serde_json::from_str(&raw_value).unwrap_or(json!(raw_value))
+                } else if raw_value.starts_with('"') && raw_value.ends_with('"') {
+                    // Try to extract inner content from quoted strings
+                    let inner = raw_value.trim_matches('"');
+
+                    // See if the inner content might be JSON
+                    if inner.trim().starts_with('{') || inner.trim().starts_with('[') {
+                        serde_json::from_str(inner).unwrap_or(json!(inner))
+                    } else {
+                        json!(inner)
+                    }
+                } else {
+                    // Keep as is
+                    json!(raw_value)
+                };
+
+                Some(json!({
+                    "key": key,
+                    "value": processed_value
+                }))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Convert an event to JSON with minimal processing
+fn simplified_event_to_json(
+    event: &ContextualizedEvent<'_>,
+    _tx_hash: Option<[u8; 32]>, // Added underscore to silence the warning
+) -> Value {
+    let event_type = event.event.kind.to_string();
+    let attributes = process_event_attributes(event);
+
+    json!({
+        "event_id": event.local_rowid,
+        "type": event_type,
+        "attributes": attributes
+    })
 }
 
 /// Process batch events to extract block data
@@ -67,11 +183,10 @@ pub async fn process_block_events<'a>(
                 block_root = pe.root.map(|r| r.inner);
             }
 
-            let event_json = event_to_json(event, event.tx_hash())?;
+            let event_json = simplified_event_to_json(&event, event.tx_hash());
 
             if let Some(tx_hash) = event.tx_hash() {
                 let owned_event = clone_event(event);
-
                 events_by_tx_hash
                     .entry(tx_hash)
                     .or_default()
@@ -101,9 +216,7 @@ pub async fn process_block_events<'a>(
             })
             .collect();
 
-        let mut all_events = Vec::new();
-        all_events.extend(block_events);
-        all_events.extend(tx_events);
+        let all_events = [block_events, tx_events].concat();
 
         let raw_json = json!({
             "block": {
@@ -140,33 +253,14 @@ pub fn create_block_json(
     timestamp: DateTime<Utc>,
     transactions: &[Value],
     events: &[Value],
-) -> String {
-    let mut json_str = String::new();
-
-    json_str.push_str("{\n");
-
-    json_str.push_str(&format!("  \"height\": {height},\n"));
-    json_str.push_str(&format!("  \"chain_id\": \"{chain_id}\",\n"));
-    json_str.push_str(&format!(
-        "  \"timestamp\": \"{}\",\n",
-        timestamp.to_rfc3339()
-    ));
-
-    json_str.push_str("  \"transactions\": ");
-    let tx_json = serde_json::to_string_pretty(transactions).unwrap_or_else(|_| "[]".to_string());
-    let tx_json_indented = tx_json.replace('\n', "\n  ");
-    json_str.push_str(&tx_json_indented);
-    json_str.push_str(",\n");
-
-    json_str.push_str("  \"events\": ");
-    let events_json = serde_json::to_string_pretty(events).unwrap_or_else(|_| "[]".to_string());
-    let events_json_indented = events_json.replace('\n', "\n  ");
-    json_str.push_str(&events_json_indented);
-    json_str.push('\n');
-
-    json_str.push('}');
-
-    json_str
+) -> Value {
+    json!({
+        "height": height,
+        "chain_id": chain_id,
+        "timestamp": timestamp.to_rfc3339(),
+        "transactions": transactions,
+        "events": events
+    })
 }
 
 /// Insert block into database
@@ -174,10 +268,8 @@ pub fn create_block_json(
 /// # Errors
 /// Returns an error if the database query fails
 pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<(), anyhow::Error> {
-    let height_i64 = match i64::try_from(meta.height) {
-        Ok(h) => h,
-        Err(e) => return Err(anyhow::anyhow!("Height conversion error: {}", e)),
-    };
+    let height_i64 = i64::try_from(meta.height)
+        .map_err(|e| anyhow::anyhow!("Height conversion error: {}", e))?;
 
     let exists = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM explorer_block_details WHERE height = $1)",
@@ -193,15 +285,15 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
     if exists {
         sqlx::query(
             r"
-        UPDATE explorer_block_details
-        SET
-            root = $2,
-            timestamp = $3,
-            num_transactions = $4,
-            chain_id = $5,
-            raw_json = $6
-        WHERE height = $1
-        ",
+            UPDATE explorer_block_details
+            SET
+                root = $2,
+                timestamp = $3,
+                num_transactions = $4,
+                chain_id = $5,
+                raw_json = $6
+            WHERE height = $1
+            ",
         )
         .bind(height_i64)
         .bind(&meta.root)
@@ -216,11 +308,11 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
     } else {
         sqlx::query(
             r"
-        INSERT INTO explorer_block_details
-        (height, root, timestamp, num_transactions, chain_id,
-         validator_identity_key, previous_block_hash, block_hash, raw_json)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ",
+            INSERT INTO explorer_block_details
+            (height, root, timestamp, num_transactions, chain_id,
+             validator_identity_key, previous_block_hash, block_hash, raw_json)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ",
         )
         .bind(height_i64)
         .bind(&meta.root)
@@ -240,91 +332,87 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
     Ok(())
 }
 
-/// Collect transactions from block JSON
+/// Extract transactions from block JSON
 #[must_use]
 pub fn collect_block_transactions(raw_json: &Value, timestamp: DateTime<Utc>) -> Vec<Value> {
-    if let Some(block) = raw_json.get("block") {
-        if let Some(txs) = block.get("transactions") {
-            if let Some(txs_array) = txs.as_array() {
-                return txs_array
-                    .iter()
-                    .map(|tx| {
-                        json!({
-                            "index": tx.get("index").and_then(Value::as_u64).unwrap_or(0),
-                            "hash": tx.get("tx_hash").and_then(|v| v.as_str()).unwrap_or(""),
-                            "timestamp": timestamp.to_rfc3339()
-                        })
+    raw_json
+        .get("block")
+        .and_then(|block| block.get("transactions"))
+        .and_then(|txs| txs.as_array())
+        .map(|txs_array| {
+            txs_array
+                .iter()
+                .map(|tx| {
+                    json!({
+                        "index": tx.get("index").and_then(Value::as_u64).unwrap_or(0),
+                        "hash": tx.get("tx_hash").and_then(|v| v.as_str()).unwrap_or(""),
+                        "timestamp": timestamp.to_rfc3339()
                     })
-                    .collect();
-            }
-        }
-    }
-    Vec::new()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-/// Collect events from block JSON
+/// Extract events from block JSON
 #[must_use]
+/// Extract events from block JSON
 pub fn collect_block_events(raw_json: &Value) -> Vec<Value> {
-    if let Some(block) = raw_json.get("block") {
-        if let Some(events) = block.get("events") {
-            if let Some(events_array) = events.as_array() {
-                let mut result = Vec::new();
+    raw_json
+        .get("block")
+        .and_then(|block| block.get("events"))
+        .and_then(|events| events.as_array())
+        .map(|events_array| {
+            events_array
+                .iter()
+                .filter_map(|event| {
+                    // Get the event_id field
+                    let event_id = event.get("event_id").cloned().unwrap_or(json!(null));
 
-                for event in events_array {
                     let event_type = event
                         .get("type")
                         .and_then(|t| t.as_str())
                         .unwrap_or("unknown");
 
-                    let mut attributes = Vec::new();
+                    let attributes = event
+                        .get("attributes")
+                        .and_then(|attrs| attrs.as_array())
+                        .map(|attrs| {
+                            attrs
+                                .iter()
+                                .filter_map(|attr| {
+                                    let key =
+                                        attr.get("key").and_then(|k| k.as_str()).unwrap_or("");
 
-                    if let Some(attrs) = event.get("attributes").and_then(|a| a.as_array()) {
-                        for attr in attrs {
-                            let key = attr.get("key").and_then(|k| k.as_str()).unwrap_or("");
-                            let value = attr
-                                .get("value")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Unknown");
+                                    if key.trim().is_empty() {
+                                        return None;
+                                    }
 
-                            if value.contains("{\"amount\":{}}") || key.trim().is_empty() {
-                                continue;
-                            }
+                                    let value = attr.get("value").cloned().unwrap_or(json!(null));
 
-                            if let Some((parsed_key, parsed_value)) = parse_attribute_string(key) {
-                                if parsed_value.contains("{\"amount\":{}}")
-                                    || parsed_value.trim().is_empty()
-                                {
-                                    continue;
-                                }
+                                    Some(json!({
+                                        "key": key,
+                                        "value": value
+                                    }))
+                                })
+                                .collect::<Vec<Value>>()
+                        })
+                        .unwrap_or_default();
 
-                                attributes.push(json!({
-                                    "key": parsed_key,
-                                    "value": parsed_value
-                                }));
-                            } else {
-                                attributes.push(json!({
-                                    "key": key,
-                                    "value": value
-                                }));
-                            }
-                        }
-                    }
-
-                    if !attributes.is_empty() {
-                        result.push(json!({
+                    if attributes.is_empty() {
+                        None
+                    } else {
+                        Some(json!({
+                            "event_id": event_id,
                             "type": event_type,
                             "attributes": attributes
-                        }));
+                        }))
                     }
-                }
-
-                return result;
-            }
-        }
-    }
-    Vec::new()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
-
 /// Clone a contextualized event to make it have a static lifetime
 #[must_use]
 pub fn clone_event(event: ContextualizedEvent<'_>) -> ContextualizedEvent<'static> {

@@ -107,12 +107,8 @@ impl Transaction {
 
     #[graphql(name = "rawJson")]
     #[allow(clippy::unused_async)]
-    async fn raw_json(&self) -> Result<String> {
-        if let Some(raw_str) = self.raw_json.as_str() {
-            Ok(raw_str.to_string())
-        } else {
-            Ok(serde_json::to_string(&self.raw_json)?)
-        }
+    async fn raw_json(&self) -> Result<serde_json::Value> {
+        Ok(self.raw_json.clone())
     }
 
     #[graphql(name = "clientId")]
@@ -216,7 +212,7 @@ pub struct DbRawTransaction {
     pub fee_amount: Option<String>,
     pub chain_id: Option<String>,
     pub raw_data_hex: Option<String>,
-    pub raw_json: Option<serde_json::Value>,
+    pub raw_json: serde_json::Value,
     pub client_id: Option<String>,
     pub ibc_status: String,
 }
@@ -258,16 +254,12 @@ impl DbRawTransaction {
         if let Some(row) = row_result {
             let tx_hash: Vec<u8> = row.get("tx_hash");
             let raw_data: Option<String> = row.get("raw_data");
-            let raw_json_str: String = row.get("raw_json");
             let ibc_client_id: Option<String> = row.get("ibc_client_id");
             let ibc_status: String = row.get("ibc_status");
 
-            let json_value = if raw_json_str.is_empty() {
-                None
-            } else {
-                // Store raw JSON string without parsing
-                Some(serde_json::Value::String(raw_json_str))
-            };
+            let json_value: serde_json::Value = row
+                .get::<Option<serde_json::Value>, _>("raw_json")
+                .unwrap_or(serde_json::Value::Null);
 
             Ok(Some(Self {
                 tx_hash_hex: hex::encode_upper(&tx_hash),
@@ -358,15 +350,12 @@ impl DbRawTransaction {
         for row in rows {
             let tx_hash: Vec<u8> = row.get("tx_hash");
             let raw_data: Option<String> = row.get("raw_data");
-            let raw_json_str: String = row.get("raw_json");
             let ibc_client_id: Option<String> = row.get("ibc_client_id");
             let ibc_status: String = row.get("ibc_status");
 
-            let json_value = if raw_json_str.is_empty() {
-                None
-            } else {
-                Some(serde_json::Value::String(raw_json_str))
-            };
+            let json_value: serde_json::Value = row
+                .get::<Option<serde_json::Value>, _>("raw_json")
+                .unwrap_or(serde_json::Value::Null);
 
             transactions.push(Self {
                 tx_hash_hex: hex::encode_upper(&tx_hash),
