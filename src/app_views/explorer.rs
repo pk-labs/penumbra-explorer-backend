@@ -99,6 +99,253 @@ impl Explorer {
     fn get_chain_id(&self) -> &str {
         self.chain_id.as_deref().unwrap_or("unknown")
     }
+    
+    /// Initialize validators from genesis.json
+    async fn initialize_validators_from_genesis(
+        &self,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<(), anyhow::Error> {
+        // Check if validators already exist in the database
+        let validator_count: i64 = match sqlx::query_scalar("SELECT COUNT(*) FROM validators")
+            .fetch_one(dbtx.as_mut())
+            .await {
+                Ok(count) => count,
+                Err(e) => {
+                    tracing::error!("Failed to check validator count: {}", e);
+                    return Err(anyhow::anyhow!("Failed to check validator count: {}", e));
+                }
+            };
+            
+        if validator_count > 0 {
+            tracing::info!("Validators already initialized (found {}), skipping genesis initialization", validator_count);
+            return Ok(());
+        }
+        
+        // Open and read the genesis file
+        let file = match File::open("genesis.json") {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::error!("Failed to open genesis.json: {}", e);
+                return Err(anyhow::anyhow!("Failed to open genesis.json: {}", e));
+            }
+        };
+        
+        let mut contents = String::new();
+        if let Err(e) = file.take(10_000_000).read_to_string(&mut contents) {
+            tracing::error!("Failed to read genesis.json: {}", e);
+            return Err(anyhow::anyhow!("Failed to read genesis.json: {}", e));
+        }
+        
+        // Parse genesis JSON
+        let genesis: serde_json::Value = match serde_json::from_str(&contents) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Failed to parse genesis.json: {}", e);
+                return Err(anyhow::anyhow!("Failed to parse genesis.json: {}", e));
+            }
+        };
+        
+        // Extract validators from the genesis file
+        let genesis_time = match genesis["genesis_time"].as_str() {
+            Some(time) => time,
+            None => {
+                tracing::error!("Missing genesis_time in genesis.json");
+                return Err(anyhow::anyhow!("Missing genesis_time in genesis.json"));
+            }
+        };
+            
+        let timestamp = match chrono::DateTime::parse_from_rfc3339(genesis_time) {
+            Ok(t) => t.with_timezone(&Utc),
+            Err(e) => {
+                tracing::error!("Failed to parse genesis time: {}", e);
+                return Err(anyhow::anyhow!("Failed to parse genesis time: {}", e));
+            }
+        };
+        
+        // Get validators from app_state.genesisContent.stakeContent.validators
+        let validators = match genesis.get("app_state")
+            .and_then(|app_state| app_state.get("genesisContent"))
+            .and_then(|content| content.get("stakeContent"))
+            .and_then(|stake| stake.get("validators"))
+            .and_then(|vals| vals.as_array()) {
+                Some(v) => v,
+                None => {
+                    tracing::warn!("No validators found in genesis.json structure");
+                    return Ok(());
+                }
+            };
+        
+        if validators.is_empty() {
+            tracing::warn!("Empty validators array in genesis.json");
+            return Ok(());
+        }
+        
+        tracing::info!("Found {} validators in genesis.json", validators.len());
+        
+        // Don't set any voting power initially
+        // All validators start with 0 voting power and 0% until the events update them
+        
+        // Process each validator
+        let mut successful_count = 0;
+        let mut failed_count = 0;
+        
+        for (i, validator_data) in validators.iter().enumerate() {
+            // Get the validator name for logging if available
+            let validator_name = validator_data["name"].as_str().unwrap_or("unknown");
+            
+            // Check validator identity key - this is the only truly required field
+            if validator_data.get("identityKey")
+                .and_then(|key| key.get("ik"))
+                .and_then(|ik| ik.as_str())
+                .is_none() {
+                failed_count += 1;
+                tracing::error!("Validator #{} missing required identityKey.ik field, skipping", i);
+                continue;
+            }
+            
+            // For genesis validators, use "DEFINED" as the default state
+            // They're already considered defined in block 1
+            let state = "VALIDATOR_STATE_ENUM_DEFINED";
+            
+            // Extract bonding state if present (no defaults)
+            let bonding_state = validator_data.get("bondingState")
+                .and_then(|s| s.get("state"))
+                .and_then(|s| s.as_str());
+            
+            match validator::Validator::from_event(
+                validator_data,
+                1, // Genesis block height is 1
+                timestamp,
+                state,
+                bonding_state.unwrap_or(""), // Empty string if not present
+                0, // Start with 0 voting power, will be updated by events
+                0.0, // Start with 0% voting power percentage, will be updated by events
+            ) {
+                Ok(validator) => {
+                    // Insert the validator into the database
+                    match validator.insert_or_update(dbtx).await {
+                        Ok(_) => {
+                            successful_count += 1;
+                            tracing::info!("Successfully inserted genesis validator #{}: {}", i, validator_name);
+                        },
+                        Err(e) => {
+                            failed_count += 1;
+                            tracing::error!("Failed to insert genesis validator #{} ({}): {}", i, validator_name, e);
+                        }
+                    }
+                },
+                Err(e) => {
+                    failed_count += 1;
+                    tracing::error!("Failed to parse genesis validator #{} ({}): {}", i, validator_name, e);
+                }
+            }
+        }
+        
+        tracing::info!(
+            "Genesis validator initialization complete: {} successful, {} failed", 
+            successful_count, failed_count
+        );
+        
+        Ok(())
+    }
+    
+    /// Record signed blocks for all active validators for a given height
+    async fn record_validator_blocks_for_height(
+        &self,
+        dbtx: &mut PgTransaction<'_>,
+        height: u64,
+        timestamp: DateTime<Utc>,
+    ) -> Result<(), anyhow::Error> {
+        // Check if the block exists first
+        let block_exists: i64 = match sqlx::query_scalar(
+            "SELECT COUNT(*) FROM explorer_block_details WHERE height = $1"
+        )
+        .bind(height as i64)
+        .fetch_one(dbtx.as_mut())
+        .await {
+            Ok(count) => count,
+            Err(e) => {
+                tracing::error!("Failed to check if block exists at height {}: {}", height, e);
+                return Ok(());  // Return Ok to avoid aborting the transaction
+            }
+        };
+        
+        if block_exists == 0 {
+            tracing::debug!("Skipping validator block records for non-existent block at height {}", height);
+            return Ok(());
+        }
+        
+        // Check if there are any validators in the database yet
+        let validator_count: i64 = match sqlx::query_scalar("SELECT COUNT(*) FROM validators")
+            .fetch_one(dbtx.as_mut())
+            .await {
+                Ok(count) => count,
+                Err(e) => {
+                    tracing::error!("Failed to check validator count: {}", e);
+                    return Ok(());  // Return Ok to avoid aborting the transaction
+                }
+            };
+            
+        if validator_count == 0 {
+            // Skip recording blocks if no validators exist yet
+            tracing::debug!("No validators in database, skipping block participation records");
+            return Ok(());
+        }
+        
+        // Get the active state from the database instead of hardcoding it
+        let active_state: Option<String> = match sqlx::query_scalar(
+            "SELECT DISTINCT state FROM validators WHERE state LIKE '%ACTIVE%' LIMIT 1"
+        )
+        .fetch_optional(dbtx.as_mut())
+        .await {
+            Ok(state) => state,
+            Err(e) => {
+                tracing::error!("Failed to determine active validator state: {}", e);
+                return Ok(()); // Return Ok to avoid aborting the transaction
+            }
+        };
+        
+        if active_state.is_none() {
+            tracing::debug!("No active validator state found, skipping block participation records");
+            return Ok(());
+        }
+        
+        // Get all active validators using the discovered state
+        let active_validators: Vec<String> = match sqlx::query_scalar(
+            &format!("SELECT identity_key FROM validators WHERE state = '{}'", active_state.unwrap())
+        )
+        .fetch_all(dbtx.as_mut())
+        .await {
+            Ok(validators) => validators,
+            Err(e) => {
+                tracing::error!("Failed to retrieve active validators: {}", e);
+                return Ok(());  // Return Ok to avoid aborting the transaction
+            }
+        };
+        
+        if active_validators.is_empty() {
+            tracing::debug!("No active validators found, skipping block participation records");
+            return Ok(());
+        }
+        
+        tracing::debug!("Recording signed blocks for {} active validators at height {}", 
+                      active_validators.len(), height);
+        
+        // Record a signed block for each active validator
+        for identity_key in active_validators {
+            // We don't need to check for errors here since record_validator_block already handles errors
+            // and doesn't propagate them to avoid transaction aborts
+            let _ = validator::Validator::record_validator_block(
+                &identity_key,
+                height as i64,
+                timestamp,
+                true, // Marked as signed
+                dbtx,
+            ).await;
+        }
+        
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -359,6 +606,125 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 slashing_penalty_misbehavior TEXT NOT NULL,
                 unbonding_delay TEXT NOT NULL
             )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+        
+        // Create validators table
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS validators (
+                identity_key TEXT PRIMARY KEY,
+                name TEXT,
+                website TEXT,
+                description TEXT,
+                consensus_key TEXT,
+                governance_key TEXT,
+                state TEXT DEFAULT 'unknown',
+                bonding_state TEXT DEFAULT 'unknown',
+                voting_power BIGINT DEFAULT 0,
+                voting_power_percentage DOUBLE PRECISION DEFAULT 0,
+                first_seen_height BIGINT,
+                first_seen_time TIMESTAMPTZ,
+                last_updated TIMESTAMPTZ,
+                address TEXT,
+                commission_rate INTEGER
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+        
+        // Create validator_blocks table
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS validator_blocks (
+                identity_key TEXT NOT NULL REFERENCES validators(identity_key),
+                block_height BIGINT NOT NULL REFERENCES explorer_block_details(height),
+                timestamp TIMESTAMPTZ NOT NULL,
+                signed BOOLEAN NOT NULL DEFAULT TRUE,
+                PRIMARY KEY (identity_key, block_height)
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+        
+        // Create index on validators state for performance
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validators_state
+            ON validators(state)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+        
+        // Create index on validators voting power for sorting
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validators_voting_power
+            ON validators(voting_power DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+        
+        // Create validator performance view
+        sqlx::query(
+            r"
+            CREATE OR REPLACE VIEW validator_performance AS
+            WITH block_stats AS (
+                SELECT 
+                    identity_key,
+                    COUNT(*) as total_blocks,
+                    SUM(CASE WHEN signed = TRUE THEN 1 ELSE 0 END) as signed_blocks,
+                    SUM(CASE WHEN signed = FALSE THEN 1 ELSE 0 END) as missed_blocks
+                FROM validator_blocks
+                GROUP BY identity_key
+            ),
+            total_blocks_available AS (
+                SELECT
+                    v.identity_key,
+                    GREATEST(
+                        (SELECT MAX(height) FROM explorer_block_details) - v.first_seen_height,
+                        1
+                    ) as blocks_since_joining
+                FROM validators v
+            )
+            SELECT 
+                v.identity_key,
+                COALESCE(v.name, '') as name,
+                v.website,
+                v.description,
+                v.state,
+                COALESCE(v.bonding_state, '') as bonding_state,
+                v.voting_power,
+                v.voting_power_percentage,
+                v.first_seen_height,
+                v.first_seen_time,
+                v.address,
+                v.commission_rate,
+                COALESCE(bs.missed_blocks, 0) as missed_blocks,
+                COALESCE(bs.signed_blocks, 0) as signed_blocks,
+                COALESCE(bs.total_blocks, 0) as total_tracked_blocks,
+                tb.blocks_since_joining,
+                CASE 
+                    WHEN COALESCE(bs.total_blocks, 0) > 0 THEN
+                        ROUND(
+                            (COALESCE(bs.signed_blocks, 0)::numeric / 
+                            bs.total_blocks::numeric) * 100.0,
+                            2
+                        )
+                    ELSE NULL
+                END as uptime_percentage
+            FROM 
+                validators v
+            LEFT JOIN block_stats bs ON v.identity_key = bs.identity_key
+            JOIN total_blocks_available tb ON v.identity_key = tb.identity_key
+            ORDER BY 
+                v.voting_power DESC
             ",
         )
         .execute(dbtx.as_mut())
@@ -816,6 +1182,13 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 return Err(e);
             }
         }
+        
+        // Initialize validators from genesis.json
+        tracing::info!("Reading genesis file to initialize validators");
+        if let Err(e) = self.initialize_validators_from_genesis(dbtx).await {
+            tracing::error!("Failed to initialize validators from genesis: {}", e);
+            // Don't fail initialization if validator initialization fails
+        }
 
         Ok(())
     }
@@ -861,6 +1234,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             };
 
             block::insert(dbtx, meta).await?;
+            
+            // Process the block for active validators - record signed blocks for all active validators
+            self.record_validator_blocks_for_height(dbtx, height, ts).await?;
         }
 
         let mut height_to_timestamp: HashMap<u64, DateTime<Utc>> = HashMap::new();
@@ -937,6 +1313,11 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 // Process validator parameter change events
                 if let Err(e) = validator::ValidatorParams::process_events(dbtx, &events, height, timestamp).await {
                     tracing::error!("Error processing validator parameter events for block {}: {:?}", height, e);
+                }
+                
+                // Process validator events
+                if let Err(e) = validator::Validator::process_events(dbtx, &events, height, timestamp).await {
+                    tracing::error!("Error processing validator events for block {}: {:?}", height, e);
                 }
             }
         }
