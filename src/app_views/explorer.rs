@@ -203,9 +203,9 @@ impl Explorer {
                 continue;
             }
             
-            // For genesis validators, use "DEFINED" as the default state
-            // They're already considered defined in block 1
-            let state = "VALIDATOR_STATE_ENUM_DEFINED";
+            // For genesis validators, use "ACTIVE" as the default state
+            // They're already considered active in block 1
+            let state = "VALIDATOR_STATE_ENUM_ACTIVE";
             
             // Extract bonding state if present (no defaults)
             let bonding_state = validator_data.get("bondingState")
@@ -225,6 +225,18 @@ impl Explorer {
                     // Insert the validator into the database
                     match validator.insert_or_update(dbtx).await {
                         Ok(_) => {
+                            // Process funding streams if they exist
+                            if let Some(funding_streams) = validator_data.get("fundingStreams") {
+                                if let Err(e) = validator::ValidatorFundingStream::process_funding_streams(
+                                    &validator.identity_key,
+                                    funding_streams,
+                                    timestamp,
+                                    dbtx
+                                ).await {
+                                    tracing::error!("Failed to process funding streams for genesis validator #{} ({}): {}", i, validator_name, e);
+                                }
+                            }
+                            
                             successful_count += 1;
                             tracing::info!("Successfully inserted genesis validator #{}: {}", i, validator_name);
                         },
@@ -627,10 +639,36 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 voting_power_percentage DOUBLE PRECISION DEFAULT 0,
                 first_seen_height BIGINT,
                 first_seen_time TIMESTAMPTZ,
-                last_updated TIMESTAMPTZ,
-                address TEXT,
-                commission_rate INTEGER
+                last_updated TIMESTAMPTZ
             )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+        
+        // Create validator_funding_streams table
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS validator_funding_streams (
+                id SERIAL PRIMARY KEY,
+                identity_key TEXT NOT NULL REFERENCES validators(identity_key),
+                stream_type TEXT NOT NULL, -- 'toAddress' or 'toCommunityPool'
+                recipient_address TEXT, -- Only for 'toAddress' type
+                rate_bps INTEGER NOT NULL, -- Rate in basis points
+                created_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL,
+                UNIQUE(identity_key, stream_type, recipient_address)
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+        
+        // Create index on validator_funding_streams for performance
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_funding_streams_identity_key
+            ON validator_funding_streams(identity_key)
             ",
         )
         .execute(dbtx.as_mut())
@@ -675,23 +713,39 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         sqlx::query(
             r"
             CREATE OR REPLACE VIEW validator_performance AS
-            WITH block_stats AS (
+            WITH uptime_window AS (
+                SELECT uptime_blocks_window FROM validator_staking_parameters LIMIT 1
+            ),
+            block_stats AS (
                 SELECT 
-                    identity_key,
+                    vb.identity_key,
                     COUNT(*) as total_blocks,
-                    SUM(CASE WHEN signed = TRUE THEN 1 ELSE 0 END) as signed_blocks,
-                    SUM(CASE WHEN signed = FALSE THEN 1 ELSE 0 END) as missed_blocks
-                FROM validator_blocks
-                GROUP BY identity_key
+                    SUM(CASE WHEN vb.signed = TRUE THEN 1 ELSE 0 END) as signed_blocks,
+                    SUM(CASE WHEN vb.signed = FALSE THEN 1 ELSE 0 END) as missed_blocks
+                FROM validator_blocks vb
+                CROSS JOIN uptime_window uw
+                WHERE vb.block_height > (SELECT MAX(height) FROM explorer_block_details) - uw.uptime_blocks_window
+                GROUP BY vb.identity_key
             ),
             total_blocks_available AS (
                 SELECT
                     v.identity_key,
-                    GREATEST(
-                        (SELECT MAX(height) FROM explorer_block_details) - v.first_seen_height,
-                        1
-                    ) as blocks_since_joining
+                    LEAST(
+                        uw.uptime_blocks_window,
+                        GREATEST(
+                            (SELECT MAX(height) FROM explorer_block_details) - v.first_seen_height,
+                            1
+                        )
+                    ) as blocks_in_window
                 FROM validators v
+                CROSS JOIN uptime_window uw
+            ),
+            commission_rates AS (
+                SELECT
+                    identity_key,
+                    ROUND(SUM(rate_bps)::numeric / 100.0, 2) as commission_rate_percentage
+                FROM validator_funding_streams
+                GROUP BY identity_key
             )
             SELECT 
                 v.identity_key,
@@ -704,12 +758,11 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 v.voting_power_percentage,
                 v.first_seen_height,
                 v.first_seen_time,
-                v.address,
-                v.commission_rate,
+                COALESCE(cr.commission_rate_percentage, 0.0) as commission_rate,
                 COALESCE(bs.missed_blocks, 0) as missed_blocks,
                 COALESCE(bs.signed_blocks, 0) as signed_blocks,
                 COALESCE(bs.total_blocks, 0) as total_tracked_blocks,
-                tb.blocks_since_joining,
+                tb.blocks_in_window,
                 CASE 
                     WHEN COALESCE(bs.total_blocks, 0) > 0 THEN
                         ROUND(
@@ -723,6 +776,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 validators v
             LEFT JOIN block_stats bs ON v.identity_key = bs.identity_key
             JOIN total_blocks_available tb ON v.identity_key = tb.identity_key
+            LEFT JOIN commission_rates cr ON v.identity_key = cr.identity_key
             ORDER BY 
                 v.voting_power DESC
             ",
