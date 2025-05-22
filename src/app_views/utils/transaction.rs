@@ -81,7 +81,6 @@ fn process_value(raw_value: &str) -> Value {
 fn ensure_balanced_json(json_str: &str) -> String {
     let mut balanced = json_str.to_string();
 
-    // Balance curly braces
     let open_curly = balanced.chars().filter(|&c| c == '{').count();
     let close_curly = balanced.chars().filter(|&c| c == '}').count();
     if open_curly > close_curly {
@@ -90,7 +89,6 @@ fn ensure_balanced_json(json_str: &str) -> String {
         }
     }
 
-    // Balance square brackets
     let open_bracket = balanced.chars().filter(|&c| c == '[').count();
     let close_bracket = balanced.chars().filter(|&c| c == ']').count();
     if open_bracket > close_bracket {
@@ -197,13 +195,11 @@ pub fn create_transaction_json(
 ) -> Value {
     let tx_result_decoded = decode(tx_hash, tx_bytes);
 
-    // Process all events consistently - no special handling for tx events
     let processed_events: Vec<Value> = tx_events
         .iter()
         .map(|event| simplified_event_to_json(event, Some(tx_hash)))
         .collect();
 
-    // Construct the final transaction JSON
     json!({
         "hash": encode_to_hex(tx_hash),
         "block_height": height.to_string(),
