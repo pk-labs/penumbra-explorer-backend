@@ -22,6 +22,17 @@ pub struct ValidatorParams {
     pub unbonding_delay: String,
 }
 
+/// Represents a validator funding stream
+#[derive(Debug)]
+pub struct ValidatorFundingStream {
+    pub identity_key: String,
+    pub stream_type: String,      // "toAddress" or "toCommunityPool"
+    pub recipient_address: Option<String>, // Only for "toAddress" type
+    pub rate_bps: i32,           // Rate in basis points
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Represents a validator entity
 #[derive(Debug)]
 pub struct Validator {
@@ -33,13 +44,11 @@ pub struct Validator {
     pub governance_key: Option<String>, // Governance key
     pub state: String,            // Current validator state (ACTIVE, INACTIVE, etc.)
     pub bonding_state: Option<String>,    // Current bonding state (BONDED, UNBONDING, UNBONDED)
-    pub voting_power: i64,        // Current voting power in raw units
+    pub voting_power: i64,        // Current voting power in UM units (divided from microunits)
     pub voting_power_percentage: f64, // Percentage of total voting power
-    pub first_seen_height: i64,   // Block height when validator was first seen
+    pub first_seen_height: Option<i64>,   // Block height when validator became ACTIVE (NULL until ACTIVE)
     pub first_seen_time: DateTime<Utc>, // Timestamp when validator was first seen
     pub last_updated: DateTime<Utc>, // Last update timestamp
-    pub address: Option<String>,  // Address extracted from funding streams (if available)
-    pub commission_rate: Option<i32>, // Commission rate in basis points (if available)
 }
 
 impl Validator {
@@ -85,35 +94,29 @@ impl Validator {
             .and_then(|gk| gk.as_str())
             .map(String::from);
         
-        // Extract address and commission rate from funding streams
-        let mut address = None;
-        let mut commission_rate = None;
-        
-        if let Some(funding_streams) = event_json["fundingStreams"].as_array() {
-            for stream in funding_streams {
-                // Look for toAddress funding stream
-                if let Some(to_address) = stream.get("toAddress") {
-                    address = to_address.get("address").and_then(|a| a.as_str()).map(String::from);
-                    commission_rate = to_address.get("rateBps").and_then(|r| r.as_i64()).map(|r| r as i32);
-                    break; // Take the first one
-                }
-            }
-        }
-        
-        // Only set first_seen values if the state is DEFINED, otherwise leave as placeholders
-        // For validators in events (not genesis), these will be updated when the state transitions to DEFINED
-        let (first_seen_height, first_seen_time) = if default_state.contains("DEFINED") {
-            // For validators that are already in DEFINED state (like in genesis), use the supplied height/time
-            debug!("Creating validator {} already in DEFINED state at height {}, timestamp {}", 
+        // Set first_seen_time and first_seen_height based on different states:
+        // - first_seen_time: when validator becomes DEFINED (or ACTIVE in genesis)
+        // - first_seen_height: when validator becomes ACTIVE (for uptime calculations)
+        let (first_seen_height, first_seen_time) = if default_state.contains("ACTIVE") && height == 1 {
+            // Genesis validators that start ACTIVE: set both time and height
+            debug!("Creating genesis ACTIVE validator {} at height {}, timestamp {}", 
                   identity_key, height, timestamp);
-            (height as i64, timestamp)
+            (Some(height as i64), timestamp)
+        } else if default_state.contains("DEFINED") {
+            // DEFINED validators: set first_seen_time but NULL for height (until they become ACTIVE)
+            debug!("Creating DEFINED validator {} at height {}, timestamp {} - height will be set when ACTIVE", 
+                  identity_key, height, timestamp);
+            (None, timestamp) // Height will be NULL in database until ACTIVE
+        } else if default_state.contains("ACTIVE") {
+            // Event-discovered ACTIVE validators: set height but placeholder for time (should have been DEFINED first)
+            debug!("Creating event ACTIVE validator {} at height {} - time should have been set when DEFINED", 
+                  identity_key, height);
+            (Some(height as i64), DateTime::<Utc>::from_timestamp(0, 0).unwrap()) // Time placeholder
         } else {
-            // For validators that aren't yet DEFINED, use placeholders that will be updated
-            // when the validator transitions to DEFINED state
-            debug!("Creating validator {} with non-DEFINED state ({}), using placeholder first_seen values", 
+            // All other states: use NULL for height, placeholder for time
+            debug!("Creating validator {} with state {} - height will be NULL until ACTIVE", 
                   identity_key, default_state);
-            // Use max value as a clear indicator these are placeholders
-            (i64::MAX, DateTime::<Utc>::from_timestamp(0, 0).unwrap())
+            (None, DateTime::<Utc>::from_timestamp(0, 0).unwrap())
         };
         
         debug!("Created validator from event: identity_key={}, name={:?}, consensus_key={:?}", 
@@ -139,9 +142,49 @@ impl Validator {
             first_seen_height,
             first_seen_time,
             last_updated: timestamp,
-            address,
-            commission_rate,
         })
+    }
+    
+    /// Insert only - fails if validator already exists (for ensure_validator_exists)
+    pub async fn insert_only(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
+        sqlx::query(
+            r"
+            INSERT INTO validators (
+                identity_key,
+                name,
+                website,
+                description,
+                consensus_key,
+                governance_key,
+                state,
+                bonding_state,
+                voting_power,
+                voting_power_percentage,
+                first_seen_height,
+                first_seen_time,
+                last_updated
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+            )
+            ",
+        )
+        .bind(&self.identity_key)
+        .bind(&self.name)
+        .bind(&self.website)
+        .bind(&self.description)
+        .bind(&self.consensus_key)
+        .bind(&self.governance_key)
+        .bind(&self.state)
+        .bind(&self.bonding_state)
+        .bind(self.voting_power)
+        .bind(self.voting_power_percentage)
+        .bind(self.first_seen_height)
+        .bind(self.first_seen_time)
+        .bind(self.last_updated)
+        .execute(dbtx.as_mut())
+        .await?;
+        
+        Ok(())
     }
     
     /// Insert or update a validator in the database
@@ -161,11 +204,9 @@ impl Validator {
                 voting_power_percentage,
                 first_seen_height,
                 first_seen_time,
-                last_updated,
-                address,
-                commission_rate
+                last_updated
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
             )
             ON CONFLICT (identity_key) DO UPDATE SET
                 name = EXCLUDED.name,
@@ -177,9 +218,7 @@ impl Validator {
                 bonding_state = EXCLUDED.bonding_state,
                 voting_power = EXCLUDED.voting_power,
                 voting_power_percentage = EXCLUDED.voting_power_percentage,
-                last_updated = GREATEST(validators.last_updated, EXCLUDED.last_updated),
-                address = COALESCE(validators.address, EXCLUDED.address),
-                commission_rate = COALESCE(validators.commission_rate, EXCLUDED.commission_rate)
+                last_updated = GREATEST(validators.last_updated, EXCLUDED.last_updated)
             ",
         )
         .bind(&self.identity_key)
@@ -195,8 +234,35 @@ impl Validator {
         .bind(self.first_seen_height)
         .bind(self.first_seen_time)
         .bind(self.last_updated)
-        .bind(&self.address)
-        .bind(self.commission_rate)
+        .execute(dbtx.as_mut())
+        .await?;
+        
+        Ok(())
+    }
+    
+    /// Update only metadata (name, website, description, etc.) without changing state or voting power
+    pub async fn update_metadata_only(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
+        sqlx::query(
+            r"
+            UPDATE validators 
+            SET 
+                name = $2,
+                website = $3,
+                description = $4,
+                consensus_key = $5,
+                governance_key = $6,
+                last_updated = $7
+            WHERE 
+                identity_key = $1
+            ",
+        )
+        .bind(&self.identity_key)
+        .bind(&self.name)
+        .bind(&self.website)
+        .bind(&self.description)
+        .bind(&self.consensus_key)
+        .bind(&self.governance_key)
+        .bind(self.last_updated)
         .execute(dbtx.as_mut())
         .await?;
         
@@ -211,9 +277,9 @@ impl Validator {
         timestamp: DateTime<Utc>,
         height: u64,
     ) -> Result<()> {
-        // Special handling for DEFINED state - this is when we consider a validator to be "officially" created
+        // Special handling for DEFINED and ACTIVE state transitions
         if state.contains("DEFINED") {
-            // Check if this validator already exists and if it already has DEFINED state
+            // DEFINED state: set first_seen_time (validator officially created)
             let validator_info: Option<(Option<String>,)> = sqlx::query_as(
                 "SELECT state FROM validators WHERE identity_key = $1"
             )
@@ -222,15 +288,9 @@ impl Validator {
             .await?;
             
             match validator_info {
-                // If validator exists
                 Some((current_state,)) => {
-                    // Check if validator doesn't have DEFINED state yet
                     if !current_state.map_or(false, |s| s.contains("DEFINED")) {
-                        // This is the validator's transition to DEFINED state
-                        // Set first_seen_time to CURRENT timestamp (when the DEFINED event occurred)
-                        // This is the official "creation date" even if the validator was in the DB earlier
-                        debug!("Validator {} transitioned to DEFINED state at height {}, timestamp {}", 
-                               identity_key, height, timestamp);
+                        debug!("Validator {} transitioned to DEFINED state - setting first_seen_time", identity_key);
                         
                         sqlx::query(
                             r"
@@ -238,8 +298,45 @@ impl Validator {
                             SET 
                                 state = $1,
                                 last_updated = $2,
-                                -- Set creation/first_seen timestamp to DEFINED event timestamp
-                                first_seen_time = $2,
+                                first_seen_time = $2
+                            WHERE 
+                                identity_key = $3
+                            ",
+                        )
+                        .bind(state)
+                        .bind(timestamp)
+                        .bind(identity_key)
+                        .execute(dbtx.as_mut())
+                        .await?;
+                        
+                        return Ok(());
+                    }
+                },
+                None => {
+                    debug!("Validator {} not found in database when updating to DEFINED state", identity_key);
+                }
+            }
+        } else if state.contains("ACTIVE") {
+            // ACTIVE state: set first_seen_height (start counting uptime from here)
+            let validator_info: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
+                "SELECT state, first_seen_height FROM validators WHERE identity_key = $1"
+            )
+            .bind(identity_key)
+            .fetch_optional(dbtx.as_mut())
+            .await?;
+            
+            match validator_info {
+                Some((_current_state, current_height)) => {
+                    // Only set first_seen_height if it's still NULL
+                    if current_height.is_none() {
+                        debug!("Validator {} transitioned to ACTIVE state - setting first_seen_height for uptime tracking", identity_key);
+                        
+                        sqlx::query(
+                            r"
+                            UPDATE validators 
+                            SET 
+                                state = $1,
+                                last_updated = $2,
                                 first_seen_height = $3
                             WHERE 
                                 identity_key = $4
@@ -255,15 +352,14 @@ impl Validator {
                         return Ok(());
                     }
                 },
-                // If validator doesn't exist, it will be created elsewhere
                 None => {
-                    debug!("Validator {} not found in database when updating to state {}", identity_key, state);
+                    debug!("Validator {} not found in database when updating to ACTIVE state", identity_key);
                 }
             }
         }
         
-        // Standard update without changing first_seen_time for non-DEFINED states
-        // or for validators that are already in DEFINED state
+        // Standard update without changing first_seen_time/height for states that don't require special handling
+        // or for validators that already have the target state
         sqlx::query(
             r"
             UPDATE validators 
@@ -416,7 +512,7 @@ impl Validator {
         }
     }
     
-    /// Calculate total voting power across all validators
+    /// Calculate total voting power across ACTIVE validators only
     pub async fn calculate_total_voting_power(dbtx: &mut PgTransaction<'_>) -> Result<i64> {
         // Query the active state value first to avoid hardcoding it
         let active_state: Option<String> = sqlx::query_scalar(
@@ -428,8 +524,9 @@ impl Validator {
         // Use the queried active state or default to a query that returns 0
         let result = match active_state {
             Some(state) => {
+                // Cast SUM to BIGINT to match our expected i64 type
                 sqlx::query_scalar::<_, i64>(
-                    &format!("SELECT COALESCE(SUM(voting_power), 0) FROM validators WHERE state = '{}'", state)
+                    &format!("SELECT COALESCE(SUM(voting_power)::BIGINT, 0) FROM validators WHERE state = '{}'", state)
                 )
                 .fetch_one(dbtx.as_mut())
                 .await?
@@ -440,7 +537,7 @@ impl Validator {
         Ok(result)
     }
     
-    /// Update voting power percentages for all validators
+    /// Update voting power percentages for ACTIVE validators only (set others to 0%)
     pub async fn update_all_voting_power_percentages(dbtx: &mut PgTransaction<'_>) -> Result<()> {
         // First get the total active voting power
         let total_voting_power = Self::calculate_total_voting_power(dbtx).await?;
@@ -458,7 +555,7 @@ impl Validator {
         
         // Only update if we found an active state
         if let Some(state) = active_state {
-            // Update percentages for all validators with the active state
+            // Update percentages for ACTIVE validators only
             let query = format!(
                 r"
                 UPDATE validators
@@ -474,15 +571,34 @@ impl Validator {
                 .bind(total_voting_power)
                 .execute(dbtx.as_mut())
                 .await?;
+            
+            // Set percentage to 0 for all non-active validators
+            let clear_inactive_query = format!(
+                r"
+                UPDATE validators
+                SET 
+                    voting_power_percentage = 0.0
+                WHERE
+                    state != '{}'
+                ",
+                state
+            );
+            
+            sqlx::query(&clear_inactive_query)
+                .execute(dbtx.as_mut())
+                .await?;
         }
         
         Ok(())
     }
     
-    /// Update total_staked in validator_staking_parameters 
-    pub async fn update_total_staked(dbtx: &mut PgTransaction<'_>, total_voting_power: i64) -> Result<()> {
-        // Format total staked in UM format (dividing by 1,000,000)
-        let formatted_total = format!("{} UM", total_voting_power / 1_000_000);
+    /// Update total_staked in validator_staking_parameters with sum of ACTIVE validators only
+    pub async fn update_total_staked(dbtx: &mut PgTransaction<'_>) -> Result<()> {
+        // Calculate total voting power of ACTIVE validators only
+        let total_active_voting_power = Self::calculate_total_voting_power(dbtx).await?;
+        
+        // Format total staked in UM format (already converted from microunits)
+        let formatted_total = format!("{} UM", total_active_voting_power);
         
         // Get the chain_id 
         let chain_id: Option<String> = sqlx::query_scalar(
@@ -510,6 +626,7 @@ impl Validator {
     }
     
     /// Ensure validator exists in database, creating it if necessary
+    /// IMPORTANT: This function only creates new validators, never modifies existing ones
     async fn ensure_validator_exists(
         identity_key: &str,
         height: u64,
@@ -533,9 +650,23 @@ impl Validator {
             }
         };
         
-        // If validator doesn't exist, create a minimal record
+        // Only create validator if it doesn't exist - never overwrite existing validators
         if validator_exists == 0 {
             debug!("Creating new validator from event: {}", identity_key);
+            
+            // Determine state for new validator:
+            // - If state is explicitly provided (from state change events), use it
+            // - Otherwise, use UNSPECIFIED for validators discovered through non-state events
+            let validator_state = match state {
+                Some(s) if !s.is_empty() => {
+                    debug!("Creating new validator {} with explicit state: {}", identity_key, s);
+                    s
+                },
+                _ => {
+                    debug!("Creating new validator {} with UNSPECIFIED state (discovered through non-state event)", identity_key);
+                    "VALIDATOR_STATE_ENUM_UNSPECIFIED"
+                }
+            };
             
             // Create minimal validator with available data from the event
             match Self::from_event(
@@ -544,13 +675,14 @@ impl Validator {
                 }),
                 height,
                 timestamp,
-                state.unwrap_or(""), // Use state from event or empty
+                validator_state,
                 bonding_state.unwrap_or(""), // Use bonding state from event or empty
                 voting_power.unwrap_or(0), // Use voting power from event or 0
                 0.0, // Percentage will be calculated later
             ) {
                 Ok(validator) => {
-                    if let Err(e) = validator.insert_or_update(dbtx).await {
+                    // Use INSERT only (not insert_or_update) to avoid overwriting existing validators
+                    if let Err(e) = validator.insert_only(dbtx).await {
                         error!("Failed to insert new validator: {}", e);
                         return Err(anyhow::anyhow!("Failed to insert validator"));
                     }
@@ -560,6 +692,8 @@ impl Validator {
                     return Err(anyhow::anyhow!("Failed to create validator"));
                 }
             }
+        } else {
+            debug!("Validator {} already exists, skipping creation", identity_key);
         }
         
         Ok(())
@@ -584,36 +718,103 @@ impl Validator {
                         
                         match serde_json::from_str::<Value>(validator_json) {
                             Ok(validator_data) => {
-                                // Extract actual state from event if present
-                                let state = validator_data.get("state")
-                                    .and_then(|s| s.get("state"))
-                                    .and_then(|s| s.as_str());
+                                // Extract identity key to check if validator exists
+                                let identity_key = match validator_data["identityKey"]["ik"].as_str() {
+                                    Some(key) => key,
+                                    None => {
+                                        error!("EventValidatorDefinitionUpload missing identity key");
+                                        continue;
+                                    }
+                                };
                                 
-                                // Extract bonding state from event if present
-                                let bonding_state = validator_data.get("bondingState")
-                                    .and_then(|s| s.get("state"))
-                                    .and_then(|s| s.as_str());
+                                // Check if validator already exists
+                                let validator_exists: i64 = match sqlx::query_scalar(
+                                    "SELECT COUNT(*) FROM validators WHERE identity_key = $1"
+                                )
+                                .bind(identity_key)
+                                .fetch_one(dbtx.as_mut())
+                                .await {
+                                    Ok(count) => count,
+                                    Err(e) => {
+                                        error!("Failed to check if validator exists: {}", e);
+                                        continue;
+                                    }
+                                };
                                 
-                                // Create validator object with state values only if they're present in event
-                                // Otherwise, they'll be updated through state change events
-                                match Self::from_event(
-                                    &validator_data,
-                                    height,
-                                    timestamp,
-                                    state.unwrap_or(""),  // Empty string if not present, will be updated by events
-                                    bonding_state.unwrap_or(""),  // Empty string if not present, will be updated by events
-                                    0,         // initial voting power
-                                    0.0,       // initial voting power percentage
-                                ) {
-                                    Ok(validator) => {
-                                        if let Err(e) = validator.insert_or_update(dbtx).await {
-                                            error!("Failed to insert/update validator: {}", e);
-                                            // Continue processing other validators
+                                if validator_exists > 0 {
+                                    // Validator already exists - only update metadata, never change state
+                                    debug!("Updating metadata for existing validator: {}", identity_key);
+                                    
+                                    // Create validator object with metadata (dummy values for state/voting power)
+                                    match Self::from_event(
+                                        &validator_data,
+                                        height,
+                                        timestamp,
+                                        "dummy", // This won't be used since we're only updating metadata
+                                        "",      // This won't be used
+                                        0,        // This won't be used
+                                        0.0,      // This won't be used
+                                    ) {
+                                        Ok(validator) => {
+                                            // Only update metadata, preserve existing state and voting power
+                                            if let Err(e) = validator.update_metadata_only(dbtx).await {
+                                                error!("Failed to update validator metadata: {}", e);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to create validator for metadata update: {}", e);
                                         }
                                     }
-                                    Err(e) => {
-                                        error!("Failed to parse validator definition: {}", e);
-                                        // Continue processing other validators
+                                } else {
+                                    // New validator - create with proper initial state
+                                    debug!("Creating new validator from definition: {}", identity_key);
+                                    
+                                    // Extract actual state from event if present
+                                    let state = validator_data.get("state")
+                                        .and_then(|s| s.get("state"))
+                                        .and_then(|s| s.as_str());
+                                    
+                                    // Extract bonding state from event if present
+                                    let bonding_state = validator_data.get("bondingState")
+                                        .and_then(|s| s.get("state"))
+                                        .and_then(|s| s.as_str());
+                                    
+                                    // For new validators from definitions, use UNSPECIFIED only if no explicit state
+                                    let default_state = match state {
+                                        Some(s) if !s.is_empty() => s,
+                                        _ => "VALIDATOR_STATE_ENUM_UNSPECIFIED", // Only for new validators without explicit state
+                                    };
+                                    
+                                    match Self::from_event(
+                                        &validator_data,
+                                        height,
+                                        timestamp,
+                                        default_state,
+                                        bonding_state.unwrap_or(""),
+                                        0,         // initial voting power
+                                        0.0,       // initial voting power percentage
+                                    ) {
+                                        Ok(validator) => {
+                                            // Use insert_only to ensure we don't overwrite if it was created in the meantime
+                                            if let Err(e) = validator.insert_only(dbtx).await {
+                                                debug!("Validator {} was created concurrently, skipping: {}", identity_key, e);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to parse new validator definition: {}", e);
+                                        }
+                                    }
+                                }
+                                
+                                // Process funding streams if they exist (for both new and existing validators)
+                                if let Some(funding_streams) = validator_data.get("fundingStreams") {
+                                    if let Err(e) = ValidatorFundingStream::process_funding_streams(
+                                        identity_key,
+                                        funding_streams,
+                                        timestamp,
+                                        dbtx
+                                    ).await {
+                                        error!("Failed to process funding streams for validator {}: {}", identity_key, e);
                                     }
                                 }
                             },
@@ -746,9 +947,10 @@ impl Validator {
                                     if let Some(identity_key) = identity_data["ik"].as_str() {
                                         if let Some(voting_power_str) = voting_power_data["lo"].as_str() {
                                             match voting_power_str.parse::<i64>() {
-                                                Ok(voting_power) => {
+                                                Ok(raw_voting_power) => {
                                                     // Raw voting power is in microunits (UM)
-                                                    // We store the raw value for calculations but will display divided by 1,000,000
+                                                    // Convert to human-readable format by dividing by 1,000,000
+                                                    let voting_power = raw_voting_power / 1_000_000;
                                                     
                                                     // Ensure validator exists, creating if necessary
                                                     if let Err(e) = Self::ensure_validator_exists(
@@ -787,7 +989,7 @@ impl Validator {
                                                                 }
                                                                 
                                                                 // Also update the total_staked in the validator_staking_parameters table
-                                                                if let Err(e) = Self::update_total_staked(dbtx, total).await {
+                                                                if let Err(e) = Self::update_total_staked(dbtx).await {
                                                                     error!("Failed to update total_staked parameter: {}", e);
                                                                 }
                                                             }
@@ -1012,6 +1214,125 @@ impl Validator {
     
 }
 
+impl ValidatorFundingStream {
+    /// Create a new funding stream
+    pub fn new(
+        identity_key: String,
+        stream_type: String,
+        recipient_address: Option<String>,
+        rate_bps: i32,
+        timestamp: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            identity_key,
+            stream_type,
+            recipient_address,
+            rate_bps,
+            created_at: timestamp,
+            updated_at: timestamp,
+        }
+    }
+    
+    /// Insert or update a funding stream in the database
+    pub async fn insert_or_update(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
+        sqlx::query(
+            r"
+            INSERT INTO validator_funding_streams (
+                identity_key,
+                stream_type,
+                recipient_address,
+                rate_bps,
+                created_at,
+                updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6
+            )
+            ON CONFLICT (identity_key, stream_type, recipient_address) DO UPDATE SET
+                rate_bps = EXCLUDED.rate_bps,
+                updated_at = EXCLUDED.updated_at
+            ",
+        )
+        .bind(&self.identity_key)
+        .bind(&self.stream_type)
+        .bind(&self.recipient_address)
+        .bind(self.rate_bps)
+        .bind(self.created_at)
+        .bind(self.updated_at)
+        .execute(dbtx.as_mut())
+        .await?;
+        
+        Ok(())
+    }
+    
+    /// Process funding streams from validator data
+    pub async fn process_funding_streams(
+        identity_key: &str,
+        funding_streams_json: &Value,
+        timestamp: DateTime<Utc>,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        if let Some(funding_streams) = funding_streams_json.as_array() {
+            for stream in funding_streams {
+                // Handle toAddress type
+                if let Some(to_address) = stream.get("toAddress") {
+                    if let Some(address) = to_address.get("address").and_then(|a| a.as_str()) {
+                        if let Some(rate_bps) = to_address.get("rateBps").and_then(|r| r.as_i64()) {
+                            let funding_stream = Self::new(
+                                identity_key.to_string(),
+                                "toAddress".to_string(),
+                                Some(address.to_string()),
+                                rate_bps as i32,
+                                timestamp,
+                            );
+                            
+                            if let Err(e) = funding_stream.insert_or_update(dbtx).await {
+                                error!("Failed to insert funding stream for validator {}: {}", identity_key, e);
+                            }
+                        }
+                    }
+                }
+                
+                // Handle toCommunityPool type
+                if let Some(to_community_pool) = stream.get("toCommunityPool") {
+                    if let Some(rate_bps) = to_community_pool.get("rateBps").and_then(|r| r.as_i64()) {
+                        let funding_stream = Self::new(
+                            identity_key.to_string(),
+                            "toCommunityPool".to_string(),
+                            None,
+                            rate_bps as i32,
+                            timestamp,
+                        );
+                        
+                        if let Err(e) = funding_stream.insert_or_update(dbtx).await {
+                            error!("Failed to insert community pool funding stream for validator {}: {}", identity_key, e);
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Calculate total commission rate for a validator
+    pub async fn calculate_total_commission_rate(
+        identity_key: &str,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<f64> {
+        let total_rate_bps: Option<i64> = sqlx::query_scalar(
+            "SELECT SUM(rate_bps) FROM validator_funding_streams WHERE identity_key = $1"
+        )
+        .bind(identity_key)
+        .fetch_optional(dbtx.as_mut())
+        .await?;
+        
+        // Convert basis points to percentage (divide by 100)
+        let total_percentage = total_rate_bps.unwrap_or(0) as f64 / 100.0;
+        
+        Ok(total_percentage)
+    }
+}
+
 impl ValidatorParams {
     pub fn from_genesis_json() -> Result<Self> {
         let file = File::open("genesis.json")
@@ -1122,8 +1443,7 @@ impl ValidatorParams {
             .and_then(|penalty| penalty.as_str())
             .map(|s| s.parse::<i64>()) {
                 Some(Ok(penalty)) => {
-                    // The value is in basis points (1/100 of a percent)
-                    format!("{:.2}%", penalty as f64 / 100.0)
+                    format!("{:.2}%", penalty as f64 / 1_000_000.0)
                 },
                 _ => {
                     // We'll use an empty string to indicate this is not provided
@@ -1349,8 +1669,7 @@ impl ValidatorParams {
                             if let Some(val) = stake_params.get("slashingPenaltyDowntime").and_then(|v| v.as_str()) {
                                 match val.parse::<i64>() {
                                     Ok(penalty) => {
-                                        // The value is in basis points (1/100 of a percent)
-                                        let formatted = format!("{:.2}%", penalty as f64 / 100.0);
+                                        let formatted = format!("{:.2}%", penalty as f64 / 1_000_000.0);
                                         debug!("Parsed slashingPenaltyDowntime '{}' as '{}'", val, formatted);
                                         updates.push("slashing_penalty_downtime = $5");
                                         bindings.push(formatted);
