@@ -343,18 +343,12 @@ impl Explorer {
         tracing::debug!("Recording signed blocks for {} active validators at height {}", 
                       active_validators.len(), height);
         
-        // Record a signed block for each active validator
-        for identity_key in active_validators {
-            // We don't need to check for errors here since record_validator_block already handles errors
-            // and doesn't propagate them to avoid transaction aborts
-            let _ = validator::Validator::record_validator_block(
-                &identity_key,
-                height as i64,
-                timestamp,
-                true, // Marked as signed
-                dbtx,
-            ).await;
-        }
+        let validator_records: Vec<(String, i64, DateTime<Utc>, bool)> = active_validators
+            .into_iter()
+            .map(|identity_key| (identity_key, height as i64, timestamp, true))
+            .collect();
+        
+        let _ = validator::Validator::record_validator_blocks_bulk(&validator_records, dbtx).await;
         
         Ok(())
     }
@@ -426,6 +420,8 @@ impl AppView for Explorer {
                 ibc_status TEXT,
                 ibc_direction TEXT,
                 ibc_sequence TEXT,
+                -- Validator field
+                validator_identity_key TEXT,
                 FOREIGN KEY (block_height) REFERENCES explorer_block_details(height)
                     DEFERRABLE INITIALLY DEFERRED
             )
@@ -447,6 +443,15 @@ impl AppView for Explorer {
             r"
             CREATE INDEX IF NOT EXISTS idx_explorer_transactions_timestamp
             ON explorer_transactions(timestamp DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_explorer_transactions_validator_identity_key
+            ON explorer_transactions(validator_identity_key)
             ",
         )
         .execute(dbtx.as_mut())
@@ -486,7 +491,8 @@ impl AppView for Explorer {
                 t.ibc_client_id,
                 t.ibc_status,
                 t.ibc_direction,
-                t.ibc_sequence
+                t.ibc_sequence,
+                t.validator_identity_key
             FROM
                 explorer_transactions t
             ORDER BY
