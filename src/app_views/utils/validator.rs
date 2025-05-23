@@ -766,7 +766,7 @@ impl Validator {
                 r"
                 UPDATE validators
                 SET 
-                    voting_power_percentage = (voting_power::float8 / $1::float8) * 100.0
+                    voting_power_percentage = ROUND(((voting_power::float8 / $1::float8) * 100.0)::numeric, 2)
                 WHERE
                     state = '{}'
                 ",
