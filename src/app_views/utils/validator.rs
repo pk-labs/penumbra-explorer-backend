@@ -7,6 +7,7 @@ use std::io::Read;
 use std::collections::HashSet;
 use tracing::{debug, info, error};
 use sqlx::types::chrono::{DateTime, Utc};
+use crate::parsing::identity_key_to_validator_address;
 
 /// Performance optimization: Cache for validator existence checks within a transaction
 #[derive(Debug, Default)]
@@ -133,6 +134,7 @@ pub struct ValidatorFundingStream {
 #[derive(Debug)]
 pub struct Validator {
     pub identity_key: String,
+    pub decoded_address: Option<String>,
     pub name: Option<String>,
     pub website: Option<String>,
     pub description: Option<String>,
@@ -252,6 +254,8 @@ impl Validator {
             .ok_or_else(|| anyhow::anyhow!("Missing or invalid identity key"))?
             .to_string();
         
+        let decoded_address = identity_key_to_validator_address(&identity_key).ok();
+        
         let name = event_json["name"].as_str().map(String::from);
         let website = event_json["website"].as_str().map(String::from);
         let description = event_json["description"].as_str().map(String::from);
@@ -291,6 +295,7 @@ impl Validator {
         
         Ok(Self {
             identity_key,
+            decoded_address,
             name,
             website,
             description,
@@ -312,6 +317,7 @@ impl Validator {
             r"
             INSERT INTO validators (
                 identity_key,
+                decoded_address,
                 name,
                 website,
                 description,
@@ -325,11 +331,12 @@ impl Validator {
                 first_seen_time,
                 last_updated
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
             )
             ",
         )
         .bind(&self.identity_key)
+        .bind(&self.decoded_address)
         .bind(&self.name)
         .bind(&self.website)
         .bind(&self.description)
@@ -354,6 +361,7 @@ impl Validator {
             r"
             INSERT INTO validators (
                 identity_key,
+                decoded_address,
                 name,
                 website,
                 description,
@@ -367,9 +375,10 @@ impl Validator {
                 first_seen_time,
                 last_updated
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
             )
             ON CONFLICT (identity_key) DO UPDATE SET
+                decoded_address = COALESCE(validators.decoded_address, EXCLUDED.decoded_address),
                 name = EXCLUDED.name,
                 website = EXCLUDED.website,
                 description = EXCLUDED.description,
@@ -383,6 +392,7 @@ impl Validator {
             ",
         )
         .bind(&self.identity_key)
+        .bind(&self.decoded_address)
         .bind(&self.name)
         .bind(&self.website)
         .bind(&self.description)
