@@ -271,9 +271,9 @@ impl Validator {
                   identity_key, height, timestamp);
             (None, timestamp)
         } else if default_state.contains("ACTIVE") {
-            debug!("Creating event ACTIVE validator {} at height {} - time should have been set when DEFINED",
+            debug!("Creating event ACTIVE validator {} at height {} - using current timestamp as fallback",
                   identity_key, height);
-            (Some(height as i64), DateTime::<Utc>::from_timestamp(0, 0).unwrap()) // Time placeholder
+            (Some(height as i64), timestamp) // Use current timestamp as fallback for edge case
         } else {
             debug!("Creating validator {} with state {} - height will be NULL until ACTIVE",
                   identity_key, default_state);
@@ -284,7 +284,7 @@ impl Validator {
               identity_key, name, consensus_key);
         
         let bonding_state = if default_bonding_state.is_empty() {
-            None
+            Some("BONDING_STATE_ENUM_UNSPECIFIED".to_string())
         } else {
             Some(default_bonding_state.to_string())
         };
@@ -541,12 +541,6 @@ impl Validator {
         dbtx: &mut PgTransaction<'_>,
         timestamp: DateTime<Utc>,
     ) -> Result<()> {
-        // Only proceed if bonding_state is not empty
-        if bonding_state.is_empty() {
-            debug!("Empty bonding state received for validator {}, skipping update", identity_key);
-            return Ok(());
-        }
-        
         debug!("Updating bonding state for validator {} to {}", identity_key, bonding_state);
         
         sqlx::query(
