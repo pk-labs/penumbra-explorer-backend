@@ -634,6 +634,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             r"
             CREATE TABLE IF NOT EXISTS validators (
                 identity_key TEXT PRIMARY KEY,
+                decoded_address TEXT,
                 name TEXT,
                 website TEXT,
                 description TEXT,
@@ -755,6 +756,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             )
             SELECT 
                 v.identity_key,
+                v.decoded_address,
                 COALESCE(v.name, '') as name,
                 v.website,
                 v.description,
