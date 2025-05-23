@@ -256,8 +256,8 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
         sqlx::query(
             r"
             INSERT INTO explorer_transactions
-            (tx_hash, block_height, timestamp, fee_amount, chain_id, raw_data, raw_json)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (tx_hash, block_height, timestamp, fee_amount, chain_id, raw_data, raw_json, validator_identity_key)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
             ",
         )
         .bind(meta.tx_hash.as_ref())
