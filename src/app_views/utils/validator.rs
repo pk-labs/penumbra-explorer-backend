@@ -107,6 +107,7 @@ impl VotingPowerBatch {
 }
 
 #[derive(Debug)]
+#[allow(clippy::module_name_repetitions)]
 pub struct ValidatorParams {
     pub chain_id: String,
     pub active_validator_limit: i64,
@@ -121,6 +122,7 @@ pub struct ValidatorParams {
 
 /// Represents a validator funding stream
 #[derive(Debug)]
+#[allow(clippy::module_name_repetitions)]
 pub struct ValidatorFundingStream {
     pub identity_key: String,
     pub stream_type: String,
@@ -151,6 +153,7 @@ pub struct Validator {
 
 impl Validator {
     /// Helper function to find an attribute value in an event
+    #[must_use]
     pub fn find_attribute_value<'a>(event: &'a ContextualizedEvent<'_>, key: &str) -> Option<&'a str> {
         for attr in &event.event.attributes {
             if let Ok(attr_key) = attr.key_str() {
@@ -204,6 +207,10 @@ impl Validator {
     }
 
     /// Link a transaction hash to a validator identity key
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn link_transaction_to_validator(
         tx_hash: &[u8],
         identity_key: &str,
@@ -240,6 +247,14 @@ impl Validator {
     }
     
     /// Parse a validator definition from an event
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if required fields are missing from the event data.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if `DateTime::from_timestamp(0, 0)` fails, which should never happen.
     pub fn from_event(
         event_json: &Value, 
         height: u64,
@@ -269,7 +284,7 @@ impl Validator {
         let (first_seen_height, first_seen_time) = if default_state.contains("ACTIVE") && height == 1 {
             debug!("Creating genesis ACTIVE validator {} at height {}, timestamp {}",
                   identity_key, height, timestamp);
-            (Some(height as i64), timestamp)
+            (Some(i64::try_from(height).unwrap_or(i64::MAX)), timestamp)
         } else if default_state.contains("DEFINED") {
             debug!("Creating DEFINED validator {} at height {}, timestamp {} - height will be set when ACTIVE",
                   identity_key, height, timestamp);
@@ -277,7 +292,7 @@ impl Validator {
         } else if default_state.contains("ACTIVE") {
             debug!("Creating event ACTIVE validator {} at height {} - using current timestamp as fallback",
                   identity_key, height);
-            (Some(height as i64), timestamp)
+            (Some(i64::try_from(height).unwrap_or(i64::MAX)), timestamp)
         } else {
             debug!("Creating validator {} with state {} - height will be NULL until ACTIVE",
                   identity_key, default_state);
@@ -311,7 +326,11 @@ impl Validator {
         })
     }
     
-    /// Insert only - fails if validator already exists (for ensure_validator_exists)
+    /// Insert only - fails if validator already exists (for `ensure_validator_exists`)
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails or if the validator already exists.
     pub async fn insert_only(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
         sqlx::query(
             r"
@@ -356,6 +375,10 @@ impl Validator {
     }
     
     /// Insert or update a validator in the database
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn insert_or_update(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
         sqlx::query(
             r"
@@ -412,6 +435,10 @@ impl Validator {
     }
     
     /// Update only metadata (name, website, description, etc.) without changing state or voting power
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn update_metadata_only(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
         sqlx::query(
             r"
@@ -441,6 +468,10 @@ impl Validator {
     }
     
     /// Update validator state
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn update_state(
         identity_key: &str,
         state: &str,
@@ -511,7 +542,7 @@ impl Validator {
                         )
                         .bind(state)
                         .bind(timestamp)
-                        .bind(height as i64)
+                        .bind(i64::try_from(height).unwrap_or(i64::MAX))
                         .bind(identity_key)
                         .execute(dbtx.as_mut())
                         .await?;
@@ -545,6 +576,10 @@ impl Validator {
     }
     
     /// Update validator bonding state
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn update_bonding_state(
         identity_key: &str,
         bonding_state: &str,
@@ -573,6 +608,10 @@ impl Validator {
     }
     
     /// Update validator voting power
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn update_voting_power(
         identity_key: &str,
         voting_power: i64,
@@ -602,6 +641,10 @@ impl Validator {
     }
     
     /// Performance optimization: Bulk record block participation for multiple validators
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn record_validator_blocks_bulk(
         validator_records: &[(String, i64, DateTime<Utc>, bool)],
         dbtx: &mut PgTransaction<'_>,
@@ -649,6 +692,10 @@ impl Validator {
     }
 
     /// Record block participation for a validator
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn record_validator_block(
         identity_key: &str,
         block_height: i64,
@@ -717,6 +764,10 @@ impl Validator {
     }
     
     /// Calculate total voting power across ACTIVE validators only
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn calculate_total_voting_power(dbtx: &mut PgTransaction<'_>) -> Result<i64> {
         let active_state: Option<String> = sqlx::query_scalar(
             "SELECT DISTINCT state FROM validators WHERE state LIKE '%ACTIVE%' LIMIT 1"
@@ -727,7 +778,7 @@ impl Validator {
         let result = match active_state {
             Some(state) => {
                 sqlx::query_scalar::<_, i64>(
-                    &format!("SELECT COALESCE(SUM(voting_power)::BIGINT, 0) FROM validators WHERE state = '{}'", state)
+                    &format!("SELECT COALESCE(SUM(voting_power)::BIGINT, 0) FROM validators WHERE state = '{state}'")
                 )
                 .fetch_one(dbtx.as_mut())
                 .await?
@@ -739,6 +790,10 @@ impl Validator {
     }
     
     /// Update voting power percentages for ACTIVE validators only (set others to 0%)
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn update_all_voting_power_percentages(dbtx: &mut PgTransaction<'_>) -> Result<()> {
         let total_voting_power = Self::calculate_total_voting_power(dbtx).await?;
         
@@ -759,9 +814,8 @@ impl Validator {
                 SET 
                     voting_power_percentage = ROUND(((voting_power::float8 / $1::float8) * 100.0)::numeric, 2)
                 WHERE
-                    state = '{}'
-                ",
-                state
+                    state = '{state}'
+                "
             );
             
             sqlx::query(&query)
@@ -775,9 +829,8 @@ impl Validator {
                 SET 
                     voting_power_percentage = 0.0
                 WHERE
-                    state != '{}'
-                ",
-                state
+                    state != '{state}'
+                "
             );
             
             sqlx::query(&clear_inactive_query)
@@ -788,11 +841,15 @@ impl Validator {
         Ok(())
     }
     
-    /// Update total_staked in validator_staking_parameters with sum of ACTIVE validators only
+    /// Update `total_staked` in `validator_staking_parameters` with sum of ACTIVE validators only
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn update_total_staked(dbtx: &mut PgTransaction<'_>) -> Result<()> {
         let total_active_voting_power = Self::calculate_total_voting_power(dbtx).await?;
         
-        let formatted_total = format!("{} UM", total_active_voting_power);
+        let formatted_total = format!("{total_active_voting_power} UM");
         
         let chain_id: Option<String> = sqlx::query_scalar(
             "SELECT chain_id FROM validator_staking_parameters LIMIT 1"
@@ -819,6 +876,7 @@ impl Validator {
     
     /// Ensure validator exists in database, creating it if necessary
     /// IMPORTANT: This function only creates new validators, never modifies existing ones
+    #[allow(clippy::too_many_arguments)]
     async fn ensure_validator_exists(
         identity_key: &str,
         height: u64,
@@ -837,7 +895,9 @@ impl Validator {
             }
         };
         
-        if !validator_exists {
+        if validator_exists {
+            debug!("Validator {} already exists, skipping creation", identity_key);
+        } else {
             debug!("Creating new validator from event: {}", identity_key);
 
             let validator_state = match state {
@@ -875,20 +935,25 @@ impl Validator {
                     return Err(anyhow::anyhow!("Failed to create validator"));
                 }
             }
-        } else {
-            debug!("Validator {} already exists, skipping creation", identity_key);
         }
         
         Ok(())
     }
 
     /// Process validator-related events
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn process_events(
         dbtx: &mut PgTransaction<'_>,
         events: &[ContextualizedEvent<'_>],
         height: u64,
         timestamp: DateTime<Utc>,
     ) -> Result<()> {
+        // Log the timestamp we're using for debugging
+        debug!("Processing validator events for block {} with timestamp {}", height, timestamp);
         let mut existence_cache = ValidatorExistenceCache::default();
         let mut voting_power_batch = VotingPowerBatch::default();
         
@@ -897,7 +962,7 @@ impl Validator {
         for event in events {
             if let Some(identity_key) = Self::extract_identity_key_from_event(event) {
                 if let Some(tx_hash_bytes) = event.tx_hash() {
-                    let tx_hash_array: [u8; 32] = tx_hash_bytes.try_into().unwrap_or([0u8; 32]);
+                    let tx_hash_array = tx_hash_bytes;
                     tx_validator_mappings.push((tx_hash_array, identity_key.clone()));
                     debug!("Added transaction mapping: {} -> {}", 
                            crate::parsing::encode_to_hex(tx_hash_array), identity_key);
@@ -913,12 +978,9 @@ impl Validator {
                         
                         match serde_json::from_str::<Value>(validator_json) {
                             Ok(validator_data) => {
-                                let identity_key = match validator_data["identityKey"]["ik"].as_str() {
-                                    Some(key) => key,
-                                    None => {
-                                        error!("EventValidatorDefinitionUpload missing identity key");
-                                        continue;
-                                    }
+                                let Some(identity_key) = validator_data["identityKey"]["ik"].as_str() else {
+                                    error!("EventValidatorDefinitionUpload missing identity key");
+                                    continue;
                                 };
                                 
                                 let validator_exists = match existence_cache.validator_exists(identity_key, dbtx).await {
@@ -1178,7 +1240,7 @@ impl Validator {
                                     
                                     if let Err(e) = Self::record_validator_block(
                                         identity_key, 
-                                        height as i64, 
+                                        i64::try_from(height).unwrap_or(i64::MAX), 
                                         timestamp, 
                                         false, 
                                         dbtx
@@ -1350,6 +1412,7 @@ impl Validator {
 
 impl ValidatorFundingStream {
     /// Create a new funding stream
+    #[must_use]
     pub fn new(
         identity_key: String,
         stream_type: String,
@@ -1368,6 +1431,10 @@ impl ValidatorFundingStream {
     }
     
     /// Insert or update a funding stream in the database
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn insert_or_update(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
         sqlx::query(
             r"
@@ -1399,6 +1466,10 @@ impl ValidatorFundingStream {
     }
     
     /// Process funding streams from validator data
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn process_funding_streams(
         identity_key: &str,
         funding_streams_json: &Value,
@@ -1409,12 +1480,12 @@ impl ValidatorFundingStream {
             for stream in funding_streams {
                 if let Some(to_address) = stream.get("toAddress") {
                     if let Some(address) = to_address.get("address").and_then(|a| a.as_str()) {
-                        if let Some(rate_bps) = to_address.get("rateBps").and_then(|r| r.as_i64()) {
+                        if let Some(rate_bps) = to_address.get("rateBps").and_then(serde_json::Value::as_i64) {
                             let funding_stream = Self::new(
                                 identity_key.to_string(),
                                 "toAddress".to_string(),
                                 Some(address.to_string()),
-                                rate_bps as i32,
+                                i32::try_from(rate_bps).unwrap_or(i32::MAX),
                                 timestamp,
                             );
                             
@@ -1426,12 +1497,12 @@ impl ValidatorFundingStream {
                 }
                 
                 if let Some(to_community_pool) = stream.get("toCommunityPool") {
-                    if let Some(rate_bps) = to_community_pool.get("rateBps").and_then(|r| r.as_i64()) {
+                    if let Some(rate_bps) = to_community_pool.get("rateBps").and_then(serde_json::Value::as_i64) {
                         let funding_stream = Self::new(
                             identity_key.to_string(),
                             "toCommunityPool".to_string(),
                             None,
-                            rate_bps as i32,
+                            i32::try_from(rate_bps).unwrap_or(i32::MAX),
                             timestamp,
                         );
                         
@@ -1447,6 +1518,10 @@ impl ValidatorFundingStream {
     }
     
     /// Calculate total commission rate for a validator
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn calculate_total_commission_rate(
         identity_key: &str,
         dbtx: &mut PgTransaction<'_>,
@@ -1458,13 +1533,18 @@ impl ValidatorFundingStream {
         .fetch_optional(dbtx.as_mut())
         .await?;
         
-        let total_percentage = total_rate_bps.unwrap_or(0) as f64 / 100.0;
+        let total_percentage = f64::from(i32::try_from(total_rate_bps.unwrap_or(0)).unwrap_or(0)) / 100.0;
         
         Ok(total_percentage)
     }
 }
 
 impl ValidatorParams {
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the genesis.json file cannot be read or parsed.
+    #[allow(clippy::too_many_lines)]
     pub fn from_genesis_json() -> Result<Self> {
         let file = File::open("genesis.json")
             .map_err(|e| {
@@ -1485,113 +1565,90 @@ impl ValidatorParams {
                 anyhow::anyhow!("Failed to parse genesis.json: {}", e)
             })?;
         
-        let chain_id = match genesis.get("chain_id").and_then(|v| v.as_str()) {
-            Some(id) => id.to_string(),
-            None => {
-                match genesis.get("app_state")
+        let chain_id = if let Some(id) = genesis.get("chain_id").and_then(|v| v.as_str()) {
+            id.to_string()
+        } else if let Some(id) = genesis.get("app_state")
                     .and_then(|app| app.get("genesisContent"))
                     .and_then(|content| content.get("chainId"))
                     .and_then(|id| id.as_str()) {
-                        Some(id) => id.to_string(),
-                        None => {
-                            tracing::error!("Failed to find chain_id in genesis.json");
-                            return Err(anyhow::anyhow!("Missing chain_id in genesis.json"));
-                        }
-                    }
-            }
+            id.to_string()
+        } else {
+            tracing::error!("Failed to find chain_id in genesis.json");
+            return Err(anyhow::anyhow!("Missing chain_id in genesis.json"));
         };
         
         tracing::info!("Found chain_id in genesis.json: {}", chain_id);
         
-        let stake_params = match genesis.get("app_state")
+        let Some(stake_params) = genesis.get("app_state")
             .and_then(|app| app.get("genesisContent"))
             .and_then(|content| content.get("stakeContent"))
-            .and_then(|stake| stake.get("stakeParams")) {
-                Some(params) => params,
-                None => {
-                    tracing::error!("Failed to find stakeParams in genesis.json");
-                    return Err(anyhow::anyhow!("Missing stakeParams in genesis.json"));
-                }
+            .and_then(|stake| stake.get("stakeParams")) else {
+                tracing::error!("Failed to find stakeParams in genesis.json");
+                return Err(anyhow::anyhow!("Missing stakeParams in genesis.json"));
             };
         
-        let active_validator_limit = match stake_params.get("activeValidatorLimit")
+        let Some(Ok(active_validator_limit)) = stake_params.get("activeValidatorLimit")
             .and_then(|limit| limit.as_str())
-            .map(|s| s.parse::<i64>()) {
-                Some(Ok(limit)) => limit,
-                _ => {
-                    tracing::error!("Failed to parse activeValidatorLimit in genesis.json");
-                    return Err(anyhow::anyhow!("Missing or invalid activeValidatorLimit in genesis.json"));
-                }
+            .map(str::parse::<i64>) else {
+                tracing::error!("Failed to parse activeValidatorLimit in genesis.json");
+                return Err(anyhow::anyhow!("Missing or invalid activeValidatorLimit in genesis.json"));
             };
         
-        let min_validator_stake = match stake_params.get("minValidatorStake")
+        let min_validator_stake = if let Some(Ok(raw_val)) = stake_params.get("minValidatorStake")
             .and_then(|stake| stake.get("lo"))
             .and_then(|lo| lo.as_str())
-            .map(|s| s.parse::<i64>()) {
-                Some(Ok(raw_val)) => format!("{} UM", raw_val / 1_000_000),
-                _ => {
-                    tracing::error!("Failed to parse minValidatorStake.lo in genesis.json");
-                    return Err(anyhow::anyhow!("Missing or invalid minValidatorStake.lo in genesis.json"));
-                }
+            .map(str::parse::<i64>) {
+                format!("{} UM", raw_val / 1_000_000)
+            } else {
+                tracing::error!("Failed to parse minValidatorStake.lo in genesis.json");
+                return Err(anyhow::anyhow!("Missing or invalid minValidatorStake.lo in genesis.json"));
             };
 
-        let total_staked = "".to_string();
+        let total_staked = String::new();
         
-        let uptime_blocks_window = match stake_params.get("signedBlocksWindowLen")
+        let Some(Ok(uptime_blocks_window)) = stake_params.get("signedBlocksWindowLen")
             .and_then(|window| window.as_str())
-            .map(|s| s.parse::<i64>()) {
-                Some(Ok(window)) => window,
-                _ => {
-                    tracing::error!("Failed to parse signedBlocksWindowLen in genesis.json");
-                    return Err(anyhow::anyhow!("Missing or invalid signedBlocksWindowLen in genesis.json"));
-                }
+            .map(str::parse::<i64>) else {
+                tracing::error!("Failed to parse signedBlocksWindowLen in genesis.json");
+                return Err(anyhow::anyhow!("Missing or invalid signedBlocksWindowLen in genesis.json"));
             };
         
-        let uptime_min_required = match stake_params.get("missedBlocksMaximum")
+        let uptime_min_required = if let Some(Ok(missed_max)) = stake_params.get("missedBlocksMaximum")
             .and_then(|max| max.as_str())
-            .map(|s| s.parse::<i64>()) {
-                Some(Ok(missed_max)) => {
-                    let min_percent = 100.0 * (uptime_blocks_window - missed_max) as f64 / uptime_blocks_window as f64;
-                    format!("{:.2}%", min_percent)
-                },
-                _ => {
-                    tracing::error!("Failed to parse missedBlocksMaximum in genesis.json");
-                    return Err(anyhow::anyhow!("Missing or invalid missedBlocksMaximum in genesis.json"));
-                }
+            .map(str::parse::<i64>) {
+                let min_percent = 100.0 * f64::from(i32::try_from(uptime_blocks_window - missed_max).unwrap_or(0)) / f64::from(i32::try_from(uptime_blocks_window).unwrap_or(1));
+                format!("{min_percent:.2}%")
+            } else {
+                tracing::error!("Failed to parse missedBlocksMaximum in genesis.json");
+                return Err(anyhow::anyhow!("Missing or invalid missedBlocksMaximum in genesis.json"));
             };
         
-        let slashing_penalty_downtime = match stake_params.get("slashingPenaltyDowntime")
+        let slashing_penalty_downtime = if let Some(Ok(penalty)) = stake_params.get("slashingPenaltyDowntime")
             .and_then(|penalty| penalty.as_str())
-            .map(|s| s.parse::<i64>()) {
-                Some(Ok(penalty)) => {
-                    format!("{:.2}%", penalty as f64 / 1_000_000.0)
-                },
-                _ => {
-                    tracing::warn!("slashingPenaltyDowntime not found in genesis.json");
-                    "".to_string()
-                }
+            .map(str::parse::<i64>) {
+                let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
+                format!("{penalty_float:.2}%")
+            } else {
+                tracing::warn!("slashingPenaltyDowntime not found in genesis.json");
+                String::new()
             };
         
-        let slashing_penalty_misbehavior = match stake_params.get("slashingPenaltyMisbehavior")
+        let slashing_penalty_misbehavior = if let Some(Ok(penalty)) = stake_params.get("slashingPenaltyMisbehavior")
             .and_then(|penalty| penalty.as_str())
-            .map(|s| s.parse::<i64>()) {
-                Some(Ok(penalty)) => {
-                    format!("{:.2}%", penalty as f64 / 1_000_000.0)
-                },
-                _ => {
-                    tracing::error!("Failed to parse slashingPenaltyMisbehavior in genesis.json");
-                    return Err(anyhow::anyhow!("Missing or invalid slashingPenaltyMisbehavior in genesis.json"));
-                }
+            .map(str::parse::<i64>) {
+                let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
+                format!("{penalty_float:.2}%")
+            } else {
+                tracing::error!("Failed to parse slashingPenaltyMisbehavior in genesis.json");
+                return Err(anyhow::anyhow!("Missing or invalid slashingPenaltyMisbehavior in genesis.json"));
             };
         
-        let unbonding_delay = match stake_params.get("unbondingDelay")
-            .and_then(|delay| delay.as_str()) {
-                Some(delay) => format!("{} blocks", delay),
-                None => {
-                    tracing::error!("Failed to find unbondingDelay in genesis.json");
-                    return Err(anyhow::anyhow!("Missing unbondingDelay in genesis.json"));
-                }
+        let Some(delay) = stake_params.get("unbondingDelay")
+            .and_then(|delay| delay.as_str()) else {
+                tracing::error!("Failed to find unbondingDelay in genesis.json");
+                return Err(anyhow::anyhow!("Missing unbondingDelay in genesis.json"));
             };
+        let unbonding_delay = format!("{delay} blocks");
         
         Ok(Self {
             chain_id,
@@ -1606,6 +1663,11 @@ impl ValidatorParams {
         })
     }
 
+    /// Initialize the validator staking parameters table
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
     pub async fn initialize_table(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
         sqlx::query(
             r"
@@ -1647,6 +1709,7 @@ impl ValidatorParams {
     }
     
     /// Helper function to find an attribute value in an event
+    #[must_use]
     pub fn find_attribute_value<'a>(event: &'a ContextualizedEvent<'_>, key: &str) -> Option<&'a str> {
         for attr in &event.event.attributes {
             if let Ok(attr_key) = attr.key_str() {
@@ -1660,7 +1723,12 @@ impl ValidatorParams {
         None
     }
     
-    /// Process validator parameter changes from EventAppParametersChange events
+    /// Process validator parameter changes from `EventAppParametersChange` events
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database operation fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn process_events(
         dbtx: &mut PgTransaction<'_>,
         events: &[ContextualizedEvent<'_>],
@@ -1678,20 +1746,20 @@ impl ValidatorParams {
                 return Ok(());
             }
         };
-        
+
         if table_exists == 0 {
             debug!("validator_staking_parameters table does not exist yet, skipping parameters update");
             return Ok(());
         }
-        
+
         for event in events {
             if event.event.kind == "penumbra.core.app.v1.EventAppParametersChange" {
                 debug!("Found EventAppParametersChange event at height {}", height);
-                
+
                 match Self::find_attribute_value(event, "newParameters") {
                     Some(params_json) => {
                         debug!("Processing parameter changes: {}", params_json);
-                        
+
                         let params: Value = match serde_json::from_str(params_json) {
                             Ok(p) => p,
                             Err(e) => {
@@ -1699,14 +1767,12 @@ impl ValidatorParams {
                                 continue;
                             }
                         };
-                        
-                        let chain_id = match params.get("chainId").and_then(|id| id.as_str()) {
-                            Some(id) => id.to_string(),
-                            None => {
-                                error!("Could not find chainId in EventAppParametersChange");
-                                continue;
-                            }
+
+                        let Some(id) = params.get("chainId").and_then(|id| id.as_str()) else {
+                            error!("Could not find chainId in EventAppParametersChange");
+                            continue;
                         };
+                        let chain_id = id.to_string();
                         
                         if let Some(stake_params) = params.get("stakeParams") {
                             let mut updates = Vec::new();
@@ -1761,8 +1827,8 @@ impl ValidatorParams {
                                         if let Some(missed) = stake_params.get("missedBlocksMaximum").and_then(|v| v.as_str()) {
                                             match missed.parse::<i64>() {
                                                 Ok(missed_max) => {
-                                                    let min_percent = 100.0 * (window - missed_max) as f64 / window as f64;
-                                                    let formatted = format!("{:.2}%", min_percent);
+                                                    let min_percent = 100.0 * f64::from(i32::try_from(window - missed_max).unwrap_or(0)) / f64::from(i32::try_from(window).unwrap_or(1));
+                                                    let formatted = format!("{min_percent:.2}%");
                                                     updates.push("uptime_min_required = $4");
                                                     bindings.push(formatted);
                                                 },
@@ -1781,7 +1847,8 @@ impl ValidatorParams {
                             if let Some(val) = stake_params.get("slashingPenaltyDowntime").and_then(|v| v.as_str()) {
                                 match val.parse::<i64>() {
                                     Ok(penalty) => {
-                                        let formatted = format!("{:.2}%", penalty as f64 / 1_000_000.0);
+                                        let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
+                                        let formatted = format!("{penalty_float:.2}%");
                                         debug!("Parsed slashingPenaltyDowntime '{}' as '{}'", val, formatted);
                                         updates.push("slashing_penalty_downtime = $5");
                                         bindings.push(formatted);
@@ -1795,7 +1862,8 @@ impl ValidatorParams {
                             if let Some(val) = stake_params.get("slashingPenaltyMisbehavior").and_then(|v| v.as_str()) {
                                 match val.parse::<i64>() {
                                     Ok(penalty) => {
-                                        let formatted = format!("{:.2}%", penalty as f64 / 1_000_000.0);
+                                        let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
+                                        let formatted = format!("{penalty_float:.2}%");
                                         updates.push("slashing_penalty_misbehavior = $6");
                                         bindings.push(formatted);
                                     },
@@ -1806,7 +1874,7 @@ impl ValidatorParams {
                             }
                             
                             if let Some(val) = stake_params.get("unbondingDelay").and_then(|v| v.as_str()) {
-                                let formatted = format!("{} blocks", val);
+                                let formatted = format!("{val} blocks");
                                 updates.push("unbonding_delay = $7");
                                 bindings.push(formatted);
                             }
@@ -1832,8 +1900,7 @@ impl ValidatorParams {
                                 
                                 let update_str = updates.join(", ");
                                 let query = format!(
-                                    "UPDATE validator_staking_parameters SET {} WHERE chain_id = $8",
-                                    update_str
+                                    "UPDATE validator_staking_parameters SET {update_str} WHERE chain_id = $8"
                                 );
                                 
                                 info!("Updating validator staking parameters for chain_id = {}", chain_id);

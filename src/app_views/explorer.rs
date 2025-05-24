@@ -79,11 +79,9 @@ impl Explorer {
         
         let genesis = genesis.unwrap();
         
-        // Try to get the chain_id from the top level first
         let chain_id = genesis["chain_id"].as_str().map(String::from);
         
         if chain_id.is_none() {
-            // Fallback to app_state.genesisContent.chainId (the expected format in Penumbra genesis)
             let app_chain_id = genesis["app_state"]["genesisContent"]["chainId"].as_str().map(String::from);
             
             if app_chain_id.is_none() {
@@ -101,11 +99,11 @@ impl Explorer {
     }
     
     /// Initialize validators from genesis.json
+    #[allow(clippy::too_many_lines)]
     async fn initialize_validators_from_genesis(
         &self,
         dbtx: &mut PgTransaction<'_>,
     ) -> Result<(), anyhow::Error> {
-        // Check if validators already exist in the database
         let validator_count: i64 = match sqlx::query_scalar("SELECT COUNT(*) FROM validators")
             .fetch_one(dbtx.as_mut())
             .await {
@@ -121,7 +119,6 @@ impl Explorer {
             return Ok(());
         }
         
-        // Open and read the genesis file
         let file = match File::open("genesis.json") {
             Ok(f) => f,
             Err(e) => {
@@ -136,7 +133,6 @@ impl Explorer {
             return Err(anyhow::anyhow!("Failed to read genesis.json: {}", e));
         }
         
-        // Parse genesis JSON
         let genesis: serde_json::Value = match serde_json::from_str(&contents) {
             Ok(v) => v,
             Err(e) => {
@@ -145,13 +141,9 @@ impl Explorer {
             }
         };
         
-        // Extract validators from the genesis file
-        let genesis_time = match genesis["genesis_time"].as_str() {
-            Some(time) => time,
-            None => {
-                tracing::error!("Missing genesis_time in genesis.json");
-                return Err(anyhow::anyhow!("Missing genesis_time in genesis.json"));
-            }
+        let Some(genesis_time) = genesis["genesis_time"].as_str() else {
+            tracing::error!("Missing genesis_time in genesis.json");
+            return Err(anyhow::anyhow!("Missing genesis_time in genesis.json"));
         };
             
         let timestamp = match chrono::DateTime::parse_from_rfc3339(genesis_time) {
@@ -162,17 +154,13 @@ impl Explorer {
             }
         };
         
-        // Get validators from app_state.genesisContent.stakeContent.validators
-        let validators = match genesis.get("app_state")
+        let Some(validators) = genesis.get("app_state")
             .and_then(|app_state| app_state.get("genesisContent"))
             .and_then(|content| content.get("stakeContent"))
             .and_then(|stake| stake.get("validators"))
-            .and_then(|vals| vals.as_array()) {
-                Some(v) => v,
-                None => {
-                    tracing::warn!("No validators found in genesis.json structure");
-                    return Ok(());
-                }
+            .and_then(|vals| vals.as_array()) else {
+                tracing::warn!("No validators found in genesis.json structure");
+                return Ok(());
             };
         
         if validators.is_empty() {
@@ -181,19 +169,13 @@ impl Explorer {
         }
         
         tracing::info!("Found {} validators in genesis.json", validators.len());
-        
-        // Don't set any voting power initially
-        // All validators start with 0 voting power and 0% until the events update them
-        
-        // Process each validator
+
         let mut successful_count = 0;
         let mut failed_count = 0;
         
         for (i, validator_data) in validators.iter().enumerate() {
-            // Get the validator name for logging if available
             let validator_name = validator_data["name"].as_str().unwrap_or("unknown");
             
-            // Check validator identity key - this is the only truly required field
             if validator_data.get("identityKey")
                 .and_then(|key| key.get("ik"))
                 .and_then(|ik| ik.as_str())
@@ -202,30 +184,25 @@ impl Explorer {
                 tracing::error!("Validator #{} missing required identityKey.ik field, skipping", i);
                 continue;
             }
-            
-            // For genesis validators, use "ACTIVE" as the default state
-            // They're already considered active in block 1
+
             let state = "VALIDATOR_STATE_ENUM_ACTIVE";
             
-            // Extract bonding state if present (no defaults)
             let bonding_state = validator_data.get("bondingState")
                 .and_then(|s| s.get("state"))
                 .and_then(|s| s.as_str());
             
             match validator::Validator::from_event(
                 validator_data,
-                1, // Genesis block height is 1
+                1,
                 timestamp,
                 state,
-                bonding_state.unwrap_or(""), // Empty string if not present
-                0, // Start with 0 voting power, will be updated by events
-                0.0, // Start with 0% voting power percentage, will be updated by events
+                bonding_state.unwrap_or(""),
+                0,
+                0.0,
             ) {
                 Ok(validator) => {
-                    // Insert the validator into the database
                     match validator.insert_or_update(dbtx).await {
-                        Ok(_) => {
-                            // Process funding streams if they exist
+                        Ok(()) => {
                             if let Some(funding_streams) = validator_data.get("fundingStreams") {
                                 if let Err(e) = validator::ValidatorFundingStream::process_funding_streams(
                                     &validator.identity_key,
@@ -268,17 +245,16 @@ impl Explorer {
         height: u64,
         timestamp: DateTime<Utc>,
     ) -> Result<(), anyhow::Error> {
-        // Check if the block exists first
         let block_exists: i64 = match sqlx::query_scalar(
             "SELECT COUNT(*) FROM explorer_block_details WHERE height = $1"
         )
-        .bind(height as i64)
+        .bind(i64::try_from(height).unwrap_or(i64::MAX))
         .fetch_one(dbtx.as_mut())
         .await {
             Ok(count) => count,
             Err(e) => {
                 tracing::error!("Failed to check if block exists at height {}: {}", height, e);
-                return Ok(());  // Return Ok to avoid aborting the transaction
+                return Ok(());
             }
         };
         
@@ -287,24 +263,21 @@ impl Explorer {
             return Ok(());
         }
         
-        // Check if there are any validators in the database yet
         let validator_count: i64 = match sqlx::query_scalar("SELECT COUNT(*) FROM validators")
             .fetch_one(dbtx.as_mut())
             .await {
                 Ok(count) => count,
                 Err(e) => {
                     tracing::error!("Failed to check validator count: {}", e);
-                    return Ok(());  // Return Ok to avoid aborting the transaction
+                    return Ok(());
                 }
             };
             
         if validator_count == 0 {
-            // Skip recording blocks if no validators exist yet
             tracing::debug!("No validators in database, skipping block participation records");
             return Ok(());
         }
         
-        // Get the active state from the database instead of hardcoding it
         let active_state: Option<String> = match sqlx::query_scalar(
             "SELECT DISTINCT state FROM validators WHERE state LIKE '%ACTIVE%' LIMIT 1"
         )
@@ -313,7 +286,7 @@ impl Explorer {
             Ok(state) => state,
             Err(e) => {
                 tracing::error!("Failed to determine active validator state: {}", e);
-                return Ok(()); // Return Ok to avoid aborting the transaction
+                return Ok(());
             }
         };
         
@@ -322,7 +295,6 @@ impl Explorer {
             return Ok(());
         }
         
-        // Get all active validators using the discovered state
         let active_validators: Vec<String> = match sqlx::query_scalar(
             &format!("SELECT identity_key FROM validators WHERE state = '{}'", active_state.unwrap())
         )
@@ -331,7 +303,7 @@ impl Explorer {
             Ok(validators) => validators,
             Err(e) => {
                 tracing::error!("Failed to retrieve active validators: {}", e);
-                return Ok(());  // Return Ok to avoid aborting the transaction
+                return Ok(());
             }
         };
         
@@ -345,7 +317,7 @@ impl Explorer {
         
         let validator_records: Vec<(String, i64, DateTime<Utc>, bool)> = active_validators
             .into_iter()
-            .map(|identity_key| (identity_key, height as i64, timestamp, true))
+            .map(|identity_key| (identity_key, i64::try_from(height).unwrap_or(i64::MAX), timestamp, true))
             .collect();
         
         let _ = validator::Validator::record_validator_blocks_bulk(&validator_records, dbtx).await;
@@ -629,7 +601,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
         
-        // Create validators table
         sqlx::query(
             r"
             CREATE TABLE IF NOT EXISTS validators (
@@ -653,7 +624,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
         
-        // Create validator_funding_streams table
         sqlx::query(
             r"
             CREATE TABLE IF NOT EXISTS validator_funding_streams (
@@ -671,7 +641,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
         
-        // Create index on validator_funding_streams for performance
         sqlx::query(
             r"
             CREATE INDEX IF NOT EXISTS idx_validator_funding_streams_identity_key
@@ -681,7 +650,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
         
-        // Create validator_blocks table
         sqlx::query(
             r"
             CREATE TABLE IF NOT EXISTS validator_blocks (
@@ -696,7 +664,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
         
-        // Create index on validators state for performance
         sqlx::query(
             r"
             CREATE INDEX IF NOT EXISTS idx_validators_state
@@ -706,7 +673,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
         
-        // Create index on validators voting power for sorting
         sqlx::query(
             r"
             CREATE INDEX IF NOT EXISTS idx_validators_voting_power
@@ -716,7 +682,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
         
-        // Create validator performance view
         sqlx::query(
             r"
             CREATE OR REPLACE VIEW validator_performance AS
@@ -905,7 +870,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             .execute(dbtx.as_mut())
             .await?;
 
-        // Create or replace the 24h summary view
         sqlx::query(
             r"
         CREATE OR REPLACE VIEW ibc_client_summary_24h AS
@@ -1222,11 +1186,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             .execute(dbtx.as_mut())
             .await?;
 
-        // Initialize validator staking parameters from genesis file
-        // This only runs once during chain initialization
         tracing::info!("Reading genesis file to initialize validator staking parameters");
         
-        // Extract validator parameters directly from genesis.json without fallbacks
         match ValidatorParams::from_genesis_json() {
             Ok(validator_params) => {
                 tracing::info!(
@@ -1239,17 +1200,14 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 }
             },
             Err(e) => {
-                // This will fail the initialization if parameters are missing or invalid
                 tracing::error!("Failed to extract validator staking parameters: {}", e);
                 return Err(e);
             }
         }
         
-        // Initialize validators from genesis.json
         tracing::info!("Reading genesis file to initialize validators");
         if let Err(e) = self.initialize_validators_from_genesis(dbtx).await {
             tracing::error!("Failed to initialize validators from genesis: {}", e);
-            // Don't fail initialization if validator initialization fails
         }
 
         Ok(())
@@ -1285,6 +1243,14 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             }
         }
 
+        let mut height_to_timestamp: HashMap<u64, DateTime<Utc>> = HashMap::new();
+        for (height, _, ts, _, _) in &block_data_to_process {
+            height_to_timestamp.insert(*height, *ts);
+        }
+        for (_, _, _, height, ts, _) in &transactions_to_process {
+            height_to_timestamp.insert(*height, *ts);
+        }
+
         for (height, root, ts, tx_count, formatted_json) in block_data_to_process {
             let meta = BlockMetadata {
                 height,
@@ -1297,13 +1263,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
             block::insert(dbtx, meta).await?;
             
-            // Process the block for active validators - record signed blocks for all active validators
             self.record_validator_blocks_for_height(dbtx, height, ts).await?;
-        }
-
-        let mut height_to_timestamp: HashMap<u64, DateTime<Utc>> = HashMap::new();
-        for (_, _, _, height, ts, _) in &transactions_to_process {
-            height_to_timestamp.insert(*height, *ts);
         }
 
         for (tx_hash, tx_bytes, tx_index, height, timestamp, tx_events) in &transactions_to_process
@@ -1367,17 +1327,13 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             let timestamp = *height_to_timestamp.get(&height).unwrap_or(&Utc::now());
 
             if !events.is_empty() {
-                // Process IBC events
                 if let Err(e) = ibc::process_events(dbtx, &events, height, timestamp).await {
                     tracing::error!("Error processing IBC events for block {}: {:?}", height, e);
                 }
                 
-                // Process validator parameter change events
                 if let Err(e) = validator::ValidatorParams::process_events(dbtx, &events, height, timestamp).await {
                     tracing::error!("Error processing validator parameter events for block {}: {:?}", height, e);
                 }
-                
-                // Process validator events
                 if let Err(e) = validator::Validator::process_events(dbtx, &events, height, timestamp).await {
                     tracing::error!("Error processing validator events for block {}: {:?}", height, e);
                 }

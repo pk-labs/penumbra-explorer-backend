@@ -25,6 +25,10 @@ pub fn encode_to_base64<T: AsRef<[u8]>>(data: T) -> String {
 /// 
 /// Takes a base64 string like "AADLG+rOXS+9MbdthgyMqjVga507jmtVFJemUM6PJgE="
 /// and returns a bech32 address like "penumbravalid1..."
+/// 
+/// # Errors
+/// 
+/// Returns an error if the base64 string cannot be decoded.
 pub fn identity_key_to_validator_address(base64_identity_key: &str) -> Result<String, anyhow::Error> {
     let identity_key_bytes = BASE64.decode(base64_identity_key)
         .map_err(|e| anyhow::anyhow!("Failed to decode base64 identity key: {}", e))?;
@@ -95,8 +99,8 @@ mod tests {
         assert!(result.is_ok(), "Failed to convert identity key to validator address");
         
         let validator_address = result.unwrap();
-        println!("Identity Key: {}", identity_key);
-        println!("Decoded Validator Address: {}", validator_address);
+        println!("Identity Key: {identity_key}");
+        println!("Decoded Validator Address: {validator_address}");
         
         assert!(validator_address.starts_with("penumbravalid1"));
         assert!(!validator_address.is_empty());
