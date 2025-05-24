@@ -1,13 +1,13 @@
+use crate::parsing::identity_key_to_validator_address;
 use anyhow::Result;
 use cometindex::ContextualizedEvent;
 use serde_json::Value;
+use sqlx::types::chrono::{DateTime, Utc};
 use sqlx::PgTransaction;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
-use std::collections::HashSet;
-use tracing::{debug, info, error};
-use sqlx::types::chrono::{DateTime, Utc};
-use crate::parsing::identity_key_to_validator_address;
+use tracing::{debug, error, info};
 
 /// Performance optimization: Cache for validator existence checks within a transaction
 #[derive(Debug, Default)]
@@ -22,27 +22,32 @@ impl ValidatorExistenceCache {
         if self.cache_loaded {
             return Ok(());
         }
-        
-        let validators: Vec<String> = sqlx::query_scalar(
-            "SELECT identity_key FROM validators"
-        )
-        .fetch_all(dbtx.as_mut())
-        .await
-        .unwrap_or_default();
-        
+
+        let validators: Vec<String> = sqlx::query_scalar("SELECT identity_key FROM validators")
+            .fetch_all(dbtx.as_mut())
+            .await
+            .unwrap_or_default();
+
         self.existing_validators = validators.into_iter().collect();
         self.cache_loaded = true;
-        debug!("Loaded {} existing validators into cache", self.existing_validators.len());
-        
+        debug!(
+            "Loaded {} existing validators into cache",
+            self.existing_validators.len()
+        );
+
         Ok(())
     }
-    
+
     /// Check if validator exists (uses cache after first load)
-    async fn validator_exists(&mut self, identity_key: &str, dbtx: &mut PgTransaction<'_>) -> Result<bool> {
+    async fn validator_exists(
+        &mut self,
+        identity_key: &str,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<bool> {
         self.ensure_loaded(dbtx).await?;
         Ok(self.existing_validators.contains(identity_key))
     }
-    
+
     /// Add validator to cache when created
     fn add_validator(&mut self, identity_key: &str) {
         if self.cache_loaded {
@@ -62,46 +67,55 @@ impl VotingPowerBatch {
     fn add_change(&mut self, identity_key: String, voting_power: i64) {
         self.changes.push((identity_key, voting_power));
     }
-    
+
     /// Apply all batched voting power changes with single percentage recalculation
-    async fn apply_all(&mut self, dbtx: &mut PgTransaction<'_>, timestamp: DateTime<Utc>) -> Result<()> {
+    async fn apply_all(
+        &mut self,
+        dbtx: &mut PgTransaction<'_>,
+        timestamp: DateTime<Utc>,
+    ) -> Result<()> {
         if self.changes.is_empty() {
             return Ok(());
         }
-        
-        debug!("Applying {} batched voting power changes", self.changes.len());
-        
+
+        debug!(
+            "Applying {} batched voting power changes",
+            self.changes.len()
+        );
+
         for (identity_key, voting_power) in &self.changes {
             if let Err(e) = Validator::update_voting_power(
-                identity_key, 
-                *voting_power, 
+                identity_key,
+                *voting_power,
                 0.0, // Temporary percentage, will be recalculated
-                dbtx, 
-                timestamp
-            ).await {
+                dbtx,
+                timestamp,
+            )
+            .await
+            {
                 error!("Failed to update voting power for {}: {}", identity_key, e);
             }
         }
-        
+
         match Validator::calculate_total_voting_power(dbtx).await {
             Ok(total) => {
                 if total > 0 {
                     if let Err(e) = Validator::update_all_voting_power_percentages(dbtx).await {
                         error!("Failed to update voting power percentages: {}", e);
                     }
-                    
+
                     if let Err(e) = Validator::update_total_staked(dbtx).await {
                         error!("Failed to update total_staked parameter: {}", e);
                     }
                 }
-            },
+            }
             Err(e) => {
                 error!("Failed to calculate total voting power: {}", e);
             }
         }
-        
+
         self.changes.clear();
-        
+
         Ok(())
     }
 }
@@ -154,7 +168,10 @@ pub struct Validator {
 impl Validator {
     /// Helper function to find an attribute value in an event
     #[must_use]
-    pub fn find_attribute_value<'a>(event: &'a ContextualizedEvent<'_>, key: &str) -> Option<&'a str> {
+    pub fn find_attribute_value<'a>(
+        event: &'a ContextualizedEvent<'_>,
+        key: &str,
+    ) -> Option<&'a str> {
         for attr in &event.event.attributes {
             if let Ok(attr_key) = attr.key_str() {
                 if attr_key == key {
@@ -166,97 +183,107 @@ impl Validator {
         }
         None
     }
-    
+
     /// Extract validator identity key from event based on event type
     pub fn extract_identity_key_from_event(event: &ContextualizedEvent<'_>) -> Option<String> {
         match event.event.kind.as_str() {
-            "penumbra.core.component.stake.v1.EventDelegate" |
-            "penumbra.core.component.stake.v1.EventUndelegate" |
-            "penumbra.core.component.stake.v1.EventValidatorBondingStateChange" |
-            "penumbra.core.component.stake.v1.EventValidatorMissedBlock" |
-            "penumbra.core.component.stake.v1.EventValidatorStateChange" |
-            "penumbra.core.component.stake.v1.EventValidatorVotingPowerChange" |
-            "penumbra.core.component.stake.v1.EventRateDataChange" |
-            "penumbra.core.component.stake.v1.EventSlashingPenaltyApplied" |
-            "penumbra.core.component.stake.v1.EventTombstoneValidator" => {
+            "penumbra.core.component.stake.v1.EventDelegate"
+            | "penumbra.core.component.stake.v1.EventUndelegate"
+            | "penumbra.core.component.stake.v1.EventValidatorBondingStateChange"
+            | "penumbra.core.component.stake.v1.EventValidatorMissedBlock"
+            | "penumbra.core.component.stake.v1.EventValidatorStateChange"
+            | "penumbra.core.component.stake.v1.EventValidatorVotingPowerChange"
+            | "penumbra.core.component.stake.v1.EventRateDataChange"
+            | "penumbra.core.component.stake.v1.EventSlashingPenaltyApplied"
+            | "penumbra.core.component.stake.v1.EventTombstoneValidator" => {
                 if let Some(identity_key_json) = Self::find_attribute_value(event, "identityKey") {
                     match serde_json::from_str::<Value>(identity_key_json) {
-                        Ok(identity_data) => {
-                            identity_data["ik"].as_str().map(String::from)
-                        },
-                        Err(_) => None
+                        Ok(identity_data) => identity_data["ik"].as_str().map(String::from),
+                        Err(_) => None,
                     }
                 } else {
                     None
                 }
-            },
+            }
             "penumbra.core.component.stake.v1.EventValidatorDefinitionUpload" => {
                 if let Some(validator_json) = Self::find_attribute_value(event, "validator") {
                     match serde_json::from_str::<Value>(validator_json) {
-                        Ok(validator_data) => {
-                            validator_data["identityKey"]["ik"].as_str().map(String::from)
-                        },
-                        Err(_) => None
+                        Ok(validator_data) => validator_data["identityKey"]["ik"]
+                            .as_str()
+                            .map(String::from),
+                        Err(_) => None,
                     }
                 } else {
                     None
                 }
-            },
-            _ => None
+            }
+            _ => None,
         }
     }
 
     /// Link a transaction hash to a validator identity key
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn link_transaction_to_validator(
         tx_hash: &[u8],
         identity_key: &str,
         dbtx: &mut PgTransaction<'_>,
     ) -> Result<()> {
-        debug!("Linking transaction {:?} to validator {}", 
-               crate::parsing::encode_to_hex(tx_hash.try_into().unwrap_or([0u8; 32])), 
-               identity_key);
-        
+        debug!(
+            "Linking transaction {:?} to validator {}",
+            crate::parsing::encode_to_hex(tx_hash.try_into().unwrap_or([0u8; 32])),
+            identity_key
+        );
+
         match sqlx::query(
             r"
             UPDATE explorer_transactions 
             SET validator_identity_key = $1
             WHERE tx_hash = $2
-            "
+            ",
         )
         .bind(identity_key)
         .bind(tx_hash)
         .execute(dbtx.as_mut())
-        .await {
+        .await
+        {
             Ok(result) => {
                 if result.rows_affected() > 0 {
-                    debug!("Successfully linked transaction to validator {}", identity_key);
+                    debug!(
+                        "Successfully linked transaction to validator {}",
+                        identity_key
+                    );
                 } else {
-                    debug!("Transaction not found in explorer_transactions table for validator {}", identity_key);
+                    debug!(
+                        "Transaction not found in explorer_transactions table for validator {}",
+                        identity_key
+                    );
                 }
                 Ok(())
-            },
+            }
             Err(e) => {
-                error!("Failed to link transaction to validator {}: {}", identity_key, e);
+                error!(
+                    "Failed to link transaction to validator {}: {}",
+                    identity_key, e
+                );
                 Ok(())
             }
         }
     }
-    
+
     /// Parse a validator definition from an event
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if required fields are missing from the event data.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if `DateTime::from_timestamp(0, 0)` fails, which should never happen.
     pub fn from_event(
-        event_json: &Value, 
+        event_json: &Value,
         height: u64,
         timestamp: DateTime<Utc>,
         default_state: &str,
@@ -268,22 +295,27 @@ impl Validator {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing or invalid identity key"))?
             .to_string();
-        
+
         let decoded_address = identity_key_to_validator_address(&identity_key).ok();
-        
+
         let name = event_json["name"].as_str().map(String::from);
         let website = event_json["website"].as_str().map(String::from);
         let description = event_json["description"].as_str().map(String::from);
         let consensus_key = event_json["consensusKey"].as_str().map(String::from);
-        
-        let governance_key = event_json.get("governanceKey")
+
+        let governance_key = event_json
+            .get("governanceKey")
             .and_then(|gk| gk.get("gk"))
             .and_then(|gk| gk.as_str())
             .map(String::from);
 
-        let (first_seen_height, first_seen_time) = if default_state.contains("ACTIVE") && height == 1 {
-            debug!("Creating genesis ACTIVE validator {} at height {}, timestamp {}",
-                  identity_key, height, timestamp);
+        let (first_seen_height, first_seen_time) = if default_state.contains("ACTIVE")
+            && height == 1
+        {
+            debug!(
+                "Creating genesis ACTIVE validator {} at height {}, timestamp {}",
+                identity_key, height, timestamp
+            );
             (Some(i64::try_from(height).unwrap_or(i64::MAX)), timestamp)
         } else if default_state.contains("DEFINED") {
             debug!("Creating DEFINED validator {} at height {}, timestamp {} - height will be set when ACTIVE",
@@ -294,20 +326,24 @@ impl Validator {
                   identity_key, height);
             (Some(i64::try_from(height).unwrap_or(i64::MAX)), timestamp)
         } else {
-            debug!("Creating validator {} with state {} - height will be NULL until ACTIVE",
-                  identity_key, default_state);
+            debug!(
+                "Creating validator {} with state {} - height will be NULL until ACTIVE",
+                identity_key, default_state
+            );
             (None, DateTime::<Utc>::from_timestamp(0, 0).unwrap())
         };
-        
-        debug!("Created validator from event: identity_key={}, name={:?}, consensus_key={:?}", 
-              identity_key, name, consensus_key);
-        
+
+        debug!(
+            "Created validator from event: identity_key={}, name={:?}, consensus_key={:?}",
+            identity_key, name, consensus_key
+        );
+
         let bonding_state = if default_bonding_state.is_empty() {
             Some("BONDING_STATE_ENUM_UNSPECIFIED".to_string())
         } else {
             Some(default_bonding_state.to_string())
         };
-        
+
         Ok(Self {
             identity_key,
             decoded_address,
@@ -325,11 +361,11 @@ impl Validator {
             last_updated: timestamp,
         })
     }
-    
+
     /// Insert only - fails if validator already exists (for `ensure_validator_exists`)
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails or if the validator already exists.
     pub async fn insert_only(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
         sqlx::query(
@@ -370,14 +406,14 @@ impl Validator {
         .bind(self.last_updated)
         .execute(dbtx.as_mut())
         .await?;
-        
+
         Ok(())
     }
-    
+
     /// Insert or update a validator in the database
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn insert_or_update(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
         sqlx::query(
@@ -430,14 +466,14 @@ impl Validator {
         .bind(self.last_updated)
         .execute(dbtx.as_mut())
         .await?;
-        
+
         Ok(())
     }
-    
+
     /// Update only metadata (name, website, description, etc.) without changing state or voting power
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn update_metadata_only(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
         sqlx::query(
@@ -463,14 +499,14 @@ impl Validator {
         .bind(self.last_updated)
         .execute(dbtx.as_mut())
         .await?;
-        
+
         Ok(())
     }
-    
+
     /// Update validator state
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn update_state(
         identity_key: &str,
@@ -480,18 +516,20 @@ impl Validator {
         height: u64,
     ) -> Result<()> {
         if state.contains("DEFINED") {
-            let validator_info: Option<(Option<String>,)> = sqlx::query_as(
-                "SELECT state FROM validators WHERE identity_key = $1"
-            )
-            .bind(identity_key)
-            .fetch_optional(dbtx.as_mut())
-            .await?;
-            
+            let validator_info: Option<(Option<String>,)> =
+                sqlx::query_as("SELECT state FROM validators WHERE identity_key = $1")
+                    .bind(identity_key)
+                    .fetch_optional(dbtx.as_mut())
+                    .await?;
+
             match validator_info {
                 Some((current_state,)) => {
                     if !current_state.map_or(false, |s| s.contains("DEFINED")) {
-                        debug!("Validator {} transitioned to DEFINED state - setting first_seen_time", identity_key);
-                        
+                        debug!(
+                            "Validator {} transitioned to DEFINED state - setting first_seen_time",
+                            identity_key
+                        );
+
                         sqlx::query(
                             r"
                             UPDATE validators 
@@ -508,27 +546,30 @@ impl Validator {
                         .bind(identity_key)
                         .execute(dbtx.as_mut())
                         .await?;
-                        
+
                         return Ok(());
                     }
-                },
+                }
                 None => {
-                    debug!("Validator {} not found in database when updating to DEFINED state", identity_key);
+                    debug!(
+                        "Validator {} not found in database when updating to DEFINED state",
+                        identity_key
+                    );
                 }
             }
         } else if state.contains("ACTIVE") {
             let validator_info: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
-                "SELECT state, first_seen_height FROM validators WHERE identity_key = $1"
+                "SELECT state, first_seen_height FROM validators WHERE identity_key = $1",
             )
             .bind(identity_key)
             .fetch_optional(dbtx.as_mut())
             .await?;
-            
+
             match validator_info {
                 Some((_current_state, current_height)) => {
                     if current_height.is_none() {
                         debug!("Validator {} transitioned to ACTIVE state - setting first_seen_height for uptime tracking", identity_key);
-                        
+
                         sqlx::query(
                             r"
                             UPDATE validators 
@@ -546,12 +587,15 @@ impl Validator {
                         .bind(identity_key)
                         .execute(dbtx.as_mut())
                         .await?;
-                        
+
                         return Ok(());
                     }
-                },
+                }
                 None => {
-                    debug!("Validator {} not found in database when updating to ACTIVE state", identity_key);
+                    debug!(
+                        "Validator {} not found in database when updating to ACTIVE state",
+                        identity_key
+                    );
                 }
             }
         }
@@ -571,14 +615,14 @@ impl Validator {
         .bind(identity_key)
         .execute(dbtx.as_mut())
         .await?;
-        
+
         Ok(())
     }
-    
+
     /// Update validator bonding state
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn update_bonding_state(
         identity_key: &str,
@@ -586,8 +630,11 @@ impl Validator {
         dbtx: &mut PgTransaction<'_>,
         timestamp: DateTime<Utc>,
     ) -> Result<()> {
-        debug!("Updating bonding state for validator {} to {}", identity_key, bonding_state);
-        
+        debug!(
+            "Updating bonding state for validator {} to {}",
+            identity_key, bonding_state
+        );
+
         sqlx::query(
             r"
             UPDATE validators 
@@ -603,14 +650,14 @@ impl Validator {
         .bind(identity_key)
         .execute(dbtx.as_mut())
         .await?;
-        
+
         Ok(())
     }
-    
+
     /// Update validator voting power
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn update_voting_power(
         identity_key: &str,
@@ -636,14 +683,14 @@ impl Validator {
         .bind(identity_key)
         .execute(dbtx.as_mut())
         .await?;
-        
+
         Ok(())
     }
-    
+
     /// Performance optimization: Bulk record block participation for multiple validators
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn record_validator_blocks_bulk(
         validator_records: &[(String, i64, DateTime<Utc>, bool)],
@@ -652,17 +699,25 @@ impl Validator {
         if validator_records.is_empty() {
             return Ok(());
         }
-        
-        debug!("Bulk recording {} validator block records", validator_records.len());
-        
+
+        debug!(
+            "Bulk recording {} validator block records",
+            validator_records.len()
+        );
+
         let mut values_clauses = Vec::new();
-        
+
         for i in 0..validator_records.len() {
             let param_base = i * 4;
-            values_clauses.push(format!("(${}, ${}, ${}, ${})", 
-                param_base + 1, param_base + 2, param_base + 3, param_base + 4));
+            values_clauses.push(format!(
+                "(${}, ${}, ${}, ${})",
+                param_base + 1,
+                param_base + 2,
+                param_base + 3,
+                param_base + 4
+            ));
         }
-        
+
         let query = format!(
             r"
             INSERT INTO validator_blocks (identity_key, block_height, timestamp, signed)
@@ -673,15 +728,16 @@ impl Validator {
             ",
             values_clauses.join(", ")
         );
-        
+
         let mut sqlx_query = sqlx::query(&query);
         for (identity_key, block_height, timestamp, signed) in validator_records {
-            sqlx_query = sqlx_query.bind(identity_key)
-                                   .bind(block_height)
-                                   .bind(timestamp)
-                                   .bind(signed);
+            sqlx_query = sqlx_query
+                .bind(identity_key)
+                .bind(block_height)
+                .bind(timestamp)
+                .bind(signed);
         }
-        
+
         match sqlx_query.execute(dbtx.as_mut()).await {
             Ok(_) => Ok(()),
             Err(e) => {
@@ -692,9 +748,9 @@ impl Validator {
     }
 
     /// Record block participation for a validator
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn record_validator_block(
         identity_key: &str,
@@ -703,42 +759,49 @@ impl Validator {
         signed: bool,
         dbtx: &mut PgTransaction<'_>,
     ) -> Result<()> {
-        let validator_exists: i64 = match sqlx::query_scalar(
-            "SELECT COUNT(*) FROM validators WHERE identity_key = $1"
-        )
-        .bind(identity_key)
-        .fetch_one(dbtx.as_mut())
-        .await {
-            Ok(count) => count,
-            Err(e) => {
-                error!("Failed to check if validator exists: {}", e);
-                return Ok(());
-            }
-        };
-        
+        let validator_exists: i64 =
+            match sqlx::query_scalar("SELECT COUNT(*) FROM validators WHERE identity_key = $1")
+                .bind(identity_key)
+                .fetch_one(dbtx.as_mut())
+                .await
+            {
+                Ok(count) => count,
+                Err(e) => {
+                    error!("Failed to check if validator exists: {}", e);
+                    return Ok(());
+                }
+            };
+
         if validator_exists == 0 {
-            debug!("Skipping validator_block record for non-existent validator: {}", identity_key);
+            debug!(
+                "Skipping validator_block record for non-existent validator: {}",
+                identity_key
+            );
             return Ok(());
         }
-        
+
         let block_exists: i64 = match sqlx::query_scalar(
-            "SELECT COUNT(*) FROM explorer_block_details WHERE height = $1"
+            "SELECT COUNT(*) FROM explorer_block_details WHERE height = $1",
         )
         .bind(block_height)
         .fetch_one(dbtx.as_mut())
-        .await {
+        .await
+        {
             Ok(count) => count,
             Err(e) => {
                 error!("Failed to check if block exists: {}", e);
                 return Ok(());
             }
         };
-        
+
         if block_exists == 0 {
-            debug!("Skipping validator_block record for non-existent block height: {}", block_height);
+            debug!(
+                "Skipping validator_block record for non-existent block height: {}",
+                block_height
+            );
             return Ok(());
         }
-        
+
         match sqlx::query(
             r"
             INSERT INTO validator_blocks (identity_key, block_height, timestamp, signed)
@@ -753,28 +816,31 @@ impl Validator {
         .bind(timestamp)
         .bind(signed)
         .execute(dbtx.as_mut())
-        .await {
+        .await
+        {
             Ok(_) => Ok(()),
             Err(e) => {
-                error!("Failed to record validator block: validator={}, block={}, error={}",
-                      identity_key, block_height, e);
+                error!(
+                    "Failed to record validator block: validator={}, block={}, error={}",
+                    identity_key, block_height, e
+                );
                 Ok(())
             }
         }
     }
-    
+
     /// Calculate total voting power across ACTIVE validators only
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn calculate_total_voting_power(dbtx: &mut PgTransaction<'_>) -> Result<i64> {
         let active_state: Option<String> = sqlx::query_scalar(
-            "SELECT DISTINCT state FROM validators WHERE state LIKE '%ACTIVE%' LIMIT 1"
+            "SELECT DISTINCT state FROM validators WHERE state LIKE '%ACTIVE%' LIMIT 1",
         )
         .fetch_optional(dbtx.as_mut())
         .await?;
-        
+
         let result = match active_state {
             Some(state) => {
                 sqlx::query_scalar::<_, i64>(
@@ -785,28 +851,28 @@ impl Validator {
             },
             None => 0,
         };
-        
+
         Ok(result)
     }
-    
+
     /// Update voting power percentages for ACTIVE validators only (set others to 0%)
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn update_all_voting_power_percentages(dbtx: &mut PgTransaction<'_>) -> Result<()> {
         let total_voting_power = Self::calculate_total_voting_power(dbtx).await?;
-        
+
         if total_voting_power == 0 {
             return Ok(());
         }
-        
+
         let active_state: Option<String> = sqlx::query_scalar(
-            "SELECT DISTINCT state FROM validators WHERE state LIKE '%ACTIVE%' LIMIT 1"
+            "SELECT DISTINCT state FROM validators WHERE state LIKE '%ACTIVE%' LIMIT 1",
         )
         .fetch_optional(dbtx.as_mut())
         .await?;
-        
+
         if let Some(state) = active_state {
             let query = format!(
                 r"
@@ -817,12 +883,12 @@ impl Validator {
                     state = '{state}'
                 "
             );
-            
+
             sqlx::query(&query)
                 .bind(total_voting_power)
                 .execute(dbtx.as_mut())
                 .await?;
-            
+
             let clear_inactive_query = format!(
                 r"
                 UPDATE validators
@@ -832,48 +898,47 @@ impl Validator {
                     state != '{state}'
                 "
             );
-            
+
             sqlx::query(&clear_inactive_query)
                 .execute(dbtx.as_mut())
                 .await?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Update `total_staked` in `validator_staking_parameters` with sum of ACTIVE validators only
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn update_total_staked(dbtx: &mut PgTransaction<'_>) -> Result<()> {
         let total_active_voting_power = Self::calculate_total_voting_power(dbtx).await?;
-        
+
         let formatted_total = format!("{total_active_voting_power} UM");
-        
-        let chain_id: Option<String> = sqlx::query_scalar(
-            "SELECT chain_id FROM validator_staking_parameters LIMIT 1"
-        )
-        .fetch_optional(dbtx.as_mut())
-        .await?;
-        
+
+        let chain_id: Option<String> =
+            sqlx::query_scalar("SELECT chain_id FROM validator_staking_parameters LIMIT 1")
+                .fetch_optional(dbtx.as_mut())
+                .await?;
+
         if let Some(chain_id) = chain_id {
             sqlx::query(
                 r"
                 UPDATE validator_staking_parameters
                 SET total_staked = $1
                 WHERE chain_id = $2
-                "
+                ",
             )
             .bind(&formatted_total)
             .bind(&chain_id)
             .execute(dbtx.as_mut())
             .await?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Ensure validator exists in database, creating it if necessary
     /// IMPORTANT: This function only creates new validators, never modifies existing ones
     #[allow(clippy::too_many_arguments)]
@@ -894,23 +959,29 @@ impl Validator {
                 return Err(anyhow::anyhow!("Failed to check validator existence"));
             }
         };
-        
+
         if validator_exists {
-            debug!("Validator {} already exists, skipping creation", identity_key);
+            debug!(
+                "Validator {} already exists, skipping creation",
+                identity_key
+            );
         } else {
             debug!("Creating new validator from event: {}", identity_key);
 
             let validator_state = match state {
                 Some(s) if !s.is_empty() => {
-                    debug!("Creating new validator {} with explicit state: {}", identity_key, s);
+                    debug!(
+                        "Creating new validator {} with explicit state: {}",
+                        identity_key, s
+                    );
                     s
-                },
+                }
                 _ => {
                     debug!("Creating new validator {} with UNSPECIFIED state (discovered through non-state event)", identity_key);
                     "VALIDATOR_STATE_ENUM_UNSPECIFIED"
                 }
             };
-            
+
             match Self::from_event(
                 &serde_json::json!({
                     "identityKey": {"ik": identity_key}
@@ -927,23 +998,23 @@ impl Validator {
                         error!("Failed to insert new validator: {}", e);
                         return Err(anyhow::anyhow!("Failed to insert validator"));
                     }
-                    
+
                     cache.add_validator(identity_key);
-                },
+                }
                 Err(e) => {
                     error!("Failed to create validator: {}", e);
                     return Err(anyhow::anyhow!("Failed to create validator"));
                 }
             }
         }
-        
+
         Ok(())
     }
 
     /// Process validator-related events
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     #[allow(clippy::too_many_lines)]
     pub async fn process_events(
@@ -953,47 +1024,63 @@ impl Validator {
         timestamp: DateTime<Utc>,
     ) -> Result<()> {
         // Log the timestamp we're using for debugging
-        debug!("Processing validator events for block {} with timestamp {}", height, timestamp);
+        debug!(
+            "Processing validator events for block {} with timestamp {}",
+            height, timestamp
+        );
         let mut existence_cache = ValidatorExistenceCache::default();
         let mut voting_power_batch = VotingPowerBatch::default();
-        
+
         let mut tx_validator_mappings: Vec<([u8; 32], String)> = Vec::new();
-        
+
         for event in events {
             if let Some(identity_key) = Self::extract_identity_key_from_event(event) {
                 if let Some(tx_hash_bytes) = event.tx_hash() {
                     let tx_hash_array = tx_hash_bytes;
                     tx_validator_mappings.push((tx_hash_array, identity_key.clone()));
-                    debug!("Added transaction mapping: {} -> {}", 
-                           crate::parsing::encode_to_hex(tx_hash_array), identity_key);
+                    debug!(
+                        "Added transaction mapping: {} -> {}",
+                        crate::parsing::encode_to_hex(tx_hash_array),
+                        identity_key
+                    );
                 }
             }
         }
-        
+
         for event in events {
-            if event.event.kind.as_str() == "penumbra.core.component.stake.v1.EventValidatorDefinitionUpload" {
+            if event.event.kind.as_str()
+                == "penumbra.core.component.stake.v1.EventValidatorDefinitionUpload"
+            {
                 match Self::find_attribute_value(event, "validator") {
                     Some(validator_json) => {
                         debug!("Processing validator definition: {}", validator_json);
-                        
+
                         match serde_json::from_str::<Value>(validator_json) {
                             Ok(validator_data) => {
-                                let Some(identity_key) = validator_data["identityKey"]["ik"].as_str() else {
+                                let Some(identity_key) =
+                                    validator_data["identityKey"]["ik"].as_str()
+                                else {
                                     error!("EventValidatorDefinitionUpload missing identity key");
                                     continue;
                                 };
-                                
-                                let validator_exists = match existence_cache.validator_exists(identity_key, dbtx).await {
+
+                                let validator_exists = match existence_cache
+                                    .validator_exists(identity_key, dbtx)
+                                    .await
+                                {
                                     Ok(exists) => exists,
                                     Err(e) => {
                                         error!("Failed to check if validator exists: {}", e);
                                         continue;
                                     }
                                 };
-                                
+
                                 if validator_exists {
-                                    debug!("Updating metadata for existing validator: {}", identity_key);
-                                    
+                                    debug!(
+                                        "Updating metadata for existing validator: {}",
+                                        identity_key
+                                    );
+
                                     match Self::from_event(
                                         &validator_data,
                                         height,
@@ -1004,8 +1091,13 @@ impl Validator {
                                         0.0,
                                     ) {
                                         Ok(validator) => {
-                                            if let Err(e) = validator.update_metadata_only(dbtx).await {
-                                                error!("Failed to update validator metadata: {}", e);
+                                            if let Err(e) =
+                                                validator.update_metadata_only(dbtx).await
+                                            {
+                                                error!(
+                                                    "Failed to update validator metadata: {}",
+                                                    e
+                                                );
                                             }
                                         }
                                         Err(e) => {
@@ -1013,21 +1105,26 @@ impl Validator {
                                         }
                                     }
                                 } else {
-                                    debug!("Creating new validator from definition: {}", identity_key);
-                                    
-                                    let state = validator_data.get("state")
+                                    debug!(
+                                        "Creating new validator from definition: {}",
+                                        identity_key
+                                    );
+
+                                    let state = validator_data
+                                        .get("state")
                                         .and_then(|s| s.get("state"))
                                         .and_then(|s| s.as_str());
-                                    
-                                    let bonding_state = validator_data.get("bondingState")
+
+                                    let bonding_state = validator_data
+                                        .get("bondingState")
                                         .and_then(|s| s.get("state"))
                                         .and_then(|s| s.as_str());
-                                    
+
                                     let default_state = match state {
                                         Some(s) if !s.is_empty() => s,
                                         _ => "VALIDATOR_STATE_ENUM_UNSPECIFIED",
                                     };
-                                    
+
                                     match Self::from_event(
                                         &validator_data,
                                         height,
@@ -1045,34 +1142,43 @@ impl Validator {
                                             }
                                         }
                                         Err(e) => {
-                                            error!("Failed to parse new validator definition: {}", e);
+                                            error!(
+                                                "Failed to parse new validator definition: {}",
+                                                e
+                                            );
                                         }
                                     }
                                 }
-                                
-                                if let Some(funding_streams) = validator_data.get("fundingStreams") {
+
+                                if let Some(funding_streams) = validator_data.get("fundingStreams")
+                                {
                                     if let Err(e) = ValidatorFundingStream::process_funding_streams(
                                         identity_key,
                                         funding_streams,
                                         timestamp,
-                                        dbtx
-                                    ).await {
+                                        dbtx,
+                                    )
+                                    .await
+                                    {
                                         error!("Failed to process funding streams for validator {}: {}", identity_key, e);
                                     }
                                 }
-                            },
+                            }
                             Err(e) => {
-                                error!("Failed to parse validator JSON: {} - {}", validator_json, e);
+                                error!(
+                                    "Failed to parse validator JSON: {} - {}",
+                                    validator_json, e
+                                );
                             }
                         }
-                    },
+                    }
                     None => {
                         error!("EventValidatorDefinitionUpload missing validator attribute");
                     }
                 }
             }
         }
-        
+
         for event in events {
             match event.event.kind.as_str() {
                 "penumbra.core.component.stake.v1.EventValidatorStateChange" => {
@@ -1081,333 +1187,440 @@ impl Validator {
                         Self::find_attribute_value(event, "state"),
                     ) {
                         (Some(identity_key_json), Some(state_json)) => {
-                            debug!("Processing validator state change: {}, {}", identity_key_json, state_json);
-                            
-                            let identity_key_result = serde_json::from_str::<Value>(identity_key_json);
+                            debug!(
+                                "Processing validator state change: {}, {}",
+                                identity_key_json, state_json
+                            );
+
+                            let identity_key_result =
+                                serde_json::from_str::<Value>(identity_key_json);
                             let state_result = serde_json::from_str::<Value>(state_json);
-                            
+
                             match (identity_key_result, state_result) {
                                 (Ok(identity_data), Ok(state_data)) => {
                                     if let Some(identity_key) = identity_data["ik"].as_str() {
                                         if let Some(state) = state_data["state"].as_str() {
                                             if let Err(e) = Self::ensure_validator_exists(
-                                                identity_key, 
-                                                height, 
-                                                timestamp, 
-                                                dbtx, 
-                                                Some(state), 
-                                                None, 
+                                                identity_key,
+                                                height,
+                                                timestamp,
+                                                dbtx,
+                                                Some(state),
                                                 None,
-                                                &mut existence_cache
-                                            ).await {
+                                                None,
+                                                &mut existence_cache,
+                                            )
+                                            .await
+                                            {
                                                 error!("Failed to ensure validator exists: {}", e);
                                                 continue;
                                             }
-                                            
-                                            if let Err(e) = Self::update_state(identity_key, state, dbtx, timestamp, height).await {
+
+                                            if let Err(e) = Self::update_state(
+                                                identity_key,
+                                                state,
+                                                dbtx,
+                                                timestamp,
+                                                height,
+                                            )
+                                            .await
+                                            {
                                                 error!("Failed to update validator state: {}", e);
                                             }
                                         }
                                     }
-                                },
+                                }
                                 _ => {
                                     error!("Failed to parse validator state change data");
                                 }
                             }
-                        },
+                        }
                         _ => {
                             error!("EventValidatorStateChange missing required attributes");
                         }
                     }
-                },
+                }
                 "penumbra.core.component.stake.v1.EventValidatorBondingStateChange" => {
                     match (
                         Self::find_attribute_value(event, "identityKey"),
                         Self::find_attribute_value(event, "bondingState"),
                     ) {
                         (Some(identity_key_json), Some(bonding_state_json)) => {
-                            debug!("Processing validator bonding state change: {}, {}", identity_key_json, bonding_state_json);
-                            
-                            let identity_key_result = serde_json::from_str::<Value>(identity_key_json);
-                            let bonding_state_result = serde_json::from_str::<Value>(bonding_state_json);
-                            
+                            debug!(
+                                "Processing validator bonding state change: {}, {}",
+                                identity_key_json, bonding_state_json
+                            );
+
+                            let identity_key_result =
+                                serde_json::from_str::<Value>(identity_key_json);
+                            let bonding_state_result =
+                                serde_json::from_str::<Value>(bonding_state_json);
+
                             match (identity_key_result, bonding_state_result) {
                                 (Ok(identity_data), Ok(bonding_state_data)) => {
                                     if let Some(identity_key) = identity_data["ik"].as_str() {
-                                        if let Some(bonding_state) = bonding_state_data["state"].as_str() {
+                                        if let Some(bonding_state) =
+                                            bonding_state_data["state"].as_str()
+                                        {
                                             if let Err(e) = Self::ensure_validator_exists(
-                                                identity_key, 
-                                                height, 
-                                                timestamp, 
-                                                dbtx, 
-                                                None, 
-                                                Some(bonding_state), 
+                                                identity_key,
+                                                height,
+                                                timestamp,
+                                                dbtx,
                                                 None,
-                                                &mut existence_cache
-                                            ).await {
+                                                Some(bonding_state),
+                                                None,
+                                                &mut existence_cache,
+                                            )
+                                            .await
+                                            {
                                                 error!("Failed to ensure validator exists: {}", e);
                                                 continue;
                                             }
-                                            
-                                            if let Err(e) = Self::update_bonding_state(identity_key, bonding_state, dbtx, timestamp).await {
-                                                error!("Failed to update validator bonding state: {}", e);
+
+                                            if let Err(e) = Self::update_bonding_state(
+                                                identity_key,
+                                                bonding_state,
+                                                dbtx,
+                                                timestamp,
+                                            )
+                                            .await
+                                            {
+                                                error!(
+                                                    "Failed to update validator bonding state: {}",
+                                                    e
+                                                );
                                             }
                                         }
                                     }
-                                },
+                                }
                                 _ => {
                                     error!("Failed to parse validator bonding state change data");
                                 }
                             }
-                        },
+                        }
                         _ => {
                             error!("EventValidatorBondingStateChange missing required attributes");
                         }
                     }
-                },
+                }
                 "penumbra.core.component.stake.v1.EventValidatorVotingPowerChange" => {
                     match (
                         Self::find_attribute_value(event, "identityKey"),
                         Self::find_attribute_value(event, "votingPower"),
                     ) {
                         (Some(identity_key_json), Some(voting_power_json)) => {
-                            debug!("Processing validator voting power change: {}, {}", identity_key_json, voting_power_json);
-                            
-                            let identity_key_result = serde_json::from_str::<Value>(identity_key_json);
-                            let voting_power_result = serde_json::from_str::<Value>(voting_power_json);
-                            
+                            debug!(
+                                "Processing validator voting power change: {}, {}",
+                                identity_key_json, voting_power_json
+                            );
+
+                            let identity_key_result =
+                                serde_json::from_str::<Value>(identity_key_json);
+                            let voting_power_result =
+                                serde_json::from_str::<Value>(voting_power_json);
+
                             match (identity_key_result, voting_power_result) {
                                 (Ok(identity_data), Ok(voting_power_data)) => {
                                     if let Some(identity_key) = identity_data["ik"].as_str() {
-                                        if let Some(voting_power_str) = voting_power_data["lo"].as_str() {
+                                        if let Some(voting_power_str) =
+                                            voting_power_data["lo"].as_str()
+                                        {
                                             match voting_power_str.parse::<i64>() {
                                                 Ok(raw_voting_power) => {
                                                     let voting_power = raw_voting_power / 1_000_000;
-                                                    
+
                                                     if let Err(e) = Self::ensure_validator_exists(
-                                                        identity_key, 
-                                                        height, 
-                                                        timestamp, 
-                                                        dbtx, 
-                                                        None, 
-                                                        None, 
+                                                        identity_key,
+                                                        height,
+                                                        timestamp,
+                                                        dbtx,
+                                                        None,
+                                                        None,
                                                         Some(voting_power),
-                                                        &mut existence_cache
-                                                    ).await {
-                                                        error!("Failed to ensure validator exists: {}", e);
+                                                        &mut existence_cache,
+                                                    )
+                                                    .await
+                                                    {
+                                                        error!(
+                                                            "Failed to ensure validator exists: {}",
+                                                            e
+                                                        );
                                                         continue;
                                                     }
-                                                    
-                                                    voting_power_batch.add_change(identity_key.to_string(), voting_power);
-                                                },
+
+                                                    voting_power_batch.add_change(
+                                                        identity_key.to_string(),
+                                                        voting_power,
+                                                    );
+                                                }
                                                 Err(e) => {
-                                                    error!("Failed to parse voting power '{}': {}", voting_power_str, e);
+                                                    error!(
+                                                        "Failed to parse voting power '{}': {}",
+                                                        voting_power_str, e
+                                                    );
                                                 }
                                             }
                                         }
                                     }
-                                },
+                                }
                                 _ => {
                                     error!("Failed to parse validator voting power change data");
                                 }
                             }
-                        },
+                        }
                         _ => {
                             error!("EventValidatorVotingPowerChange missing required attributes");
                         }
                     }
-                },
+                }
                 "penumbra.core.component.stake.v1.EventValidatorMissedBlock" => {
-                    if let Some(identity_key_json) = Self::find_attribute_value(event, "identityKey") {
+                    if let Some(identity_key_json) =
+                        Self::find_attribute_value(event, "identityKey")
+                    {
                         debug!("Processing validator missed block: {}", identity_key_json);
-                        
+
                         match serde_json::from_str::<Value>(identity_key_json) {
                             Ok(identity_data) => {
                                 if let Some(identity_key) = identity_data["ik"].as_str() {
                                     if let Err(e) = Self::ensure_validator_exists(
-                                        identity_key, 
-                                        height, 
-                                        timestamp, 
-                                        dbtx, 
-                                        None, 
-                                        None, 
+                                        identity_key,
+                                        height,
+                                        timestamp,
+                                        dbtx,
                                         None,
-                                        &mut existence_cache
-                                    ).await {
+                                        None,
+                                        None,
+                                        &mut existence_cache,
+                                    )
+                                    .await
+                                    {
                                         error!("Failed to ensure validator exists: {}", e);
                                         continue;
                                     }
-                                    
+
                                     if let Err(e) = Self::record_validator_block(
-                                        identity_key, 
-                                        i64::try_from(height).unwrap_or(i64::MAX), 
-                                        timestamp, 
-                                        false, 
-                                        dbtx
-                                    ).await {
+                                        identity_key,
+                                        i64::try_from(height).unwrap_or(i64::MAX),
+                                        timestamp,
+                                        false,
+                                        dbtx,
+                                    )
+                                    .await
+                                    {
                                         error!("Failed to record missed block: {}", e);
                                     }
                                 }
-                            },
+                            }
                             Err(e) => {
-                                error!("Failed to parse validator identity key '{}': {}", identity_key_json, e);
+                                error!(
+                                    "Failed to parse validator identity key '{}': {}",
+                                    identity_key_json, e
+                                );
                             }
                         }
                     }
-                },
+                }
                 "penumbra.core.component.stake.v1.EventDelegate" => {
-                    if let Some(identity_key_json) = Self::find_attribute_value(event, "identityKey") {
+                    if let Some(identity_key_json) =
+                        Self::find_attribute_value(event, "identityKey")
+                    {
                         debug!("Processing delegate event: {}", identity_key_json);
-                        
+
                         match serde_json::from_str::<Value>(identity_key_json) {
                             Ok(identity_data) => {
                                 if let Some(identity_key) = identity_data["ik"].as_str() {
                                     if let Err(e) = Self::ensure_validator_exists(
-                                        identity_key, 
-                                        height, 
-                                        timestamp, 
-                                        dbtx, 
-                                        None, 
-                                        None, 
+                                        identity_key,
+                                        height,
+                                        timestamp,
+                                        dbtx,
                                         None,
-                                        &mut existence_cache
-                                    ).await {
+                                        None,
+                                        None,
+                                        &mut existence_cache,
+                                    )
+                                    .await
+                                    {
                                         error!("Failed to ensure validator exists for delegate event: {}", e);
                                     }
                                 }
-                            },
+                            }
                             Err(e) => {
-                                error!("Failed to parse validator identity key '{}': {}", identity_key_json, e);
+                                error!(
+                                    "Failed to parse validator identity key '{}': {}",
+                                    identity_key_json, e
+                                );
                             }
                         }
                     }
-                },
+                }
                 "penumbra.core.component.stake.v1.EventUndelegate" => {
-                    if let Some(identity_key_json) = Self::find_attribute_value(event, "identityKey") {
+                    if let Some(identity_key_json) =
+                        Self::find_attribute_value(event, "identityKey")
+                    {
                         debug!("Processing undelegate event: {}", identity_key_json);
-                        
+
                         match serde_json::from_str::<Value>(identity_key_json) {
                             Ok(identity_data) => {
                                 if let Some(identity_key) = identity_data["ik"].as_str() {
                                     if let Err(e) = Self::ensure_validator_exists(
-                                        identity_key, 
-                                        height, 
-                                        timestamp, 
-                                        dbtx, 
-                                        None, 
-                                        None, 
+                                        identity_key,
+                                        height,
+                                        timestamp,
+                                        dbtx,
                                         None,
-                                        &mut existence_cache
-                                    ).await {
+                                        None,
+                                        None,
+                                        &mut existence_cache,
+                                    )
+                                    .await
+                                    {
                                         error!("Failed to ensure validator exists for undelegate event: {}", e);
                                     }
                                 }
-                            },
+                            }
                             Err(e) => {
-                                error!("Failed to parse validator identity key '{}': {}", identity_key_json, e);
+                                error!(
+                                    "Failed to parse validator identity key '{}': {}",
+                                    identity_key_json, e
+                                );
                             }
                         }
                     }
-                },
+                }
                 "penumbra.core.component.stake.v1.EventRateDataChange" => {
-                    if let Some(identity_key_json) = Self::find_attribute_value(event, "identityKey") {
+                    if let Some(identity_key_json) =
+                        Self::find_attribute_value(event, "identityKey")
+                    {
                         debug!("Processing rate data change event: {}", identity_key_json);
-                        
+
                         match serde_json::from_str::<Value>(identity_key_json) {
                             Ok(identity_data) => {
                                 if let Some(identity_key) = identity_data["ik"].as_str() {
                                     if let Err(e) = Self::ensure_validator_exists(
-                                        identity_key, 
-                                        height, 
-                                        timestamp, 
-                                        dbtx, 
-                                        None, 
-                                        None, 
+                                        identity_key,
+                                        height,
+                                        timestamp,
+                                        dbtx,
                                         None,
-                                        &mut existence_cache
-                                    ).await {
+                                        None,
+                                        None,
+                                        &mut existence_cache,
+                                    )
+                                    .await
+                                    {
                                         error!("Failed to ensure validator exists for rate data change event: {}", e);
                                     }
                                 }
-                            },
+                            }
                             Err(e) => {
-                                error!("Failed to parse validator identity key '{}': {}", identity_key_json, e);
+                                error!(
+                                    "Failed to parse validator identity key '{}': {}",
+                                    identity_key_json, e
+                                );
                             }
                         }
                     }
-                },
+                }
                 "penumbra.core.component.stake.v1.EventSlashingPenaltyApplied" => {
-                    if let Some(identity_key_json) = Self::find_attribute_value(event, "identityKey") {
-                        debug!("Processing slashing penalty applied event: {}", identity_key_json);
-                        
+                    if let Some(identity_key_json) =
+                        Self::find_attribute_value(event, "identityKey")
+                    {
+                        debug!(
+                            "Processing slashing penalty applied event: {}",
+                            identity_key_json
+                        );
+
                         match serde_json::from_str::<Value>(identity_key_json) {
                             Ok(identity_data) => {
                                 if let Some(identity_key) = identity_data["ik"].as_str() {
                                     if let Err(e) = Self::ensure_validator_exists(
-                                        identity_key, 
-                                        height, 
-                                        timestamp, 
-                                        dbtx, 
-                                        None, 
-                                        None, 
+                                        identity_key,
+                                        height,
+                                        timestamp,
+                                        dbtx,
                                         None,
-                                        &mut existence_cache
-                                    ).await {
+                                        None,
+                                        None,
+                                        &mut existence_cache,
+                                    )
+                                    .await
+                                    {
                                         error!("Failed to ensure validator exists for slashing penalty event: {}", e);
                                     }
                                 }
-                            },
+                            }
                             Err(e) => {
-                                error!("Failed to parse validator identity key '{}': {}", identity_key_json, e);
+                                error!(
+                                    "Failed to parse validator identity key '{}': {}",
+                                    identity_key_json, e
+                                );
                             }
                         }
                     }
-                },
+                }
                 "penumbra.core.component.stake.v1.EventTombstoneValidator" => {
-                    if let Some(identity_key_json) = Self::find_attribute_value(event, "identityKey") {
-                        debug!("Processing tombstone validator event: {}", identity_key_json);
-                        
+                    if let Some(identity_key_json) =
+                        Self::find_attribute_value(event, "identityKey")
+                    {
+                        debug!(
+                            "Processing tombstone validator event: {}",
+                            identity_key_json
+                        );
+
                         match serde_json::from_str::<Value>(identity_key_json) {
                             Ok(identity_data) => {
                                 if let Some(identity_key) = identity_data["ik"].as_str() {
                                     if let Err(e) = Self::ensure_validator_exists(
-                                        identity_key, 
-                                        height, 
-                                        timestamp, 
-                                        dbtx, 
-                                        None, 
-                                        None, 
+                                        identity_key,
+                                        height,
+                                        timestamp,
+                                        dbtx,
                                         None,
-                                        &mut existence_cache
-                                    ).await {
+                                        None,
+                                        None,
+                                        &mut existence_cache,
+                                    )
+                                    .await
+                                    {
                                         error!("Failed to ensure validator exists for tombstone event: {}", e);
                                     }
                                 }
-                            },
+                            }
                             Err(e) => {
-                                error!("Failed to parse validator identity key '{}': {}", identity_key_json, e);
+                                error!(
+                                    "Failed to parse validator identity key '{}': {}",
+                                    identity_key_json, e
+                                );
                             }
                         }
                     }
-                },
+                }
                 _ => {}
             }
         }
-        
+
         if let Err(e) = voting_power_batch.apply_all(dbtx, timestamp).await {
             error!("Failed to apply batched voting power changes: {}", e);
         }
-        
-        debug!("Processing {} transaction-to-validator mappings", tx_validator_mappings.len());
+
+        debug!(
+            "Processing {} transaction-to-validator mappings",
+            tx_validator_mappings.len()
+        );
         for (tx_hash, identity_key) in tx_validator_mappings {
-            if let Err(e) = Self::link_transaction_to_validator(&tx_hash, &identity_key, dbtx).await {
-                error!("Failed to link transaction to validator {}: {}", identity_key, e);
+            if let Err(e) = Self::link_transaction_to_validator(&tx_hash, &identity_key, dbtx).await
+            {
+                error!(
+                    "Failed to link transaction to validator {}: {}",
+                    identity_key, e
+                );
             }
         }
-        
+
         Ok(())
     }
-    
 }
 
 impl ValidatorFundingStream {
@@ -1429,11 +1642,11 @@ impl ValidatorFundingStream {
             updated_at: timestamp,
         }
     }
-    
+
     /// Insert or update a funding stream in the database
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn insert_or_update(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
         sqlx::query(
@@ -1461,14 +1674,14 @@ impl ValidatorFundingStream {
         .bind(self.updated_at)
         .execute(dbtx.as_mut())
         .await?;
-        
+
         Ok(())
     }
-    
+
     /// Process funding streams from validator data
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn process_funding_streams(
         identity_key: &str,
@@ -1480,7 +1693,10 @@ impl ValidatorFundingStream {
             for stream in funding_streams {
                 if let Some(to_address) = stream.get("toAddress") {
                     if let Some(address) = to_address.get("address").and_then(|a| a.as_str()) {
-                        if let Some(rate_bps) = to_address.get("rateBps").and_then(serde_json::Value::as_i64) {
+                        if let Some(rate_bps) = to_address
+                            .get("rateBps")
+                            .and_then(serde_json::Value::as_i64)
+                        {
                             let funding_stream = Self::new(
                                 identity_key.to_string(),
                                 "toAddress".to_string(),
@@ -1488,16 +1704,22 @@ impl ValidatorFundingStream {
                                 i32::try_from(rate_bps).unwrap_or(i32::MAX),
                                 timestamp,
                             );
-                            
+
                             if let Err(e) = funding_stream.insert_or_update(dbtx).await {
-                                error!("Failed to insert funding stream for validator {}: {}", identity_key, e);
+                                error!(
+                                    "Failed to insert funding stream for validator {}: {}",
+                                    identity_key, e
+                                );
                             }
                         }
                     }
                 }
-                
+
                 if let Some(to_community_pool) = stream.get("toCommunityPool") {
-                    if let Some(rate_bps) = to_community_pool.get("rateBps").and_then(serde_json::Value::as_i64) {
+                    if let Some(rate_bps) = to_community_pool
+                        .get("rateBps")
+                        .and_then(serde_json::Value::as_i64)
+                    {
                         let funding_stream = Self::new(
                             identity_key.to_string(),
                             "toCommunityPool".to_string(),
@@ -1505,7 +1727,7 @@ impl ValidatorFundingStream {
                             i32::try_from(rate_bps).unwrap_or(i32::MAX),
                             timestamp,
                         );
-                        
+
                         if let Err(e) = funding_stream.insert_or_update(dbtx).await {
                             error!("Failed to insert community pool funding stream for validator {}: {}", identity_key, e);
                         }
@@ -1513,143 +1735,173 @@ impl ValidatorFundingStream {
                 }
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Calculate total commission rate for a validator
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn calculate_total_commission_rate(
         identity_key: &str,
         dbtx: &mut PgTransaction<'_>,
     ) -> Result<f64> {
         let total_rate_bps: Option<i64> = sqlx::query_scalar(
-            "SELECT SUM(rate_bps) FROM validator_funding_streams WHERE identity_key = $1"
+            "SELECT SUM(rate_bps) FROM validator_funding_streams WHERE identity_key = $1",
         )
         .bind(identity_key)
         .fetch_optional(dbtx.as_mut())
         .await?;
-        
-        let total_percentage = f64::from(i32::try_from(total_rate_bps.unwrap_or(0)).unwrap_or(0)) / 100.0;
-        
+
+        let total_percentage =
+            f64::from(i32::try_from(total_rate_bps.unwrap_or(0)).unwrap_or(0)) / 100.0;
+
         Ok(total_percentage)
     }
 }
 
 impl ValidatorParams {
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the genesis.json file cannot be read or parsed.
     #[allow(clippy::too_many_lines)]
     pub fn from_genesis_json() -> Result<Self> {
-        let file = File::open("genesis.json")
-            .map_err(|e| {
-                tracing::error!("Failed to open genesis.json: {}", e);
-                anyhow::anyhow!("Failed to open genesis.json: {}", e)
-            })?;
+        let file = File::open("genesis.json").map_err(|e| {
+            tracing::error!("Failed to open genesis.json: {}", e);
+            anyhow::anyhow!("Failed to open genesis.json: {}", e)
+        })?;
 
         let mut contents = String::new();
-        file.take(10_000_000).read_to_string(&mut contents)
+        file.take(10_000_000)
+            .read_to_string(&mut contents)
             .map_err(|e| {
                 tracing::error!("Failed to read genesis.json: {}", e);
                 anyhow::anyhow!("Failed to read genesis.json: {}", e)
             })?;
 
-        let genesis: Value = serde_json::from_str(&contents)
-            .map_err(|e| {
-                tracing::error!("Failed to parse genesis.json: {}", e);
-                anyhow::anyhow!("Failed to parse genesis.json: {}", e)
-            })?;
-        
+        let genesis: Value = serde_json::from_str(&contents).map_err(|e| {
+            tracing::error!("Failed to parse genesis.json: {}", e);
+            anyhow::anyhow!("Failed to parse genesis.json: {}", e)
+        })?;
+
         let chain_id = if let Some(id) = genesis.get("chain_id").and_then(|v| v.as_str()) {
             id.to_string()
-        } else if let Some(id) = genesis.get("app_state")
-                    .and_then(|app| app.get("genesisContent"))
-                    .and_then(|content| content.get("chainId"))
-                    .and_then(|id| id.as_str()) {
+        } else if let Some(id) = genesis
+            .get("app_state")
+            .and_then(|app| app.get("genesisContent"))
+            .and_then(|content| content.get("chainId"))
+            .and_then(|id| id.as_str())
+        {
             id.to_string()
         } else {
             tracing::error!("Failed to find chain_id in genesis.json");
             return Err(anyhow::anyhow!("Missing chain_id in genesis.json"));
         };
-        
+
         tracing::info!("Found chain_id in genesis.json: {}", chain_id);
-        
-        let Some(stake_params) = genesis.get("app_state")
+
+        let Some(stake_params) = genesis
+            .get("app_state")
             .and_then(|app| app.get("genesisContent"))
             .and_then(|content| content.get("stakeContent"))
-            .and_then(|stake| stake.get("stakeParams")) else {
-                tracing::error!("Failed to find stakeParams in genesis.json");
-                return Err(anyhow::anyhow!("Missing stakeParams in genesis.json"));
-            };
-        
-        let Some(Ok(active_validator_limit)) = stake_params.get("activeValidatorLimit")
+            .and_then(|stake| stake.get("stakeParams"))
+        else {
+            tracing::error!("Failed to find stakeParams in genesis.json");
+            return Err(anyhow::anyhow!("Missing stakeParams in genesis.json"));
+        };
+
+        let Some(Ok(active_validator_limit)) = stake_params
+            .get("activeValidatorLimit")
             .and_then(|limit| limit.as_str())
-            .map(str::parse::<i64>) else {
-                tracing::error!("Failed to parse activeValidatorLimit in genesis.json");
-                return Err(anyhow::anyhow!("Missing or invalid activeValidatorLimit in genesis.json"));
-            };
-        
-        let min_validator_stake = if let Some(Ok(raw_val)) = stake_params.get("minValidatorStake")
+            .map(str::parse::<i64>)
+        else {
+            tracing::error!("Failed to parse activeValidatorLimit in genesis.json");
+            return Err(anyhow::anyhow!(
+                "Missing or invalid activeValidatorLimit in genesis.json"
+            ));
+        };
+
+        let min_validator_stake = if let Some(Ok(raw_val)) = stake_params
+            .get("minValidatorStake")
             .and_then(|stake| stake.get("lo"))
             .and_then(|lo| lo.as_str())
-            .map(str::parse::<i64>) {
-                format!("{} UM", raw_val / 1_000_000)
-            } else {
-                tracing::error!("Failed to parse minValidatorStake.lo in genesis.json");
-                return Err(anyhow::anyhow!("Missing or invalid minValidatorStake.lo in genesis.json"));
-            };
+            .map(str::parse::<i64>)
+        {
+            format!("{} UM", raw_val / 1_000_000)
+        } else {
+            tracing::error!("Failed to parse minValidatorStake.lo in genesis.json");
+            return Err(anyhow::anyhow!(
+                "Missing or invalid minValidatorStake.lo in genesis.json"
+            ));
+        };
 
         let total_staked = String::new();
-        
-        let Some(Ok(uptime_blocks_window)) = stake_params.get("signedBlocksWindowLen")
+
+        let Some(Ok(uptime_blocks_window)) = stake_params
+            .get("signedBlocksWindowLen")
             .and_then(|window| window.as_str())
-            .map(str::parse::<i64>) else {
-                tracing::error!("Failed to parse signedBlocksWindowLen in genesis.json");
-                return Err(anyhow::anyhow!("Missing or invalid signedBlocksWindowLen in genesis.json"));
-            };
-        
-        let uptime_min_required = if let Some(Ok(missed_max)) = stake_params.get("missedBlocksMaximum")
+            .map(str::parse::<i64>)
+        else {
+            tracing::error!("Failed to parse signedBlocksWindowLen in genesis.json");
+            return Err(anyhow::anyhow!(
+                "Missing or invalid signedBlocksWindowLen in genesis.json"
+            ));
+        };
+
+        let uptime_min_required = if let Some(Ok(missed_max)) = stake_params
+            .get("missedBlocksMaximum")
             .and_then(|max| max.as_str())
-            .map(str::parse::<i64>) {
-                let min_percent = 100.0 * f64::from(i32::try_from(uptime_blocks_window - missed_max).unwrap_or(0)) / f64::from(i32::try_from(uptime_blocks_window).unwrap_or(1));
-                format!("{min_percent:.2}%")
-            } else {
-                tracing::error!("Failed to parse missedBlocksMaximum in genesis.json");
-                return Err(anyhow::anyhow!("Missing or invalid missedBlocksMaximum in genesis.json"));
-            };
-        
-        let slashing_penalty_downtime = if let Some(Ok(penalty)) = stake_params.get("slashingPenaltyDowntime")
+            .map(str::parse::<i64>)
+        {
+            let min_percent = 100.0
+                * f64::from(i32::try_from(uptime_blocks_window - missed_max).unwrap_or(0))
+                / f64::from(i32::try_from(uptime_blocks_window).unwrap_or(1));
+            format!("{min_percent:.2}%")
+        } else {
+            tracing::error!("Failed to parse missedBlocksMaximum in genesis.json");
+            return Err(anyhow::anyhow!(
+                "Missing or invalid missedBlocksMaximum in genesis.json"
+            ));
+        };
+
+        let slashing_penalty_downtime = if let Some(Ok(penalty)) = stake_params
+            .get("slashingPenaltyDowntime")
             .and_then(|penalty| penalty.as_str())
-            .map(str::parse::<i64>) {
-                let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
-                format!("{penalty_float:.2}%")
-            } else {
-                tracing::warn!("slashingPenaltyDowntime not found in genesis.json");
-                String::new()
-            };
-        
-        let slashing_penalty_misbehavior = if let Some(Ok(penalty)) = stake_params.get("slashingPenaltyMisbehavior")
+            .map(str::parse::<i64>)
+        {
+            let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
+            format!("{penalty_float:.2}%")
+        } else {
+            tracing::warn!("slashingPenaltyDowntime not found in genesis.json");
+            String::new()
+        };
+
+        let slashing_penalty_misbehavior = if let Some(Ok(penalty)) = stake_params
+            .get("slashingPenaltyMisbehavior")
             .and_then(|penalty| penalty.as_str())
-            .map(str::parse::<i64>) {
-                let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
-                format!("{penalty_float:.2}%")
-            } else {
-                tracing::error!("Failed to parse slashingPenaltyMisbehavior in genesis.json");
-                return Err(anyhow::anyhow!("Missing or invalid slashingPenaltyMisbehavior in genesis.json"));
-            };
-        
-        let Some(delay) = stake_params.get("unbondingDelay")
-            .and_then(|delay| delay.as_str()) else {
-                tracing::error!("Failed to find unbondingDelay in genesis.json");
-                return Err(anyhow::anyhow!("Missing unbondingDelay in genesis.json"));
-            };
+            .map(str::parse::<i64>)
+        {
+            let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
+            format!("{penalty_float:.2}%")
+        } else {
+            tracing::error!("Failed to parse slashingPenaltyMisbehavior in genesis.json");
+            return Err(anyhow::anyhow!(
+                "Missing or invalid slashingPenaltyMisbehavior in genesis.json"
+            ));
+        };
+
+        let Some(delay) = stake_params
+            .get("unbondingDelay")
+            .and_then(|delay| delay.as_str())
+        else {
+            tracing::error!("Failed to find unbondingDelay in genesis.json");
+            return Err(anyhow::anyhow!("Missing unbondingDelay in genesis.json"));
+        };
         let unbonding_delay = format!("{delay} blocks");
-        
+
         Ok(Self {
             chain_id,
             active_validator_limit,
@@ -1664,9 +1916,9 @@ impl ValidatorParams {
     }
 
     /// Initialize the validator staking parameters table
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     pub async fn initialize_table(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
         sqlx::query(
@@ -1707,10 +1959,13 @@ impl ValidatorParams {
 
         Ok(())
     }
-    
+
     /// Helper function to find an attribute value in an event
     #[must_use]
-    pub fn find_attribute_value<'a>(event: &'a ContextualizedEvent<'_>, key: &str) -> Option<&'a str> {
+    pub fn find_attribute_value<'a>(
+        event: &'a ContextualizedEvent<'_>,
+        key: &str,
+    ) -> Option<&'a str> {
         for attr in &event.event.attributes {
             if let Ok(attr_key) = attr.key_str() {
                 if attr_key == key {
@@ -1722,11 +1977,11 @@ impl ValidatorParams {
         }
         None
     }
-    
+
     /// Process validator parameter changes from `EventAppParametersChange` events
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database operation fails.
     #[allow(clippy::too_many_lines)]
     pub async fn process_events(
@@ -1748,7 +2003,9 @@ impl ValidatorParams {
         };
 
         if table_exists == 0 {
-            debug!("validator_staking_parameters table does not exist yet, skipping parameters update");
+            debug!(
+                "validator_staking_parameters table does not exist yet, skipping parameters update"
+            );
             return Ok(());
         }
 
@@ -1773,36 +2030,43 @@ impl ValidatorParams {
                             continue;
                         };
                         let chain_id = id.to_string();
-                        
+
                         if let Some(stake_params) = params.get("stakeParams") {
                             let mut updates = Vec::new();
                             let mut bindings = Vec::new();
-                            
-                            let has_stake_params = stake_params.get("activeValidatorLimit").is_some() ||
-                                stake_params.get("minValidatorStake").is_some() ||
-                                stake_params.get("missedBlocksMaximum").is_some() ||
-                                stake_params.get("signedBlocksWindowLen").is_some() ||
-                                stake_params.get("slashingPenaltyDowntime").is_some() ||
-                                stake_params.get("slashingPenaltyMisbehavior").is_some() ||
-                                stake_params.get("unbondingDelay").is_some();
-                                
+
+                            let has_stake_params =
+                                stake_params.get("activeValidatorLimit").is_some()
+                                    || stake_params.get("minValidatorStake").is_some()
+                                    || stake_params.get("missedBlocksMaximum").is_some()
+                                    || stake_params.get("signedBlocksWindowLen").is_some()
+                                    || stake_params.get("slashingPenaltyDowntime").is_some()
+                                    || stake_params.get("slashingPenaltyMisbehavior").is_some()
+                                    || stake_params.get("unbondingDelay").is_some();
+
                             if !has_stake_params {
                                 debug!("No stake parameters in EventAppParametersChange, skipping");
                                 continue;
                             }
-                            
-                            if let Some(val) = stake_params.get("activeValidatorLimit").and_then(|v| v.as_str()) {
+
+                            if let Some(val) = stake_params
+                                .get("activeValidatorLimit")
+                                .and_then(|v| v.as_str())
+                            {
                                 match val.parse::<i64>() {
                                     Ok(limit) => {
                                         updates.push("active_validator_limit = $1");
                                         bindings.push(limit.to_string());
-                                    },
+                                    }
                                     Err(e) => {
-                                        error!("Failed to parse activeValidatorLimit '{}': {}", val, e);
+                                        error!(
+                                            "Failed to parse activeValidatorLimit '{}': {}",
+                                            val, e
+                                        );
                                     }
                                 }
                             }
-                            
+
                             if let Some(stake) = stake_params.get("minValidatorStake") {
                                 if let Some(lo) = stake.get("lo").and_then(|v| v.as_str()) {
                                     match lo.parse::<i64>() {
@@ -1810,75 +2074,115 @@ impl ValidatorParams {
                                             let formatted = format!("{} UM", raw_val / 1_000_000);
                                             updates.push("min_validator_stake = $2");
                                             bindings.push(formatted);
-                                        },
+                                        }
                                         Err(e) => {
-                                            error!("Failed to parse minValidatorStake.lo '{}': {}", lo, e);
+                                            error!(
+                                                "Failed to parse minValidatorStake.lo '{}': {}",
+                                                lo, e
+                                            );
                                         }
                                     }
                                 }
                             }
-                            
-                            if let Some(val) = stake_params.get("signedBlocksWindowLen").and_then(|v| v.as_str()) {
+
+                            if let Some(val) = stake_params
+                                .get("signedBlocksWindowLen")
+                                .and_then(|v| v.as_str())
+                            {
                                 match val.parse::<i64>() {
                                     Ok(window) => {
                                         updates.push("uptime_blocks_window = $3");
                                         bindings.push(window.to_string());
-                                        
-                                        if let Some(missed) = stake_params.get("missedBlocksMaximum").and_then(|v| v.as_str()) {
+
+                                        if let Some(missed) = stake_params
+                                            .get("missedBlocksMaximum")
+                                            .and_then(|v| v.as_str())
+                                        {
                                             match missed.parse::<i64>() {
                                                 Ok(missed_max) => {
-                                                    let min_percent = 100.0 * f64::from(i32::try_from(window - missed_max).unwrap_or(0)) / f64::from(i32::try_from(window).unwrap_or(1));
+                                                    let min_percent = 100.0
+                                                        * f64::from(
+                                                            i32::try_from(window - missed_max)
+                                                                .unwrap_or(0),
+                                                        )
+                                                        / f64::from(
+                                                            i32::try_from(window).unwrap_or(1),
+                                                        );
                                                     let formatted = format!("{min_percent:.2}%");
                                                     updates.push("uptime_min_required = $4");
                                                     bindings.push(formatted);
-                                                },
+                                                }
                                                 Err(e) => {
                                                     error!("Failed to parse missedBlocksMaximum '{}': {}", missed, e);
                                                 }
                                             }
                                         }
-                                    },
+                                    }
                                     Err(e) => {
-                                        error!("Failed to parse signedBlocksWindowLen '{}': {}", val, e);
+                                        error!(
+                                            "Failed to parse signedBlocksWindowLen '{}': {}",
+                                            val, e
+                                        );
                                     }
                                 }
                             }
-                            
-                            if let Some(val) = stake_params.get("slashingPenaltyDowntime").and_then(|v| v.as_str()) {
+
+                            if let Some(val) = stake_params
+                                .get("slashingPenaltyDowntime")
+                                .and_then(|v| v.as_str())
+                            {
                                 match val.parse::<i64>() {
                                     Ok(penalty) => {
-                                        let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
+                                        let penalty_float =
+                                            f64::from(i32::try_from(penalty).unwrap_or(0))
+                                                / 1_000_000.0;
                                         let formatted = format!("{penalty_float:.2}%");
-                                        debug!("Parsed slashingPenaltyDowntime '{}' as '{}'", val, formatted);
+                                        debug!(
+                                            "Parsed slashingPenaltyDowntime '{}' as '{}'",
+                                            val, formatted
+                                        );
                                         updates.push("slashing_penalty_downtime = $5");
                                         bindings.push(formatted);
-                                    },
+                                    }
                                     Err(e) => {
-                                        error!("Failed to parse slashingPenaltyDowntime '{}': {}", val, e);
+                                        error!(
+                                            "Failed to parse slashingPenaltyDowntime '{}': {}",
+                                            val, e
+                                        );
                                     }
                                 }
                             }
-                            
-                            if let Some(val) = stake_params.get("slashingPenaltyMisbehavior").and_then(|v| v.as_str()) {
+
+                            if let Some(val) = stake_params
+                                .get("slashingPenaltyMisbehavior")
+                                .and_then(|v| v.as_str())
+                            {
                                 match val.parse::<i64>() {
                                     Ok(penalty) => {
-                                        let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
+                                        let penalty_float =
+                                            f64::from(i32::try_from(penalty).unwrap_or(0))
+                                                / 1_000_000.0;
                                         let formatted = format!("{penalty_float:.2}%");
                                         updates.push("slashing_penalty_misbehavior = $6");
                                         bindings.push(formatted);
-                                    },
+                                    }
                                     Err(e) => {
-                                        error!("Failed to parse slashingPenaltyMisbehavior '{}': {}", val, e);
+                                        error!(
+                                            "Failed to parse slashingPenaltyMisbehavior '{}': {}",
+                                            val, e
+                                        );
                                     }
                                 }
                             }
-                            
-                            if let Some(val) = stake_params.get("unbondingDelay").and_then(|v| v.as_str()) {
+
+                            if let Some(val) =
+                                stake_params.get("unbondingDelay").and_then(|v| v.as_str())
+                            {
                                 let formatted = format!("{val} blocks");
                                 updates.push("unbonding_delay = $7");
                                 bindings.push(formatted);
                             }
-                            
+
                             if !updates.is_empty() {
                                 let chain_exists: i64 = match sqlx::query_scalar(
                                     "SELECT COUNT(*) FROM validator_staking_parameters WHERE chain_id = $1"
@@ -1892,83 +2196,105 @@ impl ValidatorParams {
                                         continue;
                                     }
                                 };
-                                
+
                                 if chain_exists == 0 {
                                     info!("Chain ID '{}' does not exist in validator_staking_parameters, skipping update", chain_id);
                                     continue;
                                 }
-                                
+
                                 let update_str = updates.join(", ");
                                 let query = format!(
                                     "UPDATE validator_staking_parameters SET {update_str} WHERE chain_id = $8"
                                 );
-                                
-                                info!("Updating validator staking parameters for chain_id = {}", chain_id);
-                                
+
+                                info!(
+                                    "Updating validator staking parameters for chain_id = {}",
+                                    chain_id
+                                );
+
                                 let mut q = sqlx::query(&query);
-                                
+
                                 for (i, val) in bindings.iter().enumerate() {
                                     match i {
-                                        0 => if updates.contains(&"active_validator_limit = $1") {
-                                            match val.parse::<i64>() {
-                                                Ok(v) => q = q.bind(v),
-                                                Err(e) => {
-                                                    error!("Failed to bind active_validator_limit '{}': {}", val, e);
-                                                    continue;
+                                        0 => {
+                                            if updates.contains(&"active_validator_limit = $1") {
+                                                match val.parse::<i64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind active_validator_limit '{}': {}", val, e);
+                                                        continue;
+                                                    }
                                                 }
                                             }
-                                        },
-                                        1 => if updates.contains(&"min_validator_stake = $2") {
-                                            q = q.bind(val);
-                                        },
-                                        2 => if updates.contains(&"uptime_blocks_window = $3") {
-                                            match val.parse::<i64>() {
-                                                Ok(v) => q = q.bind(v),
-                                                Err(e) => {
-                                                    error!("Failed to bind uptime_blocks_window '{}': {}", val, e);
-                                                    continue;
+                                        }
+                                        1 => {
+                                            if updates.contains(&"min_validator_stake = $2") {
+                                                q = q.bind(val);
+                                            }
+                                        }
+                                        2 => {
+                                            if updates.contains(&"uptime_blocks_window = $3") {
+                                                match val.parse::<i64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind uptime_blocks_window '{}': {}", val, e);
+                                                        continue;
+                                                    }
                                                 }
                                             }
-                                        },
-                                        3 => if updates.contains(&"uptime_min_required = $4") {
-                                            q = q.bind(val);
-                                        },
-                                        4 => if updates.contains(&"slashing_penalty_downtime = $5") {
-                                            q = q.bind(val);
-                                        },
-                                        5 => if updates.contains(&"slashing_penalty_misbehavior = $6") {
-                                            q = q.bind(val);
-                                        },
-                                        6 => if updates.contains(&"unbonding_delay = $7") {
-                                            q = q.bind(val);
-                                        },
+                                        }
+                                        3 => {
+                                            if updates.contains(&"uptime_min_required = $4") {
+                                                q = q.bind(val);
+                                            }
+                                        }
+                                        4 => {
+                                            if updates.contains(&"slashing_penalty_downtime = $5") {
+                                                q = q.bind(val);
+                                            }
+                                        }
+                                        5 => {
+                                            if updates
+                                                .contains(&"slashing_penalty_misbehavior = $6")
+                                            {
+                                                q = q.bind(val);
+                                            }
+                                        }
+                                        6 => {
+                                            if updates.contains(&"unbonding_delay = $7") {
+                                                q = q.bind(val);
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
-                                
+
                                 q = q.bind(&chain_id);
-                                
+
                                 match q.execute(dbtx.as_mut()).await {
                                     Ok(result) => {
                                         info!(
                                             "Updated {} validator staking parameters for chain_id = {}",
                                             result.rows_affected(), chain_id
                                         );
-                                    },
+                                    }
                                     Err(e) => {
-                                        error!("Failed to update validator staking parameters: {}", e);
+                                        error!(
+                                            "Failed to update validator staking parameters: {}",
+                                            e
+                                        );
                                     }
                                 }
                             }
                         }
-                    },
+                    }
                     None => {
                         error!("EventAppParametersChange missing newParameters attribute");
                     }
                 }
             }
         }
-        
+
         Ok(())
     }
 }
