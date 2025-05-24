@@ -101,7 +101,7 @@ pub async fn poll_ibc_transactions(
 async fn get_recent_ibc_transactions(
     pool: &Pool<Postgres>,
 ) -> Result<Vec<(Vec<u8>, String, String, i64, chrono::DateTime<chrono::Utc>)>, sqlx::Error> {
-    sqlx::query_as::<_, (Vec<u8>, String, String, i64, chrono::DateTime<chrono::Utc>)>(
+    sqlx::query_as(
         r"
         SELECT
             tx_hash,
@@ -113,6 +113,8 @@ async fn get_recent_ibc_transactions(
             explorer_transactions
         WHERE
             ibc_client_id IS NOT NULL
+            AND ibc_status = 'pending'      -- Only track pending!
+            AND ibc_direction = 'outbound'  -- Only outbound needs tracking!
         ORDER BY
             timestamp DESC
         LIMIT 100
