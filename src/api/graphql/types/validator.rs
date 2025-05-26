@@ -18,6 +18,13 @@ pub struct Validator {
 }
 
 #[derive(Debug, Clone, SimpleObject)]
+pub struct ValidatorSearchResult {
+    pub identity_key: String,
+    pub decoded_address: String,
+    pub display_name: String, // Will be name if available, otherwise decoded_address
+}
+
+#[derive(Debug, Clone, SimpleObject)]
 pub struct StakingParameters {
     pub total_staked: String,
     pub active_validator_limit: i64,
@@ -88,7 +95,6 @@ impl ValidatorHomepageData {
         .fetch_all(pool)
         .await?;
 
-        // Fetch staking parameters
         let params = sqlx::query_as::<_, StakingParamsRow>(
             r#"
             SELECT 
@@ -183,4 +189,44 @@ struct StakingParamsRow {
     slashing_penalty_downtime: Option<String>,
     slashing_penalty_misbehavior: String,
     min_validator_stake: String,
+}
+
+impl ValidatorSearchResult {
+    pub async fn search_by_address(
+        pool: &PgPool,
+        search_address: &str,
+    ) -> async_graphql::Result<Option<Self>> {
+        // Search for validator by decoded address
+        let result: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT 
+                identity_key,
+                decoded_address,
+                name
+            FROM 
+                validators
+            WHERE 
+                decoded_address = $1
+            LIMIT 1
+            "#
+        )
+        .bind(search_address)
+        .fetch_optional(pool)
+        .await?;
+
+        match result {
+            Some((identity_key, decoded_address, name)) => {
+                if let Some(addr) = decoded_address {
+                    Ok(Some(Self {
+                        identity_key,
+                        decoded_address: addr.clone(),
+                        display_name: name.unwrap_or(addr),
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
+    }
 }
