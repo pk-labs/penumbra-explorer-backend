@@ -4,6 +4,7 @@ mod search;
 mod stats;
 mod subscription;
 mod transaction;
+mod validator;
 
 use crate::api::graphql::types::inputs::TimePeriod;
 use async_graphql::Object;
@@ -17,6 +18,7 @@ pub use search::resolve_search;
 pub use stats::resolve_stats;
 pub use subscription::Root as SubscriptionRoot;
 pub use transaction::{resolve_transaction, resolve_transactions, resolve_transactions_collection};
+pub use validator::resolve_validators_homepage;
 
 pub struct QueryRoot;
 
@@ -171,5 +173,13 @@ impl QueryRoot {
         ctx: &async_graphql::Context<'_>,
     ) -> async_graphql::Result<crate::api::graphql::types::ibc::TotalShieldedVolume> {
         resolve_total_shielded_volume(ctx).await
+    }
+
+    async fn validators_homepage(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+        filter: Option<crate::api::graphql::types::ValidatorFilter>,
+    ) -> async_graphql::Result<crate::api::graphql::types::ValidatorHomepageData> {
+        resolve_validators_homepage(ctx, filter).await
     }
 }
