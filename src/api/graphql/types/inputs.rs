@@ -73,3 +73,18 @@ pub struct IbcChannelFilter {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum ValidatorStateFilter {
+    #[graphql(name = "ALL")]
+    All,
+    #[graphql(name = "ACTIVE")]
+    Active,
+    #[graphql(name = "INACTIVE")]
+    Inactive,
+}
+
+#[derive(InputObject)]
+pub struct ValidatorFilter {
+    pub state: Option<ValidatorStateFilter>,
+}
