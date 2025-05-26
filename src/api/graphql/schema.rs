@@ -6,8 +6,9 @@ use crate::api::graphql::{
     types::{
         ibc::{ChannelPair, ClientStatus, TotalShieldedVolume},
         Action, Block, BlockCollection, BlockUpdate, CollectionItem, Event, Fee, IbcStats,
-        Transaction, TransactionBody, TransactionCollection, TransactionCountUpdate,
-        TransactionParameters, TransactionUpdate,
+        StakingParameters, Transaction, TransactionBody, TransactionCollection, 
+        TransactionCountUpdate, TransactionParameters, TransactionUpdate, Validator, 
+        ValidatorFilter, ValidatorHomepageData, ValidatorStateFilter,
     },
 };
 use async_graphql::Schema as AsyncGraphQLSchema;
@@ -53,7 +54,10 @@ pub fn create_schema(db_pool: PgPool) -> PenumbraSchema {
         .register_output_type::<IbcStats>()
         .register_output_type::<ChannelPair>()
         .register_output_type::<TotalShieldedVolume>()
-        .register_output_type::<ClientStatus>();
+        .register_output_type::<ClientStatus>()
+        .register_output_type::<Validator>()
+        .register_output_type::<StakingParameters>()
+        .register_output_type::<ValidatorHomepageData>();
 
     builder.finish()
 }
