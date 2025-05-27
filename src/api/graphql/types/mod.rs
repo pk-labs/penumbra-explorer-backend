@@ -26,4 +26,7 @@ pub use transaction::{
     RangeDirection, Transaction, TransactionBody, TransactionParameters,
 };
 pub use unions::*;
-pub use validator::{BlockParticipation, CommissionInfo, StakingParameters, Validator, ValidatorDetails, ValidatorHomepageData, ValidatorSearchResult};
+pub use validator::{
+    BlockParticipation, CommissionInfo, StakingParameters, Validator, ValidatorDetails,
+    ValidatorHomepageData, ValidatorSearchResult,
+};
