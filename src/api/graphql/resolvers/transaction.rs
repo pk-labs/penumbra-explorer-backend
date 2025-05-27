@@ -187,7 +187,6 @@ pub async fn resolve_transactions_collection(
 
     query.push_str(&format!(" LIMIT {length} OFFSET {offset}"));
 
-    // Build data query
     let mut query_builder = sqlx::query(&query);
 
     if let Some(filter) = &filter {
