@@ -1,8 +1,8 @@
 use crate::api::graphql::{
     context::ApiContext,
     types::{
-        string_to_ibc_status, Block, CollectionLimit, Event, Transaction,
-        TransactionCollection, TransactionFilter,
+        string_to_ibc_status, Block, CollectionLimit, Event, Transaction, TransactionCollection,
+        TransactionFilter,
     },
 };
 use async_graphql::Result;
