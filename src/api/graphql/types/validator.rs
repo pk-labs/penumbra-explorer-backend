@@ -68,7 +68,6 @@ impl ValidatorHomepageData {
             Some(ValidatorStateFilter::All) | None => "",
         };
 
-        // Fetch validators from validator_performance view
         let query = format!(
             r#"
             SELECT 
