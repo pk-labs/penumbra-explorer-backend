@@ -61,7 +61,6 @@ impl ValidatorHomepageData {
     ) -> async_graphql::Result<Self> {
         let pool = ctx.data::<PgPool>()?;
 
-        // Build WHERE clause based on filter
         let where_clause = match filter.as_ref().and_then(|f| f.state) {
             Some(ValidatorStateFilter::Active) => "WHERE state LIKE '%ACTIVE%'",
             Some(ValidatorStateFilter::Inactive) => "WHERE state NOT LIKE '%ACTIVE%'",
