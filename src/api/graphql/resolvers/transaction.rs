@@ -137,7 +137,6 @@ pub async fn resolve_transactions_collection(
         count_query.push_str(&where_clauses.join(" AND "));
     }
 
-    // Build count query
     let mut count_query_builder = sqlx::query_scalar::<_, i64>(&count_query);
 
     if let Some(filter) = &filter {
