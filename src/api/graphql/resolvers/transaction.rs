@@ -153,7 +153,6 @@ pub async fn resolve_transactions_collection(
 
     let total_count = count_query_builder.fetch_one(db).await?;
 
-    // Updated base query to include ibc_client_id and ibc_status
     let base_query = r"
         SELECT
             t.tx_hash,
