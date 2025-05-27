@@ -293,7 +293,7 @@ impl ValidatorDetails {
                 v.state,
                 v.bonding_state,
                 vp.uptime_percentage::FLOAT8 as uptime_percentage,
-                vp.blocks_in_window as uptime_block_window,
+                vp.total_tracked_blocks as uptime_block_window,
                 vp.missed_blocks,
                 vp.signed_blocks,
                 vp.commission_rate::FLOAT8 as commission_rate,
