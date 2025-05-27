@@ -102,14 +102,12 @@ pub async fn resolve_transactions_collection(
 ) -> Result<TransactionCollection> {
     let db = &ctx.data_unchecked::<ApiContext>().db;
 
-    // Create storage for our potential hash bytes
     let mut hash_bytes_storage: Option<Vec<u8>> = None;
 
     let mut count_query = String::from("SELECT COUNT(*) FROM explorer_transactions");
     let mut where_clauses = Vec::new();
     let mut param_count = 0;
 
-    // Build WHERE clauses
     if let Some(filter) = &filter {
         if let Some(hash) = &filter.hash {
             if let Ok(hash_bytes) = hex::decode(hash.trim_start_matches("0x")) {
