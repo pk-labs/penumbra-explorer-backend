@@ -115,7 +115,6 @@ impl ValidatorHomepageData {
             async_graphql::Error::new("Staking parameters not found in database")
         })?;
 
-        // Count active validators
         let active_count: i64 = sqlx::query_scalar(
             r#"
             SELECT COUNT(*)
@@ -161,7 +160,6 @@ impl ValidatorHomepageData {
     }
 }
 
-// Helper struct for database query
 #[derive(FromRow)]
 struct ValidatorRow {
     identity_key: String,
@@ -176,7 +174,6 @@ struct ValidatorRow {
     commission_rate: f64,
 }
 
-// Helper struct for staking parameters query
 #[derive(FromRow)]
 struct StakingParamsRow {
     total_staked: String,
@@ -194,7 +191,6 @@ impl ValidatorSearchResult {
         pool: &PgPool,
         search_address: &str,
     ) -> async_graphql::Result<Option<Self>> {
-        // Search for validator by decoded address
         let result: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
             r#"
             SELECT 
