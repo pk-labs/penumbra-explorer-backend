@@ -1,7 +1,7 @@
+use crate::api::graphql::types::{ValidatorFilter, ValidatorStateFilter};
 use async_graphql::{Object, SimpleObject};
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
-use crate::api::graphql::types::{ValidatorFilter, ValidatorStateFilter};
 
 #[derive(Debug, Clone, SimpleObject)]
 pub struct Validator {
@@ -93,9 +93,9 @@ impl ValidatorHomepageData {
 
 impl ValidatorHomepageData {
     /// Fetches homepage data for validators
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if database queries fail
     pub async fn fetch_homepage_data(
         ctx: &async_graphql::Context<'_>,
@@ -129,10 +129,8 @@ impl ValidatorHomepageData {
                 voting_power DESC
             "
         );
-        
-        let validators: Vec<ValidatorRow> = sqlx::query_as(&query)
-        .fetch_all(pool)
-        .await?;
+
+        let validators: Vec<ValidatorRow> = sqlx::query_as(&query).fetch_all(pool).await?;
 
         let params = sqlx::query_as::<_, StakingParamsRow>(
             r"
@@ -148,20 +146,18 @@ impl ValidatorHomepageData {
             FROM 
                 validator_staking_parameters
             LIMIT 1
-            "
+            ",
         )
         .fetch_optional(pool)
         .await?
-        .ok_or_else(|| {
-            async_graphql::Error::new("Staking parameters not found in database")
-        })?;
+        .ok_or_else(|| async_graphql::Error::new("Staking parameters not found in database"))?;
 
         let active_count: i64 = sqlx::query_scalar(
             r"
             SELECT COUNT(*)
             FROM validators 
             WHERE state LIKE '%ACTIVE%'
-            "
+            ",
         )
         .fetch_one(pool)
         .await?;
@@ -229,9 +225,9 @@ struct StakingParamsRow {
 
 impl ValidatorSearchResult {
     /// Searches for a validator by decoded address
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the database query fails
     pub async fn search_by_address(
         pool: &PgPool,
@@ -248,7 +244,7 @@ impl ValidatorSearchResult {
             WHERE 
                 decoded_address = $1
             LIMIT 1
-            "
+            ",
         )
         .bind(search_address)
         .fetch_optional(pool)
@@ -273,9 +269,9 @@ impl ValidatorSearchResult {
 
 impl ValidatorDetails {
     /// Gets validator details by decoded address
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if database queries fail
     #[allow(clippy::too_many_lines)]
     pub async fn get_by_address(
@@ -307,7 +303,7 @@ impl ValidatorDetails {
             WHERE 
                 v.decoded_address = $1
             LIMIT 1
-            "
+            ",
         )
         .bind(decoded_address)
         .fetch_optional(pool)
@@ -329,17 +325,16 @@ impl ValidatorDetails {
                 identity_key = $1
             ORDER BY
                 stream_type, recipient_address
-            "
+            ",
         )
         .bind(&info.identity_key)
         .fetch_all(pool)
         .await?;
 
-        let current_height: i64 = sqlx::query_scalar(
-            "SELECT MAX(height) FROM explorer_block_details"
-        )
-        .fetch_one(pool)
-        .await?;
+        let current_height: i64 =
+            sqlx::query_scalar("SELECT MAX(height) FROM explorer_block_details")
+                .fetch_one(pool)
+                .await?;
 
         let last_300_blocks: Vec<(i64, bool)> = sqlx::query_as(
             r"
@@ -353,7 +348,7 @@ impl ValidatorDetails {
                 AND block_height > $2
             ORDER BY 
                 block_height DESC
-            "
+            ",
         )
         .bind(&info.identity_key)
         .bind(current_height - 300)
