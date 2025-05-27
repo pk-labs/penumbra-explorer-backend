@@ -140,7 +140,6 @@ pub async fn resolve_transactions_collection(
     // Build count query
     let mut count_query_builder = sqlx::query_scalar::<_, i64>(&count_query);
 
-    // Bind parameters to count query
     if let Some(filter) = &filter {
         if let Some(hash_bytes) = &hash_bytes_storage {
             count_query_builder = count_query_builder.bind(hash_bytes.as_slice());
