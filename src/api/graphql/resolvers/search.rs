@@ -13,19 +13,16 @@ use sqlx::PgPool;
 pub async fn resolve_search(ctx: &Context<'_>, slug: String) -> Result<Option<SearchResult>> {
     let pool = ctx.data::<PgPool>()?;
 
-    // Try to parse as block height
     if let Ok(height) = slug.parse::<i32>() {
         if let Some(block) = get(ctx, height).await? {
             return Ok(Some(SearchResult::Block(block)));
         }
     }
 
-    // Try to find as transaction hash
     if let Some(tx) = resolve_transaction(ctx, slug.clone()).await? {
         return Ok(Some(SearchResult::Transaction(tx)));
     }
 
-    // Try to find as validator decoded address
     if let Some(validator) = ValidatorSearchResult::search_by_address(pool, &slug).await? {
         return Ok(Some(SearchResult::Validator(validator)));
     }
