@@ -109,12 +109,12 @@ pub async fn resolve_transactions_collection(
     if let Some(filter) = &filter {
         if let Some(decoded_address) = &filter.validator_decoded_address {
             let identity_key_result: Option<String> = sqlx::query_scalar(
-                "SELECT identity_key FROM validators WHERE decoded_address = $1"
+                "SELECT identity_key FROM validators WHERE decoded_address = $1",
             )
             .bind(decoded_address)
             .fetch_optional(db)
             .await?;
-            
+
             if let Some(key) = identity_key_result {
                 validator_identity_key = Some(key);
             } else {
@@ -148,7 +148,7 @@ pub async fn resolve_transactions_collection(
             param_count += 1;
             where_clauses.push(format!("t.ibc_client_id = ${param_count}"));
         }
-        
+
         if validator_identity_key.is_some() {
             param_count += 1;
             where_clauses.push(format!("t.validator_identity_key = ${param_count}"));
@@ -170,7 +170,7 @@ pub async fn resolve_transactions_collection(
         if let Some(client_id) = &filter.client_id {
             count_query_builder = count_query_builder.bind(client_id);
         }
-        
+
         if let Some(identity_key) = &validator_identity_key {
             count_query_builder = count_query_builder.bind(identity_key);
         }
@@ -220,7 +220,7 @@ pub async fn resolve_transactions_collection(
         if let Some(client_id) = &filter.client_id {
             query_builder = query_builder.bind(client_id);
         }
-        
+
         if let Some(identity_key) = &validator_identity_key {
             query_builder = query_builder.bind(identity_key);
         }
