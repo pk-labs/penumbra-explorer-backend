@@ -174,7 +174,6 @@ pub async fn resolve_transactions_collection(
 
     let mut query = String::from(base_query);
 
-    // Apply WHERE clauses to query if any exist
     if !where_clauses.is_empty() {
         query.push_str(" WHERE ");
         query.push_str(&where_clauses.join(" AND "));
