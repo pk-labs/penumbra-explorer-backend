@@ -131,7 +131,6 @@ pub async fn resolve_transactions_collection(
         }
     }
 
-    // Apply WHERE clauses to query if any exist
     if !where_clauses.is_empty() {
         count_query.push_str(" WHERE ");
         count_query.push_str(&where_clauses.join(" AND "));
