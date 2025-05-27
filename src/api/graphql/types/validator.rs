@@ -21,7 +21,7 @@ pub struct Validator {
 pub struct ValidatorSearchResult {
     pub identity_key: String,
     pub decoded_address: String,
-    pub display_name: String, // Will be name if available, otherwise decoded_address
+    pub display_name: String,
 }
 
 #[derive(Debug, Clone, SimpleObject)]
