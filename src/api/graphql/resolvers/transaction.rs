@@ -95,6 +95,7 @@ pub async fn resolve_transaction(
 /// # Panics
 /// This function may panic if the `hash_bytes_storage` is accessed while None,
 /// which shouldn't occur due to the logic flow that only accesses the storage when it's initialized.
+#[allow(clippy::too_many_lines)]
 pub async fn resolve_transactions_collection(
     ctx: &async_graphql::Context<'_>,
     limit: CollectionLimit,
@@ -103,8 +104,29 @@ pub async fn resolve_transactions_collection(
     let db = &ctx.data_unchecked::<ApiContext>().db;
 
     let mut hash_bytes_storage: Option<Vec<u8>> = None;
+    let mut validator_identity_key: Option<String> = None;
 
-    let mut count_query = String::from("SELECT COUNT(*) FROM explorer_transactions");
+    if let Some(filter) = &filter {
+        if let Some(decoded_address) = &filter.validator_decoded_address {
+            let identity_key_result: Option<String> = sqlx::query_scalar(
+                "SELECT identity_key FROM validators WHERE decoded_address = $1"
+            )
+            .bind(decoded_address)
+            .fetch_optional(db)
+            .await?;
+            
+            if let Some(key) = identity_key_result {
+                validator_identity_key = Some(key);
+            } else {
+                return Ok(TransactionCollection {
+                    items: vec![],
+                    total: 0,
+                });
+            }
+        }
+    }
+
+    let mut count_query = String::from("SELECT COUNT(*) FROM explorer_transactions t");
     let mut where_clauses = Vec::new();
     let mut param_count = 0;
 
@@ -113,7 +135,7 @@ pub async fn resolve_transactions_collection(
             if let Ok(hash_bytes) = hex::decode(hash.trim_start_matches("0x")) {
                 hash_bytes_storage = Some(hash_bytes);
                 param_count += 1;
-                where_clauses.push(format!("tx_hash = ${param_count}"));
+                where_clauses.push(format!("t.tx_hash = ${param_count}"));
             } else {
                 return Ok(TransactionCollection {
                     items: vec![],
@@ -124,7 +146,12 @@ pub async fn resolve_transactions_collection(
 
         if filter.client_id.is_some() {
             param_count += 1;
-            where_clauses.push(format!("ibc_client_id = ${param_count}"));
+            where_clauses.push(format!("t.ibc_client_id = ${param_count}"));
+        }
+        
+        if validator_identity_key.is_some() {
+            param_count += 1;
+            where_clauses.push(format!("t.validator_identity_key = ${param_count}"));
         }
     }
 
@@ -142,6 +169,10 @@ pub async fn resolve_transactions_collection(
 
         if let Some(client_id) = &filter.client_id {
             count_query_builder = count_query_builder.bind(client_id);
+        }
+        
+        if let Some(identity_key) = &validator_identity_key {
+            count_query_builder = count_query_builder.bind(identity_key);
         }
     }
 
@@ -188,6 +219,10 @@ pub async fn resolve_transactions_collection(
 
         if let Some(client_id) = &filter.client_id {
             query_builder = query_builder.bind(client_id);
+        }
+        
+        if let Some(identity_key) = &validator_identity_key {
+            query_builder = query_builder.bind(identity_key);
         }
     }
 
