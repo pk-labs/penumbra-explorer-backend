@@ -18,7 +18,7 @@ pub use search::resolve_search;
 pub use stats::resolve_stats;
 pub use subscription::Root as SubscriptionRoot;
 pub use transaction::{resolve_transaction, resolve_transactions, resolve_transactions_collection};
-pub use validator::resolve_validators_homepage;
+pub use validator::{resolve_validators_homepage, resolve_validator_details};
 
 pub struct QueryRoot;
 
@@ -181,5 +181,13 @@ impl QueryRoot {
         filter: Option<crate::api::graphql::types::ValidatorFilter>,
     ) -> async_graphql::Result<crate::api::graphql::types::ValidatorHomepageData> {
         resolve_validators_homepage(ctx, filter).await
+    }
+
+    async fn validator_details(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+        decoded_address: String,
+    ) -> async_graphql::Result<Option<crate::api::graphql::types::validator::ValidatorDetails>> {
+        resolve_validator_details(ctx, decoded_address).await
     }
 }
