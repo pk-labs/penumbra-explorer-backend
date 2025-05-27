@@ -9,15 +9,12 @@ mod validator;
 use crate::api::graphql::types::inputs::TimePeriod;
 use async_graphql::Object;
 
-pub use block::{get as resolve_block, resolve_blocks, resolve_blocks_collection};
-pub use ibc::{
-    resolve_ibc_channel_pairs, resolve_ibc_channel_pairs_by_client_id, resolve_ibc_stats,
-    resolve_ibc_stats_by_client_id, resolve_total_shielded_volume,
-};
+pub use block::{get as resolve_block, resolve_blocks_collection};
+pub use ibc::{resolve_ibc_stats, resolve_total_shielded_volume};
 pub use search::resolve_search;
 pub use stats::resolve_stats;
 pub use subscription::Root as SubscriptionRoot;
-pub use transaction::{resolve_transaction, resolve_transactions, resolve_transactions_collection};
+pub use transaction::{resolve_transaction, resolve_transactions_collection};
 pub use validator::{resolve_validators_homepage, resolve_validator_details};
 
 pub struct QueryRoot;
@@ -35,14 +32,6 @@ impl QueryRoot {
     async fn blocks(
         &self,
         ctx: &async_graphql::Context<'_>,
-        selector: crate::api::graphql::types::BlocksSelector,
-    ) -> async_graphql::Result<Vec<crate::api::graphql::types::Block>> {
-        resolve_blocks(ctx, selector).await
-    }
-
-    async fn blocks_collection(
-        &self,
-        ctx: &async_graphql::Context<'_>,
         limit: crate::api::graphql::types::CollectionLimit,
         filter: Option<crate::api::graphql::types::BlockFilter>,
     ) -> async_graphql::Result<crate::api::graphql::types::BlockCollection> {
@@ -58,14 +47,6 @@ impl QueryRoot {
     }
 
     async fn transactions(
-        &self,
-        ctx: &async_graphql::Context<'_>,
-        selector: crate::api::graphql::types::TransactionsSelector,
-    ) -> async_graphql::Result<Vec<crate::api::graphql::types::Transaction>> {
-        resolve_transactions(ctx, selector).await
-    }
-
-    async fn transactions_collection(
         &self,
         ctx: &async_graphql::Context<'_>,
         limit: crate::api::graphql::types::CollectionLimit,
@@ -139,33 +120,6 @@ impl QueryRoot {
         offset: Option<i64>,
     ) -> async_graphql::Result<Vec<crate::api::graphql::types::IbcStats>> {
         resolve_ibc_stats(ctx, client_id, time_period, limit, offset).await
-    }
-
-    async fn ibc_stats_by_client_id(
-        &self,
-        ctx: &async_graphql::Context<'_>,
-        client_id: String,
-        time_period: Option<TimePeriod>,
-    ) -> async_graphql::Result<Option<crate::api::graphql::types::IbcStats>> {
-        resolve_ibc_stats_by_client_id(ctx, client_id, time_period).await
-    }
-
-    async fn ibc_channel_pairs(
-        &self,
-        ctx: &async_graphql::Context<'_>,
-        client_id: Option<String>,
-        limit: Option<i64>,
-        offset: Option<i64>,
-    ) -> async_graphql::Result<Vec<crate::api::graphql::types::ibc::ChannelPair>> {
-        resolve_ibc_channel_pairs(ctx, client_id, limit, offset).await
-    }
-
-    async fn ibc_channel_pairs_by_client_id(
-        &self,
-        ctx: &async_graphql::Context<'_>,
-        client_id: String,
-    ) -> async_graphql::Result<Vec<crate::api::graphql::types::ibc::ChannelPair>> {
-        resolve_ibc_channel_pairs_by_client_id(ctx, client_id).await
     }
 
     async fn ibc_total_shielded_volume(
