@@ -18,6 +18,7 @@ pub struct Validator {
 }
 
 #[derive(Debug, Clone, SimpleObject)]
+#[allow(clippy::module_name_repetitions)]
 pub struct ValidatorSearchResult {
     pub identity_key: String,
     pub decoded_address: String,
@@ -38,6 +39,7 @@ pub struct BlockParticipation {
 }
 
 #[derive(Debug, Clone, SimpleObject)]
+#[allow(clippy::module_name_repetitions)]
 pub struct ValidatorDetails {
     pub id: String, // decoded_address
     pub identity_key: String,
@@ -72,6 +74,7 @@ pub struct StakingParameters {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::module_name_repetitions)]
 pub struct ValidatorHomepageData {
     pub validators: Vec<Validator>,
     pub staking_parameters: StakingParameters,
@@ -89,6 +92,11 @@ impl ValidatorHomepageData {
 }
 
 impl ValidatorHomepageData {
+    /// Fetches homepage data for validators
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if database queries fail
     pub async fn fetch_homepage_data(
         ctx: &async_graphql::Context<'_>,
         filter: Option<ValidatorFilter>,
@@ -102,7 +110,7 @@ impl ValidatorHomepageData {
         };
 
         let query = format!(
-            r#"
+            r"
             SELECT 
                 identity_key,
                 decoded_address,
@@ -116,11 +124,10 @@ impl ValidatorHomepageData {
                 commission_rate::FLOAT8 as commission_rate
             FROM 
                 validator_performance
-            {}
+            {where_clause}
             ORDER BY 
                 voting_power DESC
-            "#,
-            where_clause
+            "
         );
         
         let validators: Vec<ValidatorRow> = sqlx::query_as(&query)
@@ -128,7 +135,7 @@ impl ValidatorHomepageData {
         .await?;
 
         let params = sqlx::query_as::<_, StakingParamsRow>(
-            r#"
+            r"
             SELECT 
                 total_staked,
                 active_validator_limit,
@@ -141,7 +148,7 @@ impl ValidatorHomepageData {
             FROM 
                 validator_staking_parameters
             LIMIT 1
-            "#
+            "
         )
         .fetch_optional(pool)
         .await?
@@ -150,11 +157,11 @@ impl ValidatorHomepageData {
         })?;
 
         let active_count: i64 = sqlx::query_scalar(
-            r#"
+            r"
             SELECT COUNT(*)
             FROM validators 
             WHERE state LIKE '%ACTIVE%'
-            "#
+            "
         )
         .fetch_one(pool)
         .await?;
@@ -221,12 +228,17 @@ struct StakingParamsRow {
 }
 
 impl ValidatorSearchResult {
+    /// Searches for a validator by decoded address
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the database query fails
     pub async fn search_by_address(
         pool: &PgPool,
         search_address: &str,
     ) -> async_graphql::Result<Option<Self>> {
         let result: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
-            r#"
+            r"
             SELECT 
                 identity_key,
                 decoded_address,
@@ -236,7 +248,7 @@ impl ValidatorSearchResult {
             WHERE 
                 decoded_address = $1
             LIMIT 1
-            "#
+            "
         )
         .bind(search_address)
         .fetch_optional(pool)
@@ -260,12 +272,18 @@ impl ValidatorSearchResult {
 }
 
 impl ValidatorDetails {
+    /// Gets validator details by decoded address
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if database queries fail
+    #[allow(clippy::too_many_lines)]
     pub async fn get_by_address(
         pool: &PgPool,
         decoded_address: &str,
     ) -> async_graphql::Result<Option<Self>> {
         let validator_info: Option<ValidatorDetailsRow> = sqlx::query_as(
-            r#"
+            r"
             SELECT 
                 v.identity_key,
                 v.decoded_address,
@@ -289,7 +307,7 @@ impl ValidatorDetails {
             WHERE 
                 v.decoded_address = $1
             LIMIT 1
-            "#
+            "
         )
         .bind(decoded_address)
         .fetch_optional(pool)
@@ -300,7 +318,7 @@ impl ValidatorDetails {
         };
 
         let commission_streams: Vec<CommissionStreamRow> = sqlx::query_as(
-            r#"
+            r"
             SELECT 
                 stream_type,
                 recipient_address,
@@ -311,7 +329,7 @@ impl ValidatorDetails {
                 identity_key = $1
             ORDER BY
                 stream_type, recipient_address
-            "#
+            "
         )
         .bind(&info.identity_key)
         .fetch_all(pool)
@@ -324,7 +342,7 @@ impl ValidatorDetails {
         .await?;
 
         let last_300_blocks: Vec<(i64, bool)> = sqlx::query_as(
-            r#"
+            r"
             SELECT 
                 block_height,
                 signed
@@ -335,7 +353,7 @@ impl ValidatorDetails {
                 AND block_height > $2
             ORDER BY 
                 block_height DESC
-            "#
+            "
         )
         .bind(&info.identity_key)
         .bind(current_height - 300)
