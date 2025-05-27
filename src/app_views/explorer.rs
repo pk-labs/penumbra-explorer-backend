@@ -753,19 +753,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 WHERE vb.block_height > (SELECT MAX(height) FROM explorer_block_details) - uw.uptime_blocks_window
                 GROUP BY vb.identity_key
             ),
-            total_blocks_available AS (
-                SELECT
-                    v.identity_key,
-                    LEAST(
-                        uw.uptime_blocks_window,
-                        GREATEST(
-                            (SELECT MAX(height) FROM explorer_block_details) - v.first_seen_height,
-                            1
-                        )
-                    ) as blocks_in_window
-                FROM validators v
-                CROSS JOIN uptime_window uw
-            ),
             commission_rates AS (
                 SELECT
                     identity_key,
@@ -789,7 +776,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 COALESCE(bs.missed_blocks, 0) as missed_blocks,
                 COALESCE(bs.signed_blocks, 0) as signed_blocks,
                 COALESCE(bs.total_blocks, 0) as total_tracked_blocks,
-                tb.blocks_in_window,
                 CASE 
                     WHEN COALESCE(bs.total_blocks, 0) > 0 THEN
                         ROUND(
@@ -802,7 +788,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             FROM 
                 validators v
             LEFT JOIN block_stats bs ON v.identity_key = bs.identity_key
-            JOIN total_blocks_available tb ON v.identity_key = tb.identity_key
             LEFT JOIN commission_rates cr ON v.identity_key = cr.identity_key
             ORDER BY 
                 v.voting_power DESC

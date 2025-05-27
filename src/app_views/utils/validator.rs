@@ -100,7 +100,9 @@ impl VotingPowerBatch {
         match Validator::calculate_total_voting_power(dbtx).await {
             Ok(total) => {
                 if total > 0 {
-                    if let Err(e) = Validator::update_all_voting_power_active_percentages(dbtx).await {
+                    if let Err(e) =
+                        Validator::update_all_voting_power_active_percentages(dbtx).await
+                    {
                         error!("Failed to update voting power active percentages: {}", e);
                     }
 
@@ -860,7 +862,9 @@ impl Validator {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    pub async fn update_all_voting_power_active_percentages(dbtx: &mut PgTransaction<'_>) -> Result<()> {
+    pub async fn update_all_voting_power_active_percentages(
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
         let total_voting_power = Self::calculate_total_voting_power(dbtx).await?;
 
         if total_voting_power == 0 {
@@ -1688,20 +1692,21 @@ impl ValidatorFundingStream {
         timestamp: DateTime<Utc>,
         dbtx: &mut PgTransaction<'_>,
     ) -> Result<()> {
-        // First, delete all existing funding streams for this validator
-        // This ensures we replace old streams with new ones from the latest event
-        // This prevents duplicates when multiple EventValidatorDefinitionUpload events
-        // are processed for the same validator (e.g., validator updates their commission)
-        if let Err(e) = sqlx::query(
-            "DELETE FROM validator_funding_streams WHERE identity_key = $1"
-        )
-        .bind(identity_key)
-        .execute(dbtx.as_mut())
-        .await {
-            error!("Failed to delete old funding streams for validator {}: {}", identity_key, e);
+        if let Err(e) = sqlx::query("DELETE FROM validator_funding_streams WHERE identity_key = $1")
+            .bind(identity_key)
+            .execute(dbtx.as_mut())
+            .await
+        {
+            error!(
+                "Failed to delete old funding streams for validator {}: {}",
+                identity_key, e
+            );
         }
-        
-        debug!("Deleted old funding streams for validator {}, inserting new ones", identity_key);
+
+        debug!(
+            "Deleted old funding streams for validator {}, inserting new ones",
+            identity_key
+        );
 
         if let Some(funding_streams) = funding_streams_json.as_array() {
             for stream in funding_streams {
