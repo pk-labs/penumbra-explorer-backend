@@ -124,7 +124,6 @@ pub async fn resolve_transactions_collection(
             }
         }
 
-        // Add client_id filter
         if filter.client_id.is_some() {
             param_count += 1;
             where_clauses.push(format!("ibc_client_id = ${param_count}"));
