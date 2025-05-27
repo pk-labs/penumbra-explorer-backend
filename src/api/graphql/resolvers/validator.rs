@@ -1,12 +1,12 @@
-use crate::api::graphql::types::validator::{ValidatorHomepageData, ValidatorDetails};
+use crate::api::graphql::types::validator::{ValidatorDetails, ValidatorHomepageData};
 use crate::api::graphql::types::ValidatorFilter;
 use async_graphql::Context;
 use sqlx::PgPool;
 
 /// Resolves validators homepage query
-/// 
+///
 /// # Errors
-/// 
+///
 /// Returns an error if database queries fail
 pub async fn resolve_validators_homepage(
     ctx: &Context<'_>,
@@ -16,9 +16,9 @@ pub async fn resolve_validators_homepage(
 }
 
 /// Resolves validator details query
-/// 
+///
 /// # Errors
-/// 
+///
 /// Returns an error if database queries fail
 pub async fn resolve_validator_details(
     ctx: &Context<'_>,
