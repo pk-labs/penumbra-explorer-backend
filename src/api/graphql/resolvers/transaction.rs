@@ -190,7 +190,6 @@ pub async fn resolve_transactions_collection(
     // Build data query
     let mut query_builder = sqlx::query(&query);
 
-    // Bind parameters to data query
     if let Some(filter) = &filter {
         if let Some(hash_bytes) = &hash_bytes_storage {
             query_builder = query_builder.bind(hash_bytes.as_slice());
