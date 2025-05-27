@@ -5,9 +5,9 @@ use crate::api::graphql::{
     scalars,
     types::{
         ibc::{ChannelPair, ClientStatus, TotalShieldedVolume},
-        Action, Block, BlockCollection, BlockParticipation, BlockUpdate, CollectionItem, 
-        CommissionInfo, Event, Fee, IbcStats, StakingParameters, Transaction, TransactionBody, 
-        TransactionCollection, TransactionCountUpdate, TransactionParameters, TransactionUpdate, 
+        Action, Block, BlockCollection, BlockParticipation, BlockUpdate, CollectionItem,
+        CommissionInfo, Event, Fee, IbcStats, StakingParameters, Transaction, TransactionBody,
+        TransactionCollection, TransactionCountUpdate, TransactionParameters, TransactionUpdate,
         Validator, ValidatorDetails, ValidatorHomepageData, ValidatorSearchResult,
     },
 };
