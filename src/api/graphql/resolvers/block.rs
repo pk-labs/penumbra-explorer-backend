@@ -1,6 +1,6 @@
 use crate::api::graphql::{
     context::ApiContext,
-    types::{Block, BlockCollection, BlockFilter, BlocksSelector, CollectionLimit},
+    types::{Block, BlockCollection, BlockFilter, CollectionLimit},
 };
 use async_graphql::Result;
 use sqlx::Row;
@@ -36,41 +36,6 @@ pub async fn get(ctx: &async_graphql::Context<'_>, height: i32) -> Result<Option
             raw_json,
         )
     }))
-}
-
-/// Resolves multiple blocks based on the provided selector
-///
-/// # Errors
-/// Returns an error if the database query fails
-pub async fn resolve_blocks(
-    ctx: &async_graphql::Context<'_>,
-    selector: BlocksSelector,
-) -> Result<Vec<Block>> {
-    let db = &ctx.data_unchecked::<ApiContext>().db;
-    let (query, _params) = build_blocks_query(&selector);
-    let mut query_builder = sqlx::query(&query);
-    if let Some(range) = &selector.range {
-        query_builder = query_builder
-            .bind(i64::from(range.from))
-            .bind(i64::from(range.to));
-    } else if let Some(latest) = &selector.latest {
-        query_builder = query_builder.bind(i64::from(latest.limit));
-    }
-    let rows = query_builder.fetch_all(db).await?;
-    let blocks = rows
-        .into_iter()
-        .map(|row| {
-            let raw_json: Option<serde_json::Value> =
-                row.get::<Option<serde_json::Value>, _>("raw_json");
-
-            Block::new(
-                i32::try_from(row.get::<i64, _>("height")).unwrap_or_default(),
-                row.get("timestamp"),
-                raw_json,
-            )
-        })
-        .collect();
-    Ok(blocks)
 }
 
 /// Resolves blocks with pagination and optional filtering
@@ -148,20 +113,4 @@ pub async fn resolve_blocks_collection(
         items: blocks,
         total: i32::try_from(total_count).unwrap_or(0),
     })
-}
-
-fn build_blocks_query(selector: &BlocksSelector) -> (String, usize) {
-    let mut query = String::from("SELECT height, timestamp, raw_json FROM explorer_block_details");
-    let param_count;
-    if let Some(_range) = &selector.range {
-        query.push_str(" WHERE height BETWEEN $1 AND $2 ORDER BY height DESC");
-        param_count = 2;
-    } else if let Some(_latest) = &selector.latest {
-        query.push_str(" ORDER BY height DESC LIMIT $1");
-        param_count = 1;
-    } else {
-        query.push_str(" ORDER BY height DESC LIMIT 10");
-        param_count = 0;
-    }
-    (query, param_count)
 }

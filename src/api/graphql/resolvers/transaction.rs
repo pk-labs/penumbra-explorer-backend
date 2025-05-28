@@ -1,8 +1,8 @@
 use crate::api::graphql::{
     context::ApiContext,
     types::{
-        string_to_ibc_status, Block, CollectionLimit, Event, RangeDirection, Transaction,
-        TransactionCollection, TransactionFilter, TransactionsSelector,
+        string_to_ibc_status, Block, CollectionLimit, Event, Transaction, TransactionCollection,
+        TransactionFilter,
     },
 };
 use async_graphql::Result;
@@ -87,89 +87,6 @@ pub async fn resolve_transaction(
     }
 }
 
-/// Resolves transactions based on the provided selector
-///
-/// # Errors
-/// Returns an error if database queries fail
-#[allow(clippy::module_name_repetitions)]
-pub async fn resolve_transactions(
-    ctx: &async_graphql::Context<'_>,
-    selector: TransactionsSelector,
-) -> Result<Vec<Transaction>> {
-    let db = &ctx.data_unchecked::<ApiContext>().db;
-
-    // Updated base query to include ibc_client_id and ibc_status
-    let base_query = r"
-        SELECT
-            t.tx_hash,
-            t.block_height,
-            t.timestamp,
-            t.fee_amount::TEXT as fee_amount_str,
-            t.chain_id,
-            t.raw_data,
-            t.raw_json,
-            b.timestamp as block_timestamp,
-            t.ibc_client_id,
-            COALESCE(t.ibc_status, 'unknown') as ibc_status
-        FROM
-            explorer_transactions t
-        JOIN
-            explorer_block_details b ON t.block_height = b.height
-    ";
-
-    let (query, _param_count) = build_transactions_query(&selector, base_query);
-
-    let rows = if let Some(range) = &selector.range {
-        let Ok(hash_bytes) = hex::decode(range.from_tx_hash.trim_start_matches("0x")) else {
-            return Ok(vec![]);
-        };
-
-        // Handle client_id filter if present
-        if let Some(client_id) = &selector.client_id {
-            sqlx::query(&query)
-                .bind(client_id)
-                .bind(&hash_bytes)
-                .bind(i64::from(range.limit))
-                .fetch_all(db)
-                .await?
-        } else {
-            sqlx::query(&query)
-                .bind(&hash_bytes)
-                .bind(i64::from(range.limit))
-                .fetch_all(db)
-                .await?
-        }
-    } else if let Some(latest) = &selector.latest {
-        // Handle client_id filter if present
-        if let Some(client_id) = &selector.client_id {
-            sqlx::query(&query)
-                .bind(client_id)
-                .bind(i64::from(latest.limit))
-                .fetch_all(db)
-                .await?
-        } else {
-            sqlx::query(&query)
-                .bind(i64::from(latest.limit))
-                .fetch_all(db)
-                .await?
-        }
-    } else if let Some(client_id) = &selector.client_id {
-        sqlx::query(&query).bind(client_id).fetch_all(db).await?
-    } else {
-        sqlx::query(&query).fetch_all(db).await?
-    };
-
-    let mut transactions = process_transaction_rows(rows)?;
-
-    if let Some(range) = &selector.range {
-        if range.direction == RangeDirection::Previous {
-            transactions.reverse();
-        }
-    }
-
-    Ok(transactions)
-}
-
 /// Resolves transactions with pagination and optional filtering
 ///
 /// # Errors
@@ -178,6 +95,7 @@ pub async fn resolve_transactions(
 /// # Panics
 /// This function may panic if the `hash_bytes_storage` is accessed while None,
 /// which shouldn't occur due to the logic flow that only accesses the storage when it's initialized.
+#[allow(clippy::too_many_lines)]
 pub async fn resolve_transactions_collection(
     ctx: &async_graphql::Context<'_>,
     limit: CollectionLimit,
@@ -185,20 +103,39 @@ pub async fn resolve_transactions_collection(
 ) -> Result<TransactionCollection> {
     let db = &ctx.data_unchecked::<ApiContext>().db;
 
-    // Create storage for our potential hash bytes
     let mut hash_bytes_storage: Option<Vec<u8>> = None;
+    let mut validator_identity_key: Option<String> = None;
 
-    let mut count_query = String::from("SELECT COUNT(*) FROM explorer_transactions");
+    if let Some(filter) = &filter {
+        if let Some(decoded_address) = &filter.validator {
+            let identity_key_result: Option<String> = sqlx::query_scalar(
+                "SELECT identity_key FROM validators WHERE decoded_address = $1",
+            )
+            .bind(decoded_address)
+            .fetch_optional(db)
+            .await?;
+
+            if let Some(key) = identity_key_result {
+                validator_identity_key = Some(key);
+            } else {
+                return Ok(TransactionCollection {
+                    items: vec![],
+                    total: 0,
+                });
+            }
+        }
+    }
+
+    let mut count_query = String::from("SELECT COUNT(*) FROM explorer_transactions t");
     let mut where_clauses = Vec::new();
     let mut param_count = 0;
 
-    // Build WHERE clauses
     if let Some(filter) = &filter {
         if let Some(hash) = &filter.hash {
             if let Ok(hash_bytes) = hex::decode(hash.trim_start_matches("0x")) {
                 hash_bytes_storage = Some(hash_bytes);
                 param_count += 1;
-                where_clauses.push(format!("tx_hash = ${param_count}"));
+                where_clauses.push(format!("t.tx_hash = ${param_count}"));
             } else {
                 return Ok(TransactionCollection {
                     items: vec![],
@@ -207,23 +144,24 @@ pub async fn resolve_transactions_collection(
             }
         }
 
-        // Add client_id filter
         if filter.client_id.is_some() {
             param_count += 1;
-            where_clauses.push(format!("ibc_client_id = ${param_count}"));
+            where_clauses.push(format!("t.ibc_client_id = ${param_count}"));
+        }
+
+        if validator_identity_key.is_some() {
+            param_count += 1;
+            where_clauses.push(format!("t.validator_identity_key = ${param_count}"));
         }
     }
 
-    // Apply WHERE clauses to query if any exist
     if !where_clauses.is_empty() {
         count_query.push_str(" WHERE ");
         count_query.push_str(&where_clauses.join(" AND "));
     }
 
-    // Build count query
     let mut count_query_builder = sqlx::query_scalar::<_, i64>(&count_query);
 
-    // Bind parameters to count query
     if let Some(filter) = &filter {
         if let Some(hash_bytes) = &hash_bytes_storage {
             count_query_builder = count_query_builder.bind(hash_bytes.as_slice());
@@ -232,11 +170,14 @@ pub async fn resolve_transactions_collection(
         if let Some(client_id) = &filter.client_id {
             count_query_builder = count_query_builder.bind(client_id);
         }
+
+        if let Some(identity_key) = &validator_identity_key {
+            count_query_builder = count_query_builder.bind(identity_key);
+        }
     }
 
     let total_count = count_query_builder.fetch_one(db).await?;
 
-    // Updated base query to include ibc_client_id and ibc_status
     let base_query = r"
         SELECT
             t.tx_hash,
@@ -257,7 +198,6 @@ pub async fn resolve_transactions_collection(
 
     let mut query = String::from(base_query);
 
-    // Apply WHERE clauses to query if any exist
     if !where_clauses.is_empty() {
         query.push_str(" WHERE ");
         query.push_str(&where_clauses.join(" AND "));
@@ -270,10 +210,8 @@ pub async fn resolve_transactions_collection(
 
     query.push_str(&format!(" LIMIT {length} OFFSET {offset}"));
 
-    // Build data query
     let mut query_builder = sqlx::query(&query);
 
-    // Bind parameters to data query
     if let Some(filter) = &filter {
         if let Some(hash_bytes) = &hash_bytes_storage {
             query_builder = query_builder.bind(hash_bytes.as_slice());
@@ -281,6 +219,10 @@ pub async fn resolve_transactions_collection(
 
         if let Some(client_id) = &filter.client_id {
             query_builder = query_builder.bind(client_id);
+        }
+
+        if let Some(identity_key) = &validator_identity_key {
+            query_builder = query_builder.bind(identity_key);
         }
     }
 
@@ -356,76 +298,4 @@ fn extract_events_from_json(json: &serde_json::Value) -> Vec<Event> {
     }
 
     events
-}
-
-fn build_transactions_query(selector: &TransactionsSelector, base: &str) -> (String, usize) {
-    let mut query = String::from(base);
-    let mut param_count: usize = 0;
-    let mut where_clauses = Vec::new();
-
-    // Add client_id filter if present
-    if let Some(_client_id) = &selector.client_id {
-        param_count += 1;
-        where_clauses.push(format!("t.ibc_client_id = ${param_count}"));
-    }
-
-    if let Some(range) = &selector.range {
-        param_count = if selector.client_id.is_some() { 2 } else { 1 };
-
-        let ref_query = "(SELECT timestamp FROM explorer_transactions WHERE tx_hash = $";
-        let param_pos = if selector.client_id.is_some() { 2 } else { 1 };
-        let formatted_ref_query = format!("{ref_query}{param_pos})");
-
-        if !where_clauses.is_empty() {
-            where_clauses.push("AND".to_string());
-        }
-
-        match range.direction {
-            RangeDirection::Next => {
-                where_clauses.push(format!("((t.timestamp < {formatted_ref_query})"));
-                where_clauses.push(format!(
-                    "OR (t.timestamp = {formatted_ref_query} AND t.tx_hash > ${param_pos}))"
-                ));
-            }
-            RangeDirection::Previous => {
-                where_clauses.push(format!("((t.timestamp > {formatted_ref_query})"));
-                where_clauses.push(format!(
-                    "OR (t.timestamp = {formatted_ref_query} AND t.tx_hash < ${param_pos}))"
-                ));
-            }
-        }
-    }
-
-    if !where_clauses.is_empty() {
-        query.push_str(" WHERE ");
-        query.push_str(&where_clauses.join(" "));
-    }
-
-    if let Some(range) = &selector.range {
-        match range.direction {
-            RangeDirection::Next => {
-                query.push_str(" ORDER BY t.timestamp DESC, t.tx_hash ASC");
-            }
-            RangeDirection::Previous => {
-                query.push_str(" ORDER BY t.timestamp ASC, t.tx_hash DESC");
-            }
-        }
-
-        param_count += 1;
-        query.push_str(&format!(" LIMIT ${param_count}"));
-    } else if selector.latest.is_some() {
-        query.push_str(" ORDER BY t.timestamp DESC, t.tx_hash ASC");
-
-        if selector.client_id.is_some() {
-            param_count += 1;
-            query.push_str(&format!(" LIMIT ${param_count}"));
-        } else {
-            param_count = 1;
-            query.push_str(" LIMIT $1");
-        }
-    } else {
-        query.push_str(" ORDER BY t.timestamp DESC, t.tx_hash ASC LIMIT 10");
-    }
-
-    (query, param_count)
 }

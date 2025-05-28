@@ -8,6 +8,7 @@ mod stats;
 pub mod subscription;
 mod transaction;
 pub mod unions;
+pub mod validator;
 
 pub use asset::*;
 pub use block::*;
@@ -15,7 +16,8 @@ pub use event::*;
 pub use ibc::Stats as IbcStats;
 pub use inputs::{
     BlockFilter, BlockHeightRange, BlocksSelector, CollectionLimit, IbcStatsFilter, LatestBlock,
-    LatestTransactions, TransactionFilter, TransactionRange, TransactionsSelector,
+    LatestTransactions, TransactionFilter, TransactionRange, TransactionsSelector, ValidatorFilter,
+    ValidatorStateFilter,
 };
 pub use stats::*;
 pub use subscription::*;
@@ -24,3 +26,7 @@ pub use transaction::{
     RangeDirection, Transaction, TransactionBody, TransactionParameters,
 };
 pub use unions::*;
+pub use validator::{
+    BlockParticipation, CommissionInfo, StakingParameters, Validator, ValidatorDetails,
+    ValidatorHomepageData, ValidatorSearchResult,
+};
