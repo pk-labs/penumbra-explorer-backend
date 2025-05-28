@@ -107,7 +107,7 @@ pub async fn resolve_transactions_collection(
     let mut validator_identity_key: Option<String> = None;
 
     if let Some(filter) = &filter {
-        if let Some(decoded_address) = &filter.validator_decoded_address {
+        if let Some(decoded_address) = &filter.validator {
             let identity_key_result: Option<String> = sqlx::query_scalar(
                 "SELECT identity_key FROM validators WHERE decoded_address = $1",
             )
