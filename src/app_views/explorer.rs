@@ -1306,7 +1306,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             tracing::error!("Failed to initialize validators from genesis: {}", e);
         }
 
-
         Ok(())
     }
 
@@ -1371,7 +1370,11 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             )
             .await
             {
-                tracing::error!("Error updating basic chain parameters for block {}: {:?}", height, e);
+                tracing::error!(
+                    "Error updating basic chain parameters for block {}: {:?}",
+                    height,
+                    e
+                );
             }
         }
 
@@ -1471,8 +1474,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     );
                 }
 
-                if let Err(e) = validator::Epoch::process_events(dbtx, &events, height, timestamp)
-                    .await
+                if let Err(e) =
+                    validator::Epoch::process_events(dbtx, &events, height, timestamp).await
                 {
                     tracing::error!(
                         "Error processing epoch events for block {}: {:?}",
