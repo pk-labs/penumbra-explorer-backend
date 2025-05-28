@@ -5,8 +5,7 @@ use sqlx::{FromRow, PgPool};
 
 #[derive(Debug, Clone, SimpleObject)]
 pub struct Validator {
-    pub identity_key: String,
-    pub decoded_address: Option<String>,
+    pub id: Option<String>,
     pub name: Option<String>,
     pub state: String,
     pub bonding_state: Option<String>,
@@ -20,8 +19,7 @@ pub struct Validator {
 #[derive(Debug, Clone, SimpleObject)]
 #[allow(clippy::module_name_repetitions)]
 pub struct ValidatorSearchResult {
-    pub identity_key: String,
-    pub decoded_address: String,
+    pub id: String,
     pub display_name: String,
 }
 
@@ -41,8 +39,7 @@ pub struct BlockParticipation {
 #[derive(Debug, Clone, SimpleObject)]
 #[allow(clippy::module_name_repetitions)]
 pub struct ValidatorDetails {
-    pub id: String, // decoded_address
-    pub identity_key: String,
+    pub id: String,
     pub name: Option<String>,
     pub website: Option<String>,
     pub description: Option<String>,
@@ -73,11 +70,23 @@ pub struct StakingParameters {
     pub min_validator_stake: String,
 }
 
+#[derive(Debug, Clone, SimpleObject)]
+pub struct ChainParameters {
+    pub chain_id: String,
+    pub current_block_height: i64,
+    pub current_block_time: DateTime<Utc>,
+    pub current_epoch: i64,
+    pub epoch_duration: i64,
+    pub next_epoch_in: i64,
+    pub last_updated: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone)]
 #[allow(clippy::module_name_repetitions)]
 pub struct ValidatorHomepageData {
     pub validators: Vec<Validator>,
     pub staking_parameters: StakingParameters,
+    pub chain_parameters: Option<ChainParameters>,
 }
 
 #[Object]
@@ -88,6 +97,10 @@ impl ValidatorHomepageData {
 
     async fn staking_parameters(&self) -> &StakingParameters {
         &self.staking_parameters
+    }
+
+    async fn chain_parameters(&self) -> &Option<ChainParameters> {
+        &self.chain_parameters
     }
 }
 
@@ -103,6 +116,21 @@ impl ValidatorHomepageData {
     ) -> async_graphql::Result<Self> {
         let pool = ctx.data::<PgPool>()?;
 
+        let validators = Self::fetch_validators(pool, filter).await?;
+        let staking_parameters = Self::fetch_staking_parameters(pool).await?;
+        let chain_parameters = Self::fetch_chain_parameters(pool).await?;
+
+        Ok(Self {
+            validators,
+            staking_parameters,
+            chain_parameters,
+        })
+    }
+
+    async fn fetch_validators(
+        pool: &PgPool,
+        filter: Option<ValidatorFilter>,
+    ) -> async_graphql::Result<Vec<Validator>> {
         let where_clause = match filter.as_ref().and_then(|f| f.state) {
             Some(ValidatorStateFilter::Active) => "WHERE state LIKE '%ACTIVE%'",
             Some(ValidatorStateFilter::Inactive) => "WHERE state NOT LIKE '%ACTIVE%'",
@@ -112,7 +140,6 @@ impl ValidatorHomepageData {
         let query = format!(
             r"
             SELECT 
-                identity_key,
                 decoded_address,
                 name,
                 state,
@@ -132,6 +159,23 @@ impl ValidatorHomepageData {
 
         let validators: Vec<ValidatorRow> = sqlx::query_as(&query).fetch_all(pool).await?;
 
+        Ok(validators
+            .into_iter()
+            .map(|row| Validator {
+                id: row.decoded_address,
+                name: row.name,
+                state: row.state,
+                bonding_state: row.bonding_state,
+                voting_power: row.voting_power,
+                voting_power_active_percentage: row.voting_power_active_percentage,
+                uptime: row.uptime_percentage,
+                first_seen_time: row.first_seen_time,
+                commission: row.commission_rate,
+            })
+            .collect())
+    }
+
+    async fn fetch_staking_parameters(pool: &PgPool) -> async_graphql::Result<StakingParameters> {
         let params = sqlx::query_as::<_, StakingParamsRow>(
             r"
             SELECT 
@@ -162,23 +206,7 @@ impl ValidatorHomepageData {
         .fetch_one(pool)
         .await?;
 
-        let validators = validators
-            .into_iter()
-            .map(|row| Validator {
-                identity_key: row.identity_key,
-                decoded_address: row.decoded_address,
-                name: row.name,
-                state: row.state,
-                bonding_state: row.bonding_state,
-                voting_power: row.voting_power,
-                voting_power_active_percentage: row.voting_power_active_percentage,
-                uptime: row.uptime_percentage,
-                first_seen_time: row.first_seen_time,
-                commission: row.commission_rate,
-            })
-            .collect();
-
-        let staking_parameters = StakingParameters {
+        Ok(StakingParameters {
             total_staked: params.total_staked,
             active_validator_limit: params.active_validator_limit,
             active_validator_count: active_count,
@@ -188,18 +216,42 @@ impl ValidatorHomepageData {
             slashing_penalty_downtime: params.slashing_penalty_downtime.unwrap_or_default(),
             slashing_penalty_misbehavior: params.slashing_penalty_misbehavior,
             min_validator_stake: params.min_validator_stake,
-        };
-
-        Ok(Self {
-            validators,
-            staking_parameters,
         })
+    }
+
+    async fn fetch_chain_parameters(pool: &PgPool) -> async_graphql::Result<Option<ChainParameters>> {
+        let chain_params_row = sqlx::query_as::<_, ChainParametersRow>(
+            r"
+            SELECT 
+                chain_id,
+                current_block_height,
+                current_block_time,
+                current_epoch,
+                epoch_duration,
+                next_epoch_in,
+                last_updated
+            FROM 
+                validator_chain_parameters
+            LIMIT 1
+            ",
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(chain_params_row.map(|row| ChainParameters {
+            chain_id: row.chain_id,
+            current_block_height: row.current_block_height,
+            current_block_time: row.current_block_time,
+            current_epoch: row.current_epoch,
+            epoch_duration: row.epoch_duration,
+            next_epoch_in: row.next_epoch_in,
+            last_updated: row.last_updated,
+        }))
     }
 }
 
 #[derive(FromRow)]
 struct ValidatorRow {
-    identity_key: String,
     decoded_address: Option<String>,
     name: Option<String>,
     state: String,
@@ -223,6 +275,17 @@ struct StakingParamsRow {
     min_validator_stake: String,
 }
 
+#[derive(FromRow)]
+struct ChainParametersRow {
+    chain_id: String,
+    current_block_height: i64,
+    current_block_time: DateTime<Utc>,
+    current_epoch: i64,
+    epoch_duration: i64,
+    next_epoch_in: i64,
+    last_updated: DateTime<Utc>,
+}
+
 impl ValidatorSearchResult {
     /// Searches for a validator by decoded address
     ///
@@ -233,10 +296,9 @@ impl ValidatorSearchResult {
         pool: &PgPool,
         search_address: &str,
     ) -> async_graphql::Result<Option<Self>> {
-        let result: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        let result: Option<(Option<String>, Option<String>)> = sqlx::query_as(
             r"
             SELECT 
-                identity_key,
                 decoded_address,
                 name
             FROM 
@@ -251,11 +313,10 @@ impl ValidatorSearchResult {
         .await?;
 
         match result {
-            Some((identity_key, decoded_address, name)) => {
+            Some((decoded_address, name)) => {
                 if let Some(addr) = decoded_address {
                     Ok(Some(Self {
-                        identity_key,
-                        decoded_address: addr.clone(),
+                        id: addr.clone(),
                         display_name: name.unwrap_or(addr),
                     }))
                 } else {
@@ -281,7 +342,6 @@ impl ValidatorDetails {
         let validator_info: Option<ValidatorDetailsRow> = sqlx::query_as(
             r"
             SELECT 
-                v.identity_key,
                 v.decoded_address,
                 v.name,
                 v.website,
@@ -320,14 +380,15 @@ impl ValidatorDetails {
                 recipient_address,
                 rate_bps
             FROM 
-                validator_funding_streams
+                validator_funding_streams vfs
+            JOIN validators v ON v.identity_key = vfs.identity_key
             WHERE 
-                identity_key = $1
+                v.decoded_address = $1
             ORDER BY
                 stream_type, recipient_address
             ",
         )
-        .bind(&info.identity_key)
+        .bind(decoded_address)
         .fetch_all(pool)
         .await?;
 
@@ -339,18 +400,19 @@ impl ValidatorDetails {
         let last_300_blocks: Vec<(i64, bool)> = sqlx::query_as(
             r"
             SELECT 
-                block_height,
-                signed
+                vb.block_height,
+                vb.signed
             FROM 
-                validator_blocks
+                validator_blocks vb
+            JOIN validators v ON v.identity_key = vb.identity_key
             WHERE 
-                identity_key = $1
-                AND block_height > $2
+                v.decoded_address = $1
+                AND vb.block_height > $2
             ORDER BY 
-                block_height DESC
+                vb.block_height DESC
             ",
         )
-        .bind(&info.identity_key)
+        .bind(decoded_address)
         .bind(current_height - 300)
         .fetch_all(pool)
         .await?;
@@ -362,7 +424,6 @@ impl ValidatorDetails {
 
         Ok(Some(Self {
             id: info.decoded_address.clone().unwrap_or_default(),
-            identity_key: info.identity_key,
             name: info.name,
             website: info.website,
             description: info.description,
@@ -391,7 +452,6 @@ impl ValidatorDetails {
 
 #[derive(FromRow)]
 struct ValidatorDetailsRow {
-    identity_key: String,
     decoded_address: Option<String>,
     name: Option<String>,
     website: Option<String>,
