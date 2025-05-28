@@ -22,8 +22,8 @@ pub async fn resolve_validators_homepage(
 /// Returns an error if database queries fail
 pub async fn resolve_validator_details(
     ctx: &Context<'_>,
-    decoded_address: String,
+    id: String,
 ) -> async_graphql::Result<Option<ValidatorDetails>> {
     let pool = ctx.data::<PgPool>()?;
-    ValidatorDetails::get_by_address(pool, &decoded_address).await
+    ValidatorDetails::get_by_address(pool, &id).await
 }
