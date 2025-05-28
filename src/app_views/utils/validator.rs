@@ -1,5 +1,6 @@
 use crate::parsing::identity_key_to_validator_address;
 use anyhow::Result;
+use base64::{engine::general_purpose, Engine as _};
 use cometindex::ContextualizedEvent;
 use serde_json::Value;
 use sqlx::types::chrono::{DateTime, Utc};
@@ -2309,6 +2310,352 @@ impl ValidatorParams {
                     }
                     None => {
                         error!("EventAppParametersChange missing newParameters attribute");
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct ChainParameters {
+    pub chain_id: String,
+    pub current_block_height: i64,
+    pub current_block_time: DateTime<Utc>,
+    pub current_epoch: i64,
+    pub epoch_duration: i64,
+    pub next_epoch_in: i64,
+    pub last_updated: DateTime<Utc>,
+}
+
+impl ChainParameters {
+    /// Simple update of current block info and read latest epoch from epochs table
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if database operations fail
+    pub async fn update_basic_chain_info(
+        dbtx: &mut PgTransaction<'_>,
+        chain_id: &str,
+        block_height: u64,
+        block_timestamp: DateTime<Utc>,
+    ) -> Result<()> {
+        let height_i64 = i64::try_from(block_height).unwrap_or(i64::MAX);
+
+        // Get the latest epoch from epochs table
+        let latest_epoch: Option<i64> = sqlx::query_scalar(
+            "SELECT epoch_index FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1"
+        )
+        .bind(chain_id)
+        .fetch_optional(dbtx.as_mut())
+        .await?;
+
+        let current_epoch = latest_epoch.unwrap_or(0);
+
+        // Get existing epoch_duration if available
+        let existing_epoch_duration: Option<i64> = sqlx::query_scalar(
+            "SELECT epoch_duration FROM validator_chain_parameters WHERE chain_id = $1"
+        )
+        .bind(chain_id)
+        .fetch_optional(dbtx.as_mut())
+        .await?;
+
+        let epoch_duration = existing_epoch_duration.unwrap_or(0);
+
+        let next_epoch_in = if epoch_duration > 0 && current_epoch > 0 {
+            let current_epoch_start: Option<i64> = sqlx::query_scalar(
+                "SELECT start_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2"
+            )
+            .bind(current_epoch)
+            .bind(chain_id)
+            .fetch_optional(dbtx.as_mut())
+            .await?;
+
+            if let Some(start_height) = current_epoch_start {
+                let next_epoch_start = start_height + epoch_duration;
+                std::cmp::max(0, next_epoch_start - height_i64)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        sqlx::query(
+            r"
+            INSERT INTO validator_chain_parameters (
+                chain_id,
+                current_block_height,
+                current_block_time,
+                current_epoch,
+                epoch_duration,
+                next_epoch_in,
+                last_updated
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (chain_id) DO UPDATE SET
+                current_block_height = EXCLUDED.current_block_height,
+                current_block_time = EXCLUDED.current_block_time,
+                current_epoch = EXCLUDED.current_epoch,
+                next_epoch_in = EXCLUDED.next_epoch_in,
+                last_updated = EXCLUDED.last_updated
+            ",
+        )
+        .bind(chain_id)
+        .bind(height_i64)
+        .bind(block_timestamp)
+        .bind(current_epoch)
+        .bind(epoch_duration)
+        .bind(next_epoch_in)
+        .bind(block_timestamp)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        Ok(())
+    }
+
+    /// Process events to update chain parameters
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if database operations fail
+    pub async fn process_events(
+        dbtx: &mut PgTransaction<'_>,
+        events: &[ContextualizedEvent<'_>],
+        _height: u64,
+        timestamp: DateTime<Utc>,
+    ) -> Result<()> {
+        for event in events {
+            if event.event.kind == "penumbra.core.app.v1.EventAppParametersChange" {
+                match ValidatorParams::find_attribute_value(event, "newParameters") {
+                    Some(params_json) => {
+                        match serde_json::from_str::<Value>(params_json) {
+                            Ok(params) => {
+                                if let Some(chain_id) = params.get("chainId").and_then(|id| id.as_str()) {
+                                    if let Some(sct_params) = params.get("sctParams") {
+                                        if let Some(epoch_duration_str) = sct_params.get("epochDuration").and_then(|d| d.as_str()) {
+                                            match epoch_duration_str.parse::<i64>() {
+                                                Ok(epoch_duration) => {
+                                                    tracing::info!(
+                                                        "Updating epoch duration for chain {} to {} blocks",
+                                                        chain_id,
+                                                        epoch_duration
+                                                    );
+
+                                                    sqlx::query(
+                                                        "UPDATE validator_chain_parameters SET epoch_duration = $1, last_updated = $2 WHERE chain_id = $3"
+                                                    )
+                                                    .bind(epoch_duration)
+                                                    .bind(timestamp)
+                                                    .bind(chain_id)
+                                                    .execute(dbtx.as_mut())
+                                                    .await?;
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!("Failed to parse epochDuration '{}': {}", epoch_duration_str, e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to parse EventAppParametersChange JSON: {}", e);
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::error!("EventAppParametersChange missing newParameters attribute");
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update current block info with latest height and timestamp
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if database operations fail
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `height_to_timestamp` map is not empty but has no maximum entry
+    pub async fn update_current_block_info(
+        dbtx: &mut PgTransaction<'_>,
+        chain_id: &str,
+        height_to_timestamp: &std::collections::HashMap<u64, DateTime<Utc>>,
+    ) -> Result<()> {
+        if height_to_timestamp.is_empty() {
+            return Ok(());
+        }
+
+        let (latest_height, latest_timestamp) = height_to_timestamp
+            .iter()
+            .max_by_key(|(height, _)| *height)
+            .map(|(h, t)| (*h, *t))
+            .unwrap();
+
+        let latest_epoch: Option<i64> = sqlx::query_scalar(
+            "SELECT epoch_index FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1"
+        )
+        .bind(chain_id)
+        .fetch_optional(dbtx.as_mut())
+        .await?;
+
+        let current_epoch = latest_epoch.unwrap_or(0);
+
+        let latest_epoch_start_height: Option<i64> = sqlx::query_scalar(
+            "SELECT start_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2"
+        )
+        .bind(current_epoch)
+        .bind(chain_id)
+        .fetch_optional(dbtx.as_mut())
+        .await?;
+
+        let epoch_duration: i64 = sqlx::query_scalar(
+            "SELECT epoch_duration FROM validator_chain_parameters WHERE chain_id = $1"
+        )
+        .bind(chain_id)
+        .fetch_optional(dbtx.as_mut())
+        .await?
+        .unwrap_or(34560);
+
+        let next_epoch_in = if let Some(epoch_start) = latest_epoch_start_height {
+            let next_epoch_start = epoch_start + epoch_duration;
+            std::cmp::max(0, next_epoch_start - i64::try_from(latest_height).unwrap_or(i64::MAX))
+        } else {
+            epoch_duration
+        };
+
+        sqlx::query(
+            r"
+            INSERT INTO validator_chain_parameters (
+                chain_id,
+                current_block_height,
+                current_block_time,
+                current_epoch,
+                epoch_duration,
+                next_epoch_in,
+                last_updated
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (chain_id) DO UPDATE SET
+                current_block_height = EXCLUDED.current_block_height,
+                current_block_time = EXCLUDED.current_block_time,
+                current_epoch = EXCLUDED.current_epoch,
+                next_epoch_in = EXCLUDED.next_epoch_in,
+                last_updated = EXCLUDED.last_updated
+            ",
+        )
+        .bind(chain_id)
+        .bind(i64::try_from(latest_height).unwrap_or(i64::MAX))
+        .bind(latest_timestamp)
+        .bind(current_epoch)
+        .bind(epoch_duration)
+        .bind(next_epoch_in)
+        .bind(latest_timestamp)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Epoch {
+    pub epoch_index: i64,
+    pub chain_id: String,
+    pub start_height: i64,
+    pub start_time: DateTime<Utc>,
+    pub epoch_root: Vec<u8>,
+}
+
+impl Epoch {
+    /// Process events to extract epoch information
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if database operations fail
+    pub async fn process_events(
+        dbtx: &mut PgTransaction<'_>,
+        events: &[ContextualizedEvent<'_>],
+        height: u64,
+        timestamp: DateTime<Utc>,
+    ) -> Result<()> {
+        for event in events {
+            if event.event.kind == "penumbra.core.component.sct.v1.EventEpochRoot" {
+                tracing::info!("Found EventEpochRoot at height {}", height);
+                let index_str = ValidatorParams::find_attribute_value(event, "index");
+                let root_str = ValidatorParams::find_attribute_value(event, "root");
+
+                match (index_str, root_str) {
+                    (Some(index_json), Some(root_json)) => {
+                        match (
+                            serde_json::from_str::<Value>(index_json),
+                            serde_json::from_str::<Value>(root_json),
+                        ) {
+                            (Ok(index_val), Ok(root_val)) => {
+                                if let (Some(epoch_index), Some(root_inner)) = (
+                                    index_val.as_str().and_then(|s| s.parse::<i64>().ok()),
+                                    root_val.get("inner").and_then(|r| r.as_str()),
+                                ) {
+                                    match general_purpose::STANDARD.decode(root_inner) {
+                                        Ok(epoch_root) => {
+                                            let chain_id = sqlx::query_scalar::<_, String>(
+                                                "SELECT chain_id FROM explorer_block_details WHERE height = $1 LIMIT 1"
+                                            )
+                                            .bind(i64::try_from(height).unwrap_or(i64::MAX))
+                                            .fetch_optional(dbtx.as_mut())
+                                            .await?
+                                            .unwrap_or_else(|| "unknown".to_string());
+
+                                            tracing::info!(
+                                                "Processing epoch {} at height {} for chain {}",
+                                                epoch_index,
+                                                height,
+                                                chain_id
+                                            );
+
+                                            sqlx::query(
+                                                r"
+                                                INSERT INTO epochs (
+                                                    epoch_index,
+                                                    chain_id,
+                                                    start_height,
+                                                    start_time,
+                                                    epoch_root
+                                                ) VALUES ($1, $2, $3, $4, $5)
+                                                ON CONFLICT (epoch_index) DO UPDATE SET
+                                                    chain_id = EXCLUDED.chain_id,
+                                                    start_height = EXCLUDED.start_height,
+                                                    start_time = EXCLUDED.start_time,
+                                                    epoch_root = EXCLUDED.epoch_root
+                                                ",
+                                            )
+                                            .bind(epoch_index)
+                                            .bind(&chain_id)
+                                            .bind(i64::try_from(height).unwrap_or(i64::MAX))
+                                            .bind(timestamp)
+                                            .bind(&epoch_root)
+                                            .execute(dbtx.as_mut())
+                                            .await?;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to decode epoch root base64 '{}': {}", root_inner, e);
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                tracing::error!("Failed to parse EventEpochRoot JSON data");
+                            }
+                        }
+                    }
+                    _ => {
+                        tracing::error!("EventEpochRoot missing required attributes");
                     }
                 }
             }
