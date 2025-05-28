@@ -140,9 +140,9 @@ impl QueryRoot {
     async fn validator_details(
         &self,
         ctx: &async_graphql::Context<'_>,
-        decoded_address: String,
+        id: String,
     ) -> async_graphql::Result<Option<crate::api::graphql::types::validator::ValidatorDetails>>
     {
-        resolve_validator_details(ctx, decoded_address).await
+        resolve_validator_details(ctx, id).await
     }
 }
