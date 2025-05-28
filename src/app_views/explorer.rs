@@ -657,6 +657,63 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         sqlx::query(
             r"
+            CREATE TABLE IF NOT EXISTS validator_chain_parameters (
+                chain_id TEXT PRIMARY KEY,
+                current_block_height BIGINT NOT NULL,
+                current_block_time TIMESTAMPTZ NOT NULL,
+                current_epoch BIGINT NOT NULL,
+                epoch_duration BIGINT NOT NULL,
+                next_epoch_in BIGINT NOT NULL,
+                last_updated TIMESTAMPTZ NOT NULL
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_chain_parameters_chain_id
+            ON validator_chain_parameters(chain_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS epochs (
+                epoch_index BIGINT PRIMARY KEY,
+                chain_id TEXT NOT NULL,
+                start_height BIGINT NOT NULL,
+                start_time TIMESTAMPTZ NOT NULL,
+                epoch_root BYTEA NOT NULL
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_epochs_chain_id
+            ON epochs(chain_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_epochs_start_height
+            ON epochs(start_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
             CREATE TABLE IF NOT EXISTS validators (
                 identity_key TEXT PRIMARY KEY,
                 decoded_address TEXT,
@@ -1249,6 +1306,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             tracing::error!("Failed to initialize validators from genesis: {}", e);
         }
 
+
         Ok(())
     }
 
@@ -1304,6 +1362,17 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
             self.record_validator_blocks_for_height(dbtx, height, ts)
                 .await?;
+
+            if let Err(e) = validator::ChainParameters::update_basic_chain_info(
+                dbtx,
+                self.get_chain_id(),
+                height,
+                ts,
+            )
+            .await
+            {
+                tracing::error!("Error updating basic chain parameters for block {}: {:?}", height, e);
+            }
         }
 
         for (tx_hash, tx_bytes, tx_index, height, timestamp, tx_events) in &transactions_to_process
@@ -1386,6 +1455,27 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 {
                     tracing::error!(
                         "Error processing validator events for block {}: {:?}",
+                        height,
+                        e
+                    );
+                }
+
+                if let Err(e) =
+                    validator::ChainParameters::process_events(dbtx, &events, height, timestamp)
+                        .await
+                {
+                    tracing::error!(
+                        "Error processing chain parameter events for block {}: {:?}",
+                        height,
+                        e
+                    );
+                }
+
+                if let Err(e) = validator::Epoch::process_events(dbtx, &events, height, timestamp)
+                    .await
+                {
+                    tracing::error!(
+                        "Error processing epoch events for block {}: {:?}",
                         height,
                         e
                     );
