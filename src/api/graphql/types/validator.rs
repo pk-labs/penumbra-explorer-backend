@@ -219,7 +219,9 @@ impl ValidatorHomepageData {
         })
     }
 
-    async fn fetch_chain_parameters(pool: &PgPool) -> async_graphql::Result<Option<ChainParameters>> {
+    async fn fetch_chain_parameters(
+        pool: &PgPool,
+    ) -> async_graphql::Result<Option<ChainParameters>> {
         let chain_params_row = sqlx::query_as::<_, ChainParametersRow>(
             r"
             SELECT 
