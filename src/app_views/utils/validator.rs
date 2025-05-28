@@ -2346,7 +2346,7 @@ impl ChainParameters {
 
         // Get the latest epoch from epochs table
         let latest_epoch: Option<i64> = sqlx::query_scalar(
-            "SELECT epoch_index FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1"
+            "SELECT epoch_index FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1",
         )
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
@@ -2356,7 +2356,7 @@ impl ChainParameters {
 
         // Get existing epoch_duration if available
         let existing_epoch_duration: Option<i64> = sqlx::query_scalar(
-            "SELECT epoch_duration FROM validator_chain_parameters WHERE chain_id = $1"
+            "SELECT epoch_duration FROM validator_chain_parameters WHERE chain_id = $1",
         )
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
@@ -2366,7 +2366,7 @@ impl ChainParameters {
 
         let next_epoch_in = if epoch_duration > 0 && current_epoch > 0 {
             let current_epoch_start: Option<i64> = sqlx::query_scalar(
-                "SELECT start_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2"
+                "SELECT start_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2",
             )
             .bind(current_epoch)
             .bind(chain_id)
@@ -2429,21 +2429,23 @@ impl ChainParameters {
         for event in events {
             if event.event.kind == "penumbra.core.app.v1.EventAppParametersChange" {
                 match ValidatorParams::find_attribute_value(event, "newParameters") {
-                    Some(params_json) => {
-                        match serde_json::from_str::<Value>(params_json) {
-                            Ok(params) => {
-                                if let Some(chain_id) = params.get("chainId").and_then(|id| id.as_str()) {
-                                    if let Some(sct_params) = params.get("sctParams") {
-                                        if let Some(epoch_duration_str) = sct_params.get("epochDuration").and_then(|d| d.as_str()) {
-                                            match epoch_duration_str.parse::<i64>() {
-                                                Ok(epoch_duration) => {
-                                                    tracing::info!(
+                    Some(params_json) => match serde_json::from_str::<Value>(params_json) {
+                        Ok(params) => {
+                            if let Some(chain_id) = params.get("chainId").and_then(|id| id.as_str())
+                            {
+                                if let Some(sct_params) = params.get("sctParams") {
+                                    if let Some(epoch_duration_str) =
+                                        sct_params.get("epochDuration").and_then(|d| d.as_str())
+                                    {
+                                        match epoch_duration_str.parse::<i64>() {
+                                            Ok(epoch_duration) => {
+                                                tracing::info!(
                                                         "Updating epoch duration for chain {} to {} blocks",
                                                         chain_id,
                                                         epoch_duration
                                                     );
 
-                                                    sqlx::query(
+                                                sqlx::query(
                                                         "UPDATE validator_chain_parameters SET epoch_duration = $1, last_updated = $2 WHERE chain_id = $3"
                                                     )
                                                     .bind(epoch_duration)
@@ -2451,20 +2453,23 @@ impl ChainParameters {
                                                     .bind(chain_id)
                                                     .execute(dbtx.as_mut())
                                                     .await?;
-                                                }
-                                                Err(e) => {
-                                                    tracing::error!("Failed to parse epochDuration '{}': {}", epoch_duration_str, e);
-                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "Failed to parse epochDuration '{}': {}",
+                                                    epoch_duration_str,
+                                                    e
+                                                );
                                             }
                                         }
                                     }
                                 }
                             }
-                            Err(e) => {
-                                tracing::error!("Failed to parse EventAppParametersChange JSON: {}", e);
-                            }
                         }
-                    }
+                        Err(e) => {
+                            tracing::error!("Failed to parse EventAppParametersChange JSON: {}", e);
+                        }
+                    },
                     None => {
                         tracing::error!("EventAppParametersChange missing newParameters attribute");
                     }
@@ -2500,7 +2505,7 @@ impl ChainParameters {
             .unwrap();
 
         let latest_epoch: Option<i64> = sqlx::query_scalar(
-            "SELECT epoch_index FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1"
+            "SELECT epoch_index FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1",
         )
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
@@ -2509,7 +2514,7 @@ impl ChainParameters {
         let current_epoch = latest_epoch.unwrap_or(0);
 
         let latest_epoch_start_height: Option<i64> = sqlx::query_scalar(
-            "SELECT start_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2"
+            "SELECT start_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2",
         )
         .bind(current_epoch)
         .bind(chain_id)
@@ -2517,7 +2522,7 @@ impl ChainParameters {
         .await?;
 
         let epoch_duration: i64 = sqlx::query_scalar(
-            "SELECT epoch_duration FROM validator_chain_parameters WHERE chain_id = $1"
+            "SELECT epoch_duration FROM validator_chain_parameters WHERE chain_id = $1",
         )
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
@@ -2526,7 +2531,10 @@ impl ChainParameters {
 
         let next_epoch_in = if let Some(epoch_start) = latest_epoch_start_height {
             let next_epoch_start = epoch_start + epoch_duration;
-            std::cmp::max(0, next_epoch_start - i64::try_from(latest_height).unwrap_or(i64::MAX))
+            std::cmp::max(
+                0,
+                next_epoch_start - i64::try_from(latest_height).unwrap_or(i64::MAX),
+            )
         } else {
             epoch_duration
         };
@@ -2644,7 +2652,11 @@ impl Epoch {
                                             .await?;
                                         }
                                         Err(e) => {
-                                            tracing::error!("Failed to decode epoch root base64 '{}': {}", root_inner, e);
+                                            tracing::error!(
+                                                "Failed to decode epoch root base64 '{}': {}",
+                                                root_inner,
+                                                e
+                                            );
                                         }
                                     }
                                 }
