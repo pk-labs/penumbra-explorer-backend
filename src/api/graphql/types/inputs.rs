@@ -52,7 +52,7 @@ pub struct BlockFilter {
 pub struct TransactionFilter {
     pub hash: Option<String>,
     pub client_id: Option<String>,
-    pub validator_decoded_address: Option<String>,
+    pub validator: Option<String>,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
