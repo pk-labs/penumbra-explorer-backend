@@ -100,8 +100,8 @@ impl VotingPowerBatch {
         match Validator::calculate_total_voting_power(dbtx).await {
             Ok(total) => {
                 if total > 0 {
-                    if let Err(e) = Validator::update_all_voting_power_percentages(dbtx).await {
-                        error!("Failed to update voting power percentages: {}", e);
+                    if let Err(e) = Validator::update_all_voting_power_active_percentages(dbtx).await {
+                        error!("Failed to update voting power active percentages: {}", e);
                     }
 
                     if let Err(e) = Validator::update_total_staked(dbtx).await {
@@ -159,7 +159,7 @@ pub struct Validator {
     pub state: String,
     pub bonding_state: Option<String>,
     pub voting_power: i64,
-    pub voting_power_percentage: f64,
+    pub voting_power_active_percentage: f64,
     pub first_seen_height: Option<i64>,
     pub first_seen_time: DateTime<Utc>,
     pub last_updated: DateTime<Utc>,
@@ -289,7 +289,7 @@ impl Validator {
         default_state: &str,
         default_bonding_state: &str,
         voting_power: i64,
-        voting_power_percentage: f64,
+        voting_power_active_percentage: f64,
     ) -> Result<Self> {
         let identity_key = event_json["identityKey"]["ik"]
             .as_str()
@@ -355,7 +355,7 @@ impl Validator {
             state: default_state.to_string(),
             bonding_state,
             voting_power,
-            voting_power_percentage,
+            voting_power_active_percentage,
             first_seen_height,
             first_seen_time,
             last_updated: timestamp,
@@ -381,7 +381,7 @@ impl Validator {
                 state,
                 bonding_state,
                 voting_power,
-                voting_power_percentage,
+                voting_power_active_percentage,
                 first_seen_height,
                 first_seen_time,
                 last_updated
@@ -400,7 +400,7 @@ impl Validator {
         .bind(&self.state)
         .bind(&self.bonding_state)
         .bind(self.voting_power)
-        .bind(self.voting_power_percentage)
+        .bind(self.voting_power_active_percentage)
         .bind(self.first_seen_height)
         .bind(self.first_seen_time)
         .bind(self.last_updated)
@@ -429,7 +429,7 @@ impl Validator {
                 state,
                 bonding_state,
                 voting_power,
-                voting_power_percentage,
+                voting_power_active_percentage,
                 first_seen_height,
                 first_seen_time,
                 last_updated
@@ -446,7 +446,7 @@ impl Validator {
                 state = EXCLUDED.state,
                 bonding_state = EXCLUDED.bonding_state,
                 voting_power = EXCLUDED.voting_power,
-                voting_power_percentage = EXCLUDED.voting_power_percentage,
+                voting_power_active_percentage = EXCLUDED.voting_power_active_percentage,
                 last_updated = GREATEST(validators.last_updated, EXCLUDED.last_updated)
             ",
         )
@@ -460,7 +460,7 @@ impl Validator {
         .bind(&self.state)
         .bind(&self.bonding_state)
         .bind(self.voting_power)
-        .bind(self.voting_power_percentage)
+        .bind(self.voting_power_active_percentage)
         .bind(self.first_seen_height)
         .bind(self.first_seen_time)
         .bind(self.last_updated)
@@ -662,7 +662,7 @@ impl Validator {
     pub async fn update_voting_power(
         identity_key: &str,
         voting_power: i64,
-        voting_power_percentage: f64,
+        voting_power_active_percentage: f64,
         dbtx: &mut PgTransaction<'_>,
         timestamp: DateTime<Utc>,
     ) -> Result<()> {
@@ -671,14 +671,14 @@ impl Validator {
             UPDATE validators 
             SET 
                 voting_power = $1,
-                voting_power_percentage = $2,
+                voting_power_active_percentage = $2,
                 last_updated = $3
             WHERE 
                 identity_key = $4
             ",
         )
         .bind(voting_power)
-        .bind(voting_power_percentage)
+        .bind(voting_power_active_percentage)
         .bind(timestamp)
         .bind(identity_key)
         .execute(dbtx.as_mut())
@@ -855,12 +855,12 @@ impl Validator {
         Ok(result)
     }
 
-    /// Update voting power percentages for ACTIVE validators only (set others to 0%)
+    /// Update voting power active percentages for ACTIVE validators only (set others to 0%)
     ///
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
-    pub async fn update_all_voting_power_percentages(dbtx: &mut PgTransaction<'_>) -> Result<()> {
+    pub async fn update_all_voting_power_active_percentages(dbtx: &mut PgTransaction<'_>) -> Result<()> {
         let total_voting_power = Self::calculate_total_voting_power(dbtx).await?;
 
         if total_voting_power == 0 {
@@ -878,7 +878,7 @@ impl Validator {
                 r"
                 UPDATE validators
                 SET 
-                    voting_power_percentage = ROUND(((voting_power::float8 / $1::float8) * 100.0)::numeric, 2)
+                    voting_power_active_percentage = ROUND(((voting_power::float8 / $1::float8) * 100.0)::numeric, 2)
                 WHERE
                     state = '{state}'
                 "
@@ -893,7 +893,7 @@ impl Validator {
                 r"
                 UPDATE validators
                 SET 
-                    voting_power_percentage = 0.0
+                    voting_power_active_percentage = 0.0
                 WHERE
                     state != '{state}'
                 "
@@ -1023,7 +1023,6 @@ impl Validator {
         height: u64,
         timestamp: DateTime<Utc>,
     ) -> Result<()> {
-        // Log the timestamp we're using for debugging
         debug!(
             "Processing validator events for block {} with timestamp {}",
             height, timestamp
@@ -1689,6 +1688,21 @@ impl ValidatorFundingStream {
         timestamp: DateTime<Utc>,
         dbtx: &mut PgTransaction<'_>,
     ) -> Result<()> {
+        // First, delete all existing funding streams for this validator
+        // This ensures we replace old streams with new ones from the latest event
+        // This prevents duplicates when multiple EventValidatorDefinitionUpload events
+        // are processed for the same validator (e.g., validator updates their commission)
+        if let Err(e) = sqlx::query(
+            "DELETE FROM validator_funding_streams WHERE identity_key = $1"
+        )
+        .bind(identity_key)
+        .execute(dbtx.as_mut())
+        .await {
+            error!("Failed to delete old funding streams for validator {}: {}", identity_key, e);
+        }
+        
+        debug!("Deleted old funding streams for validator {}, inserting new ones", identity_key);
+
         if let Some(funding_streams) = funding_streams_json.as_array() {
             for stream in funding_streams {
                 if let Some(to_address) = stream.get("toAddress") {
