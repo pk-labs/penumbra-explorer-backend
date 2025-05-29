@@ -210,7 +210,7 @@ impl Explorer {
                 1,
                 timestamp,
                 state,
-                bonding_state.unwrap_or(""),
+                bonding_state.unwrap_or("BONDING_STATE_ENUM_BONDED"),
                 0,
                 0.0,
             ) {
@@ -668,7 +668,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 state TEXT DEFAULT 'unknown',
                 bonding_state TEXT DEFAULT 'unknown',
                 voting_power BIGINT DEFAULT 0,
-                voting_power_percentage DOUBLE PRECISION DEFAULT 0,
+                voting_power_active_percentage DOUBLE PRECISION DEFAULT 0,
                 first_seen_height BIGINT,
                 first_seen_time TIMESTAMPTZ,
                 last_updated TIMESTAMPTZ
@@ -782,7 +782,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 v.state,
                 COALESCE(v.bonding_state, '') as bonding_state,
                 v.voting_power,
-                v.voting_power_percentage,
+                v.voting_power_active_percentage,
                 v.first_seen_height,
                 v.first_seen_time,
                 COALESCE(cr.commission_rate_percentage, 0.0) as commission_rate,
