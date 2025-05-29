@@ -118,7 +118,7 @@ impl ValidatorHomepageData {
                 state,
                 bonding_state,
                 voting_power,
-                voting_power_percentage,
+                voting_power_active_percentage,
                 uptime_percentage::FLOAT8 as uptime_percentage,
                 first_seen_time,
                 commission_rate::FLOAT8 as commission_rate
@@ -175,7 +175,7 @@ impl ValidatorHomepageData {
                 state: row.state,
                 bonding_state: row.bonding_state,
                 voting_power: row.voting_power,
-                voting_power_active_percentage: row.voting_power_percentage,
+                voting_power_active_percentage: row.voting_power_active_percentage,
                 uptime: row.uptime_percentage,
                 first_seen_time: row.first_seen_time,
                 commission: row.commission_rate,
@@ -209,7 +209,7 @@ struct ValidatorRow {
     state: String,
     bonding_state: Option<String>,
     voting_power: i64,
-    voting_power_percentage: f64,
+    voting_power_active_percentage: f64,
     uptime_percentage: Option<f64>,
     first_seen_time: Option<DateTime<Utc>>,
     commission_rate: f64,
@@ -298,7 +298,7 @@ impl ValidatorDetails {
                 vp.signed_blocks,
                 vp.commission_rate::FLOAT8 as commission_rate,
                 v.voting_power,
-                v.voting_power_percentage,
+                v.voting_power_active_percentage,
                 v.first_seen_time
             FROM 
                 validator_performance vp
@@ -387,7 +387,7 @@ impl ValidatorDetails {
                 })
                 .collect(),
             voting_power: info.voting_power,
-            voting_power_active_percentage: info.voting_power_percentage,
+            voting_power_active_percentage: info.voting_power_active_percentage,
             active_since: info.first_seen_time,
             last_300_blocks: last_300_blocks_array,
         }))
@@ -409,7 +409,7 @@ struct ValidatorDetailsRow {
     signed_blocks: i64,
     commission_rate: f64,
     voting_power: i64,
-    voting_power_percentage: f64,
+    voting_power_active_percentage: f64,
     first_seen_time: Option<DateTime<Utc>>,
 }
 
