@@ -10,6 +10,7 @@ DROP VIEW IF EXISTS explorer_recent_blocks;
 -- Drop tables with foreign key dependencies first
 DROP TABLE IF EXISTS validator_blocks;
 DROP TABLE IF EXISTS validator_funding_streams;
+DROP TABLE IF EXISTS validator_uptime_stats;
 DROP TABLE IF EXISTS validators;
 DROP TABLE IF EXISTS ibc_transfers;
 DROP TABLE IF EXISTS validator_staking_parameters;
