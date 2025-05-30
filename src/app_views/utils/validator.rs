@@ -2758,8 +2758,13 @@ impl Epoch {
                                                 0
                                             };
 
+                                            // The epoch_index represents the epoch that just ended,
+                                            // so we add 1 to get the current epoch
+                                            let current_epoch = epoch_index + 1;
+                                            
                                             tracing::info!(
-                                                "Updating current_epoch to {} and next_epoch_in to {} in validator_chain_parameters for chain {}",
+                                                "Updating current_epoch to {} (ended epoch {} + 1) and next_epoch_in to {} in validator_chain_parameters for chain {}",
+                                                current_epoch,
                                                 epoch_index,
                                                 next_epoch_in,
                                                 chain_id
@@ -2772,7 +2777,7 @@ impl Epoch {
                                                 WHERE chain_id = $4
                                                 ",
                                             )
-                                            .bind(epoch_index)
+                                            .bind(current_epoch)
                                             .bind(next_epoch_in)
                                             .bind(timestamp)
                                             .bind(&chain_id)
