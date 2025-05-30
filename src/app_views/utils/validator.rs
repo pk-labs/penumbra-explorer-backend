@@ -2394,18 +2394,16 @@ impl ChainParameters {
         let height_i64 = i64::try_from(block_height)
             .map_err(|e| anyhow::anyhow!("Height conversion error: {}", e))?;
 
-        let (current_epoch, epoch_duration): (i64, i64) = match sqlx::query_as::<_, (i64, i64)>(
+        let (current_epoch, epoch_duration): (i64, i64) = if let Some((epoch, duration)) = sqlx::query_as::<_, (i64, i64)>(
             "SELECT current_epoch, epoch_duration FROM validator_chain_parameters WHERE chain_id = $1",
         )
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
-        .await?
-        {
-            Some((epoch, duration)) => (epoch, duration),
-            None => {
-                tracing::info!("No validator_chain_parameters found for chain {}, using epoch 0 (first batch)", chain_id);
-                (0, 0)
-            }
+        .await? { 
+            (epoch, duration) 
+        } else {
+            tracing::info!("No validator_chain_parameters found for chain {}, using epoch 0 (first batch)", chain_id);
+            (0, 0)
         };
 
         let next_epoch_in = if epoch_duration > 0 {
@@ -2587,18 +2585,16 @@ impl ChainParameters {
             .map(|(h, t)| (*h, *t))
             .unwrap();
 
-        let (current_epoch, epoch_duration): (i64, i64) = match sqlx::query_as::<_, (i64, i64)>(
+        let (current_epoch, epoch_duration): (i64, i64) = if let Some((epoch, duration)) = sqlx::query_as::<_, (i64, i64)>(
             "SELECT current_epoch, epoch_duration FROM validator_chain_parameters WHERE chain_id = $1",
         )
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
-        .await?
-        {
-            Some((epoch, duration)) => (epoch, duration),
-            None => {
-                tracing::info!("No validator_chain_parameters found for chain {}, using epoch 0 (first batch)", chain_id);
-                (0, 0)
-            }
+        .await? { 
+            (epoch, duration) 
+        } else {
+            tracing::info!("No validator_chain_parameters found for chain {}, using epoch 0 (first batch)", chain_id);
+            (0, 0)
         };
 
         let latest_height_i64 = i64::try_from(latest_height)
@@ -2671,6 +2667,7 @@ impl Epoch {
     /// # Errors
     ///
     /// Returns an error if database operations fail
+    #[allow(clippy::too_many_lines)]
     pub async fn process_events(
         dbtx: &mut PgTransaction<'_>,
         events: &[ContextualizedEvent<'_>],
