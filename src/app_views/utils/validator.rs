@@ -2364,18 +2364,19 @@ impl ChainParameters {
 
         let epoch_duration = existing_epoch_duration.unwrap_or(0);
 
-        let next_epoch_in = if epoch_duration > 0 && current_epoch > 0 {
-            let current_epoch_start: Option<i64> = sqlx::query_scalar(
-                "SELECT start_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2",
+        let next_epoch_in = if epoch_duration > 0 && current_epoch >= 0 {
+            let current_epoch_end: Option<i64> = sqlx::query_scalar(
+                "SELECT end_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2",
             )
             .bind(current_epoch)
             .bind(chain_id)
             .fetch_optional(dbtx.as_mut())
             .await?;
 
-            if let Some(start_height) = current_epoch_start {
-                let next_epoch_start = start_height + epoch_duration;
-                std::cmp::max(0, next_epoch_start - height_i64)
+            if let Some(end_height) = current_epoch_end {
+                let next_epoch_start = end_height + 1;
+                let next_epoch_end = next_epoch_start + epoch_duration - 1;
+                std::cmp::max(0, next_epoch_end - height_i64 + 1)
             } else {
                 0
             }
@@ -2513,30 +2514,35 @@ impl ChainParameters {
 
         let current_epoch = latest_epoch.unwrap_or(0);
 
-        let latest_epoch_start_height: Option<i64> = sqlx::query_scalar(
-            "SELECT start_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2",
+        let latest_epoch_end_height: Option<i64> = sqlx::query_scalar(
+            "SELECT end_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2",
         )
         .bind(current_epoch)
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
         .await?;
 
-        let epoch_duration: i64 = sqlx::query_scalar(
+        let epoch_duration: Option<i64> = sqlx::query_scalar(
             "SELECT epoch_duration FROM validator_chain_parameters WHERE chain_id = $1",
         )
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
-        .await?
-        .unwrap_or(34560);
+        .await?;
 
-        let next_epoch_in = if let Some(epoch_start) = latest_epoch_start_height {
-            let next_epoch_start = epoch_start + epoch_duration;
-            std::cmp::max(
-                0,
-                next_epoch_start - i64::try_from(latest_height).unwrap_or(i64::MAX),
-            )
-        } else {
-            epoch_duration
+        let next_epoch_in = match (latest_epoch_end_height, epoch_duration) {
+            (Some(epoch_end), Some(duration)) => {
+                let next_epoch_start = epoch_end + 1;
+                let next_epoch_end = next_epoch_start + duration - 1;
+                std::cmp::max(
+                    0,
+                    next_epoch_end - i64::try_from(latest_height).unwrap_or(i64::MAX) + 1,
+                )
+            }
+            (None, Some(duration)) => duration,
+            _ => {
+                tracing::warn!("Missing epoch data for chain {}, cannot calculate next_epoch_in", chain_id);
+                0
+            }
         };
 
         sqlx::query(
@@ -2562,7 +2568,7 @@ impl ChainParameters {
         .bind(i64::try_from(latest_height).unwrap_or(i64::MAX))
         .bind(latest_timestamp)
         .bind(current_epoch)
-        .bind(epoch_duration)
+        .bind(epoch_duration.unwrap_or(0))
         .bind(next_epoch_in)
         .bind(latest_timestamp)
         .execute(dbtx.as_mut())
@@ -2576,8 +2582,8 @@ impl ChainParameters {
 pub struct Epoch {
     pub epoch_index: i64,
     pub chain_id: String,
-    pub start_height: i64,
-    pub start_time: DateTime<Utc>,
+    pub end_height: i64,
+    pub end_time: DateTime<Utc>,
     pub epoch_root: Vec<u8>,
 }
 
@@ -2599,29 +2605,34 @@ impl Epoch {
                 let index_str = ValidatorParams::find_attribute_value(event, "index");
                 let root_str = ValidatorParams::find_attribute_value(event, "root");
 
-                match (index_str, root_str) {
-                    (Some(index_json), Some(root_json)) => {
-                        match (
-                            serde_json::from_str::<Value>(index_json),
-                            serde_json::from_str::<Value>(root_json),
-                        ) {
-                            (Ok(index_val), Ok(root_val)) => {
-                                if let (Some(epoch_index), Some(root_inner)) = (
-                                    index_val.as_str().and_then(|s| s.parse::<i64>().ok()),
-                                    root_val.get("inner").and_then(|r| r.as_str()),
-                                ) {
+                let chain_id = sqlx::query_scalar::<_, String>(
+                    "SELECT chain_id FROM explorer_block_details WHERE height = $1 LIMIT 1"
+                )
+                .bind(i64::try_from(height).unwrap_or(i64::MAX))
+                .fetch_optional(dbtx.as_mut())
+                .await?
+                .unwrap_or_else(|| "unknown".to_string());
+
+                match root_str {
+                    Some(root_json) => {
+                        match serde_json::from_str::<Value>(root_json) {
+                            Ok(root_val) => {
+                                if let Some(root_inner) = root_val.get("inner").and_then(|r| r.as_str()) {
                                     match general_purpose::STANDARD.decode(root_inner) {
                                         Ok(epoch_root) => {
-                                            let chain_id = sqlx::query_scalar::<_, String>(
-                                                "SELECT chain_id FROM explorer_block_details WHERE height = $1 LIMIT 1"
-                                            )
-                                            .bind(i64::try_from(height).unwrap_or(i64::MAX))
-                                            .fetch_optional(dbtx.as_mut())
-                                            .await?
-                                            .unwrap_or_else(|| "unknown".to_string());
+                                            let epoch_index = if let Some(index_json) = index_str {
+                                                match serde_json::from_str::<Value>(index_json) {
+                                                    Ok(index_val) => {
+                                                        index_val.as_str().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0)
+                                                    }
+                                                    Err(_) => 0,
+                                                }
+                                            } else {
+                                                0
+                                            };
 
                                             tracing::info!(
-                                                "Processing epoch {} at height {} for chain {}",
+                                                "Processing epoch {} ending at height {} for chain {}",
                                                 epoch_index,
                                                 height,
                                                 chain_id
@@ -2632,14 +2643,14 @@ impl Epoch {
                                                 INSERT INTO epochs (
                                                     epoch_index,
                                                     chain_id,
-                                                    start_height,
-                                                    start_time,
+                                                    end_height,
+                                                    end_time,
                                                     epoch_root
                                                 ) VALUES ($1, $2, $3, $4, $5)
                                                 ON CONFLICT (epoch_index) DO UPDATE SET
                                                     chain_id = EXCLUDED.chain_id,
-                                                    start_height = EXCLUDED.start_height,
-                                                    start_time = EXCLUDED.start_time,
+                                                    end_height = EXCLUDED.end_height,
+                                                    end_time = EXCLUDED.end_time,
                                                     epoch_root = EXCLUDED.epoch_root
                                                 ",
                                             )
@@ -2661,13 +2672,13 @@ impl Epoch {
                                     }
                                 }
                             }
-                            _ => {
-                                tracing::error!("Failed to parse EventEpochRoot JSON data");
+                            Err(e) => {
+                                tracing::error!("Failed to parse EventEpochRoot root JSON: {}", e);
                             }
                         }
                     }
-                    _ => {
-                        tracing::error!("EventEpochRoot missing required attributes");
+                    None => {
+                        tracing::error!("EventEpochRoot missing required root attribute");
                     }
                 }
             }
