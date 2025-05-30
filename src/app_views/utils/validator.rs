@@ -88,7 +88,7 @@ impl VotingPowerBatch {
             if let Err(e) = Validator::update_voting_power(
                 identity_key,
                 *voting_power,
-                0.0, // Temporary percentage, will be recalculated
+                0.0,
                 dbtx,
                 timestamp,
             )
@@ -1623,6 +1623,243 @@ impl Validator {
             }
         }
 
+        Ok(())
+    }
+
+    /// Initialize uptime stats for a new validator
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn initialize_uptime_stats(
+        identity_key: &str,
+        current_height: i64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        let uptime_window = Self::get_uptime_blocks_window(dbtx).await.unwrap_or(10000);
+        let window_start = std::cmp::max(0, current_height - uptime_window);
+
+        sqlx::query(
+            r"
+            INSERT INTO validator_uptime_stats (
+                identity_key, 
+                total_blocks, 
+                signed_blocks, 
+                missed_blocks, 
+                uptime_percentage,
+                last_calculated_height,
+                window_start_height,
+                updated_at
+            ) VALUES ($1, 0, 0, 0, 0.00, $2, $3, NOW())
+            ON CONFLICT (identity_key) DO NOTHING
+            ",
+        )
+        .bind(identity_key)
+        .bind(current_height)
+        .bind(window_start)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        Ok(())
+    }
+
+    /// Get uptime blocks window from validator staking parameters
+    async fn get_uptime_blocks_window(dbtx: &mut PgTransaction<'_>) -> Result<i64> {
+        let window: Option<i64> = sqlx::query_scalar(
+            "SELECT uptime_blocks_window FROM validator_staking_parameters LIMIT 1"
+        )
+        .fetch_optional(dbtx.as_mut())
+        .await?;
+        
+        Ok(window.unwrap_or(10000))
+    }
+
+    /// Update uptime stats for all active validators after a new block
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn update_uptime_stats_for_block(
+        height: i64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
+        let window_start = std::cmp::max(0, height - uptime_window);
+
+        sqlx::query(
+            r"
+            WITH validator_block_counts AS (
+                SELECT 
+                    vb.identity_key,
+                    COUNT(*) as total_blocks,
+                    SUM(CASE WHEN vb.signed THEN 1 ELSE 0 END) as signed_blocks,
+                    SUM(CASE WHEN NOT vb.signed THEN 1 ELSE 0 END) as missed_blocks
+                FROM validator_blocks vb
+                WHERE vb.block_height > $1 AND vb.block_height <= $2
+                GROUP BY vb.identity_key
+            )
+            INSERT INTO validator_uptime_stats (
+                identity_key,
+                total_blocks,
+                signed_blocks,
+                missed_blocks,
+                uptime_percentage,
+                last_calculated_height,
+                window_start_height,
+                updated_at
+            )
+            SELECT 
+                vbc.identity_key,
+                vbc.total_blocks,
+                vbc.signed_blocks,
+                vbc.missed_blocks,
+                CASE 
+                    WHEN vbc.total_blocks > 0 THEN
+                        ROUND((vbc.signed_blocks::numeric / vbc.total_blocks::numeric) * 100.0, 2)
+                    ELSE 0.00
+                END as uptime_percentage,
+                $2 as last_calculated_height,
+                $1 as window_start_height,
+                NOW() as updated_at
+            FROM validator_block_counts vbc
+            ON CONFLICT (identity_key) DO UPDATE SET
+                total_blocks = EXCLUDED.total_blocks,
+                signed_blocks = EXCLUDED.signed_blocks,
+                missed_blocks = EXCLUDED.missed_blocks,
+                uptime_percentage = EXCLUDED.uptime_percentage,
+                last_calculated_height = EXCLUDED.last_calculated_height,
+                window_start_height = EXCLUDED.window_start_height,
+                updated_at = EXCLUDED.updated_at
+            ",
+        )
+        .bind(window_start)
+        .bind(height)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        debug!("Updated uptime stats for block height {}", height);
+        Ok(())
+    }
+
+    /// Update uptime stats for a specific validator after a missed block event
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn update_validator_uptime_stats(
+        identity_key: &str,
+        current_height: i64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
+        let window_start = std::cmp::max(0, current_height - uptime_window);
+
+        Self::initialize_uptime_stats(identity_key, current_height, dbtx).await?;
+
+        sqlx::query(
+            r"
+            WITH validator_block_counts AS (
+                SELECT 
+                    COUNT(*) as total_blocks,
+                    SUM(CASE WHEN signed THEN 1 ELSE 0 END) as signed_blocks,
+                    SUM(CASE WHEN NOT signed THEN 1 ELSE 0 END) as missed_blocks
+                FROM validator_blocks
+                WHERE identity_key = $1 
+                  AND block_height > $2 
+                  AND block_height <= $3
+            )
+            UPDATE validator_uptime_stats
+            SET 
+                total_blocks = vbc.total_blocks,
+                signed_blocks = vbc.signed_blocks,
+                missed_blocks = vbc.missed_blocks,
+                uptime_percentage = CASE 
+                    WHEN vbc.total_blocks > 0 THEN
+                        ROUND((vbc.signed_blocks::numeric / vbc.total_blocks::numeric) * 100.0, 2)
+                    ELSE 0.00
+                END,
+                last_calculated_height = $3,
+                window_start_height = $2,
+                updated_at = NOW()
+            FROM validator_block_counts vbc
+            WHERE identity_key = $1
+            ",
+        )
+        .bind(identity_key)
+        .bind(window_start)
+        .bind(current_height)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        debug!("Updated uptime stats for validator {} at height {}", identity_key, current_height);
+        Ok(())
+    }
+
+    /// Bulk update uptime stats for multiple validators
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn bulk_update_uptime_stats(
+        validator_identities: &[String],
+        current_height: i64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        if validator_identities.is_empty() {
+            return Ok(());
+        }
+
+        let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
+        let window_start = std::cmp::max(0, current_height - uptime_window);
+
+        // Initialize uptime stats for any validators that don't have them
+        for identity_key in validator_identities {
+            Self::initialize_uptime_stats(identity_key, current_height, dbtx).await?;
+        }
+
+        // Update all validators in the list
+        let identity_list: Vec<&str> = validator_identities.iter().map(|s| s.as_str()).collect();
+        
+        sqlx::query(
+            r"
+            WITH validator_block_counts AS (
+                SELECT 
+                    vb.identity_key,
+                    COUNT(*) as total_blocks,
+                    SUM(CASE WHEN vb.signed THEN 1 ELSE 0 END) as signed_blocks,
+                    SUM(CASE WHEN NOT vb.signed THEN 1 ELSE 0 END) as missed_blocks
+                FROM validator_blocks vb
+                WHERE vb.identity_key = ANY($1) 
+                  AND vb.block_height > $2 
+                  AND vb.block_height <= $3
+                GROUP BY vb.identity_key
+            )
+            UPDATE validator_uptime_stats us
+            SET 
+                total_blocks = COALESCE(vbc.total_blocks, 0),
+                signed_blocks = COALESCE(vbc.signed_blocks, 0),
+                missed_blocks = COALESCE(vbc.missed_blocks, 0),
+                uptime_percentage = CASE 
+                    WHEN COALESCE(vbc.total_blocks, 0) > 0 THEN
+                        ROUND((COALESCE(vbc.signed_blocks, 0)::numeric / vbc.total_blocks::numeric) * 100.0, 2)
+                    ELSE 0.00
+                END,
+                last_calculated_height = $3,
+                window_start_height = $2,
+                updated_at = NOW()
+            FROM validator_block_counts vbc
+            WHERE us.identity_key = vbc.identity_key
+               AND us.identity_key = ANY($1)
+            ",
+        )
+        .bind(&identity_list)
+        .bind(window_start)
+        .bind(current_height)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        debug!("Bulk updated uptime stats for {} validators at height {}", 
+               validator_identities.len(), current_height);
         Ok(())
     }
 }
