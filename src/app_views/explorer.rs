@@ -685,8 +685,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             CREATE TABLE IF NOT EXISTS epochs (
                 epoch_index BIGINT PRIMARY KEY,
                 chain_id TEXT NOT NULL,
-                start_height BIGINT NOT NULL,
-                start_time TIMESTAMPTZ NOT NULL,
+                end_height BIGINT NOT NULL,
+                end_time TIMESTAMPTZ NOT NULL,
                 epoch_root BYTEA NOT NULL
             )
             ",
@@ -705,8 +705,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         sqlx::query(
             r"
-            CREATE INDEX IF NOT EXISTS idx_epochs_start_height
-            ON epochs(start_height DESC)
+            CREATE INDEX IF NOT EXISTS idx_epochs_end_height
+            ON epochs(end_height DESC)
             ",
         )
         .execute(dbtx.as_mut())
