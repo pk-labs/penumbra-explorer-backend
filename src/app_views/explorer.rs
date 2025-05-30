@@ -274,6 +274,7 @@ impl Explorer {
         dbtx: &mut PgTransaction<'_>,
         height: u64,
         timestamp: DateTime<Utc>,
+        _ctx: &EventBatchContext,
     ) -> Result<(), anyhow::Error> {
         let block_exists: i64 = match sqlx::query_scalar(
             "SELECT COUNT(*) FROM explorer_block_details WHERE height = $1",
@@ -363,10 +364,10 @@ impl Explorer {
         );
 
         let validator_records: Vec<(String, i64, DateTime<Utc>, bool)> = active_validators
-            .into_iter()
+            .iter()
             .map(|identity_key| {
                 (
-                    identity_key,
+                    identity_key.clone(),
                     i64::try_from(height).unwrap_or(i64::MAX),
                     timestamp,
                     true,
@@ -376,7 +377,34 @@ impl Explorer {
 
         let _ = validator::Validator::record_validator_blocks_bulk(&validator_records, dbtx).await;
 
+
         Ok(())
+    }
+
+    /// Helper function to get active validators for live processing
+    async fn get_active_validators_at_height(
+        &self,
+        _height: u64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<Vec<String>, anyhow::Error> {
+        let active_state: Option<String> = sqlx::query_scalar(
+            "SELECT DISTINCT state FROM validators WHERE state LIKE '%ACTIVE%' LIMIT 1",
+        )
+        .fetch_optional(dbtx.as_mut())
+        .await?;
+
+        if let Some(state) = active_state {
+            let validators: Vec<String> = sqlx::query_scalar(&format!(
+                "SELECT identity_key FROM validators WHERE state = '{}'",
+                state
+            ))
+            .fetch_all(dbtx.as_mut())
+            .await?;
+            
+            Ok(validators)
+        } else {
+            Ok(Vec::new())
+        }
     }
 }
 
@@ -788,6 +816,23 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         sqlx::query(
             r"
+            CREATE TABLE IF NOT EXISTS validator_uptime_stats (
+                identity_key TEXT PRIMARY KEY REFERENCES validators(identity_key),
+                total_blocks BIGINT NOT NULL DEFAULT 0,
+                signed_blocks BIGINT NOT NULL DEFAULT 0,
+                missed_blocks BIGINT NOT NULL DEFAULT 0,
+                uptime_percentage NUMERIC(5,2) DEFAULT 0.00,
+                last_calculated_height BIGINT NOT NULL DEFAULT 0,
+                window_start_height BIGINT NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
             CREATE INDEX IF NOT EXISTS idx_validators_state
             ON validators(state)
             ",
@@ -806,22 +851,26 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         sqlx::query(
             r"
+            CREATE INDEX IF NOT EXISTS idx_validator_uptime_stats_identity_key
+            ON validator_uptime_stats(identity_key)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_uptime_stats_updated_at
+            ON validator_uptime_stats(updated_at DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
             CREATE OR REPLACE VIEW validator_performance AS
-            WITH uptime_window AS (
-                SELECT uptime_blocks_window FROM validator_staking_parameters LIMIT 1
-            ),
-            block_stats AS (
-                SELECT 
-                    vb.identity_key,
-                    COUNT(*) as total_blocks,
-                    SUM(CASE WHEN vb.signed = TRUE THEN 1 ELSE 0 END) as signed_blocks,
-                    SUM(CASE WHEN vb.signed = FALSE THEN 1 ELSE 0 END) as missed_blocks
-                FROM validator_blocks vb
-                CROSS JOIN uptime_window uw
-                WHERE vb.block_height > (SELECT MAX(height) FROM explorer_block_details) - uw.uptime_blocks_window
-                GROUP BY vb.identity_key
-            ),
-            commission_rates AS (
+            WITH commission_rates AS (
                 SELECT
                     identity_key,
                     ROUND(SUM(rate_bps)::numeric / 100.0, 2) as commission_rate_percentage
@@ -841,21 +890,13 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 v.first_seen_height,
                 v.first_seen_time,
                 COALESCE(cr.commission_rate_percentage, 0.0) as commission_rate,
-                COALESCE(bs.missed_blocks, 0) as missed_blocks,
-                COALESCE(bs.signed_blocks, 0) as signed_blocks,
-                COALESCE(bs.total_blocks, 0) as total_tracked_blocks,
-                CASE 
-                    WHEN COALESCE(bs.total_blocks, 0) > 0 THEN
-                        ROUND(
-                            (COALESCE(bs.signed_blocks, 0)::numeric / 
-                            bs.total_blocks::numeric) * 100.0,
-                            2
-                        )
-                    ELSE NULL
-                END as uptime_percentage
+                COALESCE(us.missed_blocks, 0) as missed_blocks,
+                COALESCE(us.signed_blocks, 0) as signed_blocks,
+                COALESCE(us.total_blocks, 0) as total_tracked_blocks,
+                COALESCE(us.uptime_percentage, 0.00) as uptime_percentage
             FROM 
                 validators v
-            LEFT JOIN block_stats bs ON v.identity_key = bs.identity_key
+            LEFT JOIN validator_uptime_stats us ON v.identity_key = us.identity_key
             LEFT JOIN commission_rates cr ON v.identity_key = cr.identity_key
             ORDER BY 
                 v.voting_power DESC
@@ -1358,6 +1399,9 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             height_to_timestamp.insert(*height, *ts);
         }
 
+        let latest_height = block_data_to_process.iter().map(|(h, _, _, _, _)| *h).max().unwrap_or(0);
+        let batch_size = block_data_to_process.len();
+
         for (height, root, ts, tx_count, formatted_json) in block_data_to_process {
             let current_epoch = match validator::ChainParameters::update_basic_chain_info(
                 dbtx,
@@ -1390,7 +1434,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
             block::insert(dbtx, meta).await?;
 
-            self.record_validator_blocks_for_height(dbtx, height, ts)
+            self.record_validator_blocks_for_height(dbtx, height, ts, &ctx)
                 .await?;
         }
 
@@ -1502,7 +1546,33 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             }
         }
 
+        if batch_size > 0 {
+            if batch_size <= 10 {
+                tracing::debug!("Live processing mode: updating uptime stats for {} blocks", batch_size);
+                
+                if let Err(e) = validator::Validator::update_uptime_stats_for_block(
+                    i64::try_from(latest_height).unwrap_or(i64::MAX),
+                    dbtx,
+                ).await {
+                    tracing::error!("Failed to update uptime stats in live mode: {}", e);
+                }
+            } else {
+                tracing::debug!("Batch reindexing mode: skipping uptime updates for performance (batch of {} blocks)", batch_size);
+            }
+        }
+
         if ctx.is_last() {
+            tracing::info!("Final batch processed - calculating uptime stats for all validators");
+            
+            if let Err(e) = validator::Validator::update_uptime_stats_for_block(
+                i64::try_from(latest_height).unwrap_or(i64::MAX),
+                dbtx,
+            ).await {
+                tracing::error!("Failed to calculate final uptime stats: {}", e);
+            } else {
+                tracing::info!("Successfully calculated uptime stats for all validators");
+            }
+            
             if let Err(e) = ibc::update_old_pending_transactions(dbtx).await {
                 tracing::error!("Error updating old pending transactions: {:?}", e);
             }
