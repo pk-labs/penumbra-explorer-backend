@@ -405,6 +405,7 @@ impl AppView for Explorer {
                 previous_block_hash BYTEA,
                 block_hash BYTEA,
                 chain_id TEXT,
+                epoch BIGINT,
                 raw_json JSONB
             )
             ",
@@ -425,6 +426,15 @@ impl AppView for Explorer {
             r"
             CREATE INDEX IF NOT EXISTS idx_explorer_block_details_validator
             ON explorer_block_details(validator_identity_key)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_explorer_block_details_epoch
+            ON explorer_block_details(epoch)
             ",
         )
         .execute(dbtx.as_mut())
@@ -493,6 +503,7 @@ impl AppView for Explorer {
                 total_fees,
                 validator_identity_key,
                 chain_id,
+                epoch,
                 raw_json
             FROM
                 explorer_block_details
@@ -1348,21 +1359,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         }
 
         for (height, root, ts, tx_count, formatted_json) in block_data_to_process {
-            let meta = BlockMetadata {
-                height,
-                root,
-                timestamp: ts,
-                tx_count,
-                chain_id: self.get_chain_id(),
-                raw_json: formatted_json,
-            };
-
-            block::insert(dbtx, meta).await?;
-
-            self.record_validator_blocks_for_height(dbtx, height, ts)
-                .await?;
-
-            if let Err(e) = validator::ChainParameters::update_basic_chain_info(
+            let current_epoch = match validator::ChainParameters::update_basic_chain_info(
                 dbtx,
                 self.get_chain_id(),
                 height,
@@ -1370,12 +1367,31 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             )
             .await
             {
-                tracing::error!(
-                    "Error updating basic chain parameters for block {}: {:?}",
-                    height,
-                    e
-                );
-            }
+                Ok(epoch) => Some(epoch),
+                Err(e) => {
+                    tracing::error!(
+                        "Error updating basic chain parameters for block {}: {:?}",
+                        height,
+                        e
+                    );
+                    None
+                }
+            };
+
+            let meta = BlockMetadata {
+                height,
+                root,
+                timestamp: ts,
+                tx_count,
+                chain_id: self.get_chain_id(),
+                epoch: current_epoch,
+                raw_json: formatted_json,
+            };
+
+            block::insert(dbtx, meta).await?;
+
+            self.record_validator_blocks_for_height(dbtx, height, ts)
+                .await?;
         }
 
         for (tx_hash, tx_bytes, tx_index, height, timestamp, tx_events) in &transactions_to_process
