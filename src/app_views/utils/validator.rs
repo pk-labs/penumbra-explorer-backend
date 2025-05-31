@@ -85,14 +85,9 @@ impl VotingPowerBatch {
         );
 
         for (identity_key, voting_power) in &self.changes {
-            if let Err(e) = Validator::update_voting_power(
-                identity_key,
-                *voting_power,
-                0.0,
-                dbtx,
-                timestamp,
-            )
-            .await
+            if let Err(e) =
+                Validator::update_voting_power(identity_key, *voting_power, 0.0, dbtx, timestamp)
+                    .await
             {
                 error!("Failed to update voting power for {}: {}", identity_key, e);
             }
@@ -1664,11 +1659,11 @@ impl Validator {
     /// Get uptime blocks window from validator staking parameters
     async fn get_uptime_blocks_window(dbtx: &mut PgTransaction<'_>) -> Result<i64> {
         let window: Option<i64> = sqlx::query_scalar(
-            "SELECT uptime_blocks_window FROM validator_staking_parameters LIMIT 1"
+            "SELECT uptime_blocks_window FROM validator_staking_parameters LIMIT 1",
         )
         .fetch_optional(dbtx.as_mut())
         .await?;
-        
+
         Ok(window.unwrap_or(10000))
     }
 
@@ -1789,7 +1784,10 @@ impl Validator {
         .execute(dbtx.as_mut())
         .await?;
 
-        debug!("Updated uptime stats for validator {} at height {}", identity_key, current_height);
+        debug!(
+            "Updated uptime stats for validator {} at height {}",
+            identity_key, current_height
+        );
         Ok(())
     }
 
@@ -1815,7 +1813,7 @@ impl Validator {
         }
 
         let identity_list: Vec<&str> = validator_identities.iter().map(String::as_str).collect();
-        
+
         sqlx::query(
             r"
             WITH validator_block_counts AS (
@@ -1854,8 +1852,11 @@ impl Validator {
         .execute(dbtx.as_mut())
         .await?;
 
-        debug!("Bulk updated uptime stats for {} validators at height {}", 
-               validator_identities.len(), current_height);
+        debug!(
+            "Bulk updated uptime stats for {} validators at height {}",
+            validator_identities.len(),
+            current_height
+        );
         Ok(())
     }
 }
@@ -2109,8 +2110,7 @@ impl ValidatorParams {
             .and_then(|max| max.as_str())
             .map(str::parse::<i64>)
         {
-            100.0
-                * f64::from(i32::try_from(uptime_blocks_window - missed_max).unwrap_or(0))
+            100.0 * f64::from(i32::try_from(uptime_blocks_window - missed_max).unwrap_or(0))
                 / f64::from(i32::try_from(uptime_blocks_window).unwrap_or(1))
         } else {
             tracing::error!("Failed to parse missedBlocksMaximum in genesis.json");
@@ -2149,7 +2149,9 @@ impl ValidatorParams {
             .map(str::parse::<i64>)
         else {
             tracing::error!("Failed to parse unbondingDelay in genesis.json");
-            return Err(anyhow::anyhow!("Missing or invalid unbondingDelay in genesis.json"));
+            return Err(anyhow::anyhow!(
+                "Missing or invalid unbondingDelay in genesis.json"
+            ));
         };
 
         Ok(Self {
@@ -2594,7 +2596,6 @@ pub struct ChainParameters {
 }
 
 impl ChainParameters {
-
     /// Get the epoch for a given block height
     ///
     /// # Errors
@@ -2640,7 +2641,9 @@ impl ChainParameters {
         .fetch_optional(dbtx.as_mut())
         .await?;
 
-        epoch_for_height.ok_or_else(|| anyhow::anyhow!("No epoch found for height {} in chain {}", height, chain_id))
+        epoch_for_height.ok_or_else(|| {
+            anyhow::anyhow!("No epoch found for height {} in chain {}", height, chain_id)
+        })
     }
 
     /// Simple update of current block info and read latest epoch from epochs table
@@ -2662,8 +2665,8 @@ impl ChainParameters {
         )
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
-        .await? { 
-            (epoch, duration) 
+        .await? {
+            (epoch, duration)
         } else {
             tracing::info!("No validator_chain_parameters found for chain {}, using epoch 0 (first batch)", chain_id);
             (0, 0)
@@ -2682,7 +2685,11 @@ impl ChainParameters {
                 let next_epoch_end = epoch_end_height + epoch_duration;
                 std::cmp::max(0, next_epoch_end - height_i64)
             } else {
-                tracing::debug!("No end_height found for epoch {} in chain {}, cannot calculate next_epoch_in", current_epoch, chain_id);
+                tracing::debug!(
+                    "No end_height found for epoch {} in chain {}, cannot calculate next_epoch_in",
+                    current_epoch,
+                    chain_id
+                );
                 0
             }
         } else {
@@ -2691,7 +2698,10 @@ impl ChainParameters {
 
         tracing::debug!(
             "Updating chain parameters: epoch={}, duration={}, next_epoch_in={} for chain {}",
-            current_epoch, epoch_duration, next_epoch_in, chain_id
+            current_epoch,
+            epoch_duration,
+            next_epoch_in,
+            chain_id
         );
 
         sqlx::query(
@@ -2762,7 +2772,11 @@ impl ChainParameters {
                                                 .fetch_optional(dbtx.as_mut())
                                                 .await?;
 
-                                                let next_epoch_in = if let Some((current_epoch, current_height)) = current_info {
+                                                let next_epoch_in = if let Some((
+                                                    current_epoch,
+                                                    current_height,
+                                                )) = current_info
+                                                {
                                                     let current_epoch_end_height: Option<i64> = sqlx::query_scalar(
                                                         "SELECT end_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2"
                                                     )
@@ -2771,9 +2785,15 @@ impl ChainParameters {
                                                     .fetch_optional(dbtx.as_mut())
                                                     .await?;
 
-                                                    if let Some(epoch_end_height) = current_epoch_end_height {
-                                                        let next_epoch_end = epoch_end_height + epoch_duration;
-                                                        std::cmp::max(0, next_epoch_end - current_height)
+                                                    if let Some(epoch_end_height) =
+                                                        current_epoch_end_height
+                                                    {
+                                                        let next_epoch_end =
+                                                            epoch_end_height + epoch_duration;
+                                                        std::cmp::max(
+                                                            0,
+                                                            next_epoch_end - current_height,
+                                                        )
                                                     } else {
                                                         0
                                                     }
@@ -2853,8 +2873,8 @@ impl ChainParameters {
         )
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
-        .await? { 
-            (epoch, duration) 
+        .await? {
+            (epoch, duration)
         } else {
             tracing::info!("No validator_chain_parameters found for chain {}, using epoch 0 (first batch)", chain_id);
             (0, 0)
@@ -2876,7 +2896,11 @@ impl ChainParameters {
                 let next_epoch_end = epoch_end_height + epoch_duration;
                 std::cmp::max(0, next_epoch_end - latest_height_i64)
             } else {
-                tracing::debug!("No end_height found for epoch {} in chain {}, cannot calculate next_epoch_in", current_epoch, chain_id);
+                tracing::debug!(
+                    "No end_height found for epoch {} in chain {}, cannot calculate next_epoch_in",
+                    current_epoch,
+                    chain_id
+                );
                 0
             }
         } else {
@@ -2944,7 +2968,7 @@ impl Epoch {
                 let root_str = ValidatorParams::find_attribute_value(event, "root");
 
                 let chain_id = sqlx::query_scalar::<_, String>(
-                    "SELECT chain_id FROM explorer_block_details WHERE height = $1 LIMIT 1"
+                    "SELECT chain_id FROM explorer_block_details WHERE height = $1 LIMIT 1",
                 )
                 .bind(i64::try_from(height).unwrap_or(i64::MAX))
                 .fetch_optional(dbtx.as_mut())
@@ -2952,32 +2976,33 @@ impl Epoch {
                 .unwrap_or_else(|| "unknown".to_string());
 
                 match root_str {
-                    Some(root_json) => {
-                        match serde_json::from_str::<Value>(root_json) {
-                            Ok(root_val) => {
-                                if let Some(root_inner) = root_val.get("inner").and_then(|r| r.as_str()) {
-                                    match general_purpose::STANDARD.decode(root_inner) {
-                                        Ok(epoch_root) => {
-                                            let epoch_index = if let Some(index_json) = index_str {
-                                                match serde_json::from_str::<Value>(index_json) {
-                                                    Ok(index_val) => {
-                                                        index_val.as_str().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0)
-                                                    }
-                                                    Err(_) => 0,
-                                                }
-                                            } else {
-                                                0
-                                            };
+                    Some(root_json) => match serde_json::from_str::<Value>(root_json) {
+                        Ok(root_val) => {
+                            if let Some(root_inner) = root_val.get("inner").and_then(|r| r.as_str())
+                            {
+                                match general_purpose::STANDARD.decode(root_inner) {
+                                    Ok(epoch_root) => {
+                                        let epoch_index = if let Some(index_json) = index_str {
+                                            match serde_json::from_str::<Value>(index_json) {
+                                                Ok(index_val) => index_val
+                                                    .as_str()
+                                                    .and_then(|s| s.parse::<i64>().ok())
+                                                    .unwrap_or(0),
+                                                Err(_) => 0,
+                                            }
+                                        } else {
+                                            0
+                                        };
 
-                                            tracing::info!(
-                                                "Processing epoch {} ending at height {} for chain {}",
-                                                epoch_index,
-                                                height,
-                                                chain_id
-                                            );
+                                        tracing::info!(
+                                            "Processing epoch {} ending at height {} for chain {}",
+                                            epoch_index,
+                                            height,
+                                            chain_id
+                                        );
 
-                                            sqlx::query(
-                                                r"
+                                        sqlx::query(
+                                            r"
                                                 INSERT INTO epochs (
                                                     epoch_index,
                                                     chain_id,
@@ -2991,26 +3016,34 @@ impl Epoch {
                                                     end_time = EXCLUDED.end_time,
                                                     epoch_root = EXCLUDED.epoch_root
                                                 ",
-                                            )
-                                            .bind(epoch_index)
-                                            .bind(&chain_id)
-                                            .bind(i64::try_from(height).unwrap_or(i64::MAX))
-                                            .bind(timestamp)
-                                            .bind(&epoch_root)
-                                            .execute(dbtx.as_mut())
-                                            .await?;
+                                        )
+                                        .bind(epoch_index)
+                                        .bind(&chain_id)
+                                        .bind(i64::try_from(height).unwrap_or(i64::MAX))
+                                        .bind(timestamp)
+                                        .bind(&epoch_root)
+                                        .execute(dbtx.as_mut())
+                                        .await?;
 
-                                            let current_info: Option<(i64, i64)> = sqlx::query_as(
+                                        let current_info: Option<(i64, i64)> = sqlx::query_as(
                                                 "SELECT epoch_duration, current_block_height FROM validator_chain_parameters WHERE chain_id = $1"
                                             )
                                             .bind(&chain_id)
                                             .fetch_optional(dbtx.as_mut())
                                             .await?;
 
-                                            let next_epoch_in = if let Some((epoch_duration, current_height)) = current_info {
+                                        let next_epoch_in =
+                                            if let Some((epoch_duration, current_height)) =
+                                                current_info
+                                            {
                                                 if epoch_duration > 0 {
-                                                    let next_epoch_end = i64::try_from(height).unwrap_or(i64::MAX) + epoch_duration;
-                                                    std::cmp::max(0, next_epoch_end - current_height)
+                                                    let next_epoch_end = i64::try_from(height)
+                                                        .unwrap_or(i64::MAX)
+                                                        + epoch_duration;
+                                                    std::cmp::max(
+                                                        0,
+                                                        next_epoch_end - current_height,
+                                                    )
                                                 } else {
                                                     0
                                                 }
@@ -3018,17 +3051,17 @@ impl Epoch {
                                                 0
                                             };
 
-                                            let current_epoch = epoch_index + 1;
-                                            
-                                            tracing::info!(
+                                        let current_epoch = epoch_index + 1;
+
+                                        tracing::info!(
                                                 "Updating current_epoch to {} (ended epoch {} + 1) and next_epoch_in to {} in validator_chain_parameters for chain {}",
                                                 current_epoch,
                                                 epoch_index,
                                                 next_epoch_in,
                                                 chain_id
                                             );
-                                            
-                                            sqlx::query(
+
+                                        sqlx::query(
                                                 r"
                                                 UPDATE validator_chain_parameters 
                                                 SET current_epoch = $1, next_epoch_in = $2, last_updated = $3 
@@ -3041,22 +3074,21 @@ impl Epoch {
                                             .bind(&chain_id)
                                             .execute(dbtx.as_mut())
                                             .await?;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to decode epoch root base64 '{}': {}",
-                                                root_inner,
-                                                e
-                                            );
-                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to decode epoch root base64 '{}': {}",
+                                            root_inner,
+                                            e
+                                        );
                                     }
                                 }
                             }
-                            Err(e) => {
-                                tracing::error!("Failed to parse EventEpochRoot root JSON: {}", e);
-                            }
                         }
-                    }
+                        Err(e) => {
+                            tracing::error!("Failed to parse EventEpochRoot root JSON: {}", e);
+                        }
+                    },
                     None => {
                         tracing::error!("EventEpochRoot missing required root attribute");
                     }
