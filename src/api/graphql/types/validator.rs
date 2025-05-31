@@ -2,6 +2,7 @@ use crate::api::graphql::types::{ValidatorFilter, ValidatorStateFilter};
 use async_graphql::{Object, SimpleObject};
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
+use sqlx::types::BigDecimal;
 
 #[derive(Debug, Clone, SimpleObject)]
 pub struct Validator {
@@ -59,15 +60,15 @@ pub struct ValidatorDetails {
 
 #[derive(Debug, Clone, SimpleObject)]
 pub struct StakingParameters {
-    pub total_staked: String,
+    pub total_staked: i64,
     pub active_validator_limit: i64,
     pub active_validator_count: i64,
-    pub unbonding_delay: String,
+    pub unbonding_delay: i64,
     pub uptime_blocks_window: i64,
-    pub uptime_min_required: String,
-    pub slashing_penalty_downtime: String,
-    pub slashing_penalty_misbehavior: String,
-    pub min_validator_stake: String,
+    pub uptime_min_required: f64,
+    pub slashing_penalty_downtime: f64,
+    pub slashing_penalty_misbehavior: f64,
+    pub min_validator_stake: i64,
 }
 
 #[derive(Debug, Clone, SimpleObject)]
@@ -207,15 +208,15 @@ impl ValidatorHomepageData {
         .await?;
 
         Ok(StakingParameters {
-            total_staked: params.total_staked,
+            total_staked: params.total_staked.to_string().parse::<i64>().unwrap_or(0),
             active_validator_limit: params.active_validator_limit,
             active_validator_count: active_count,
             unbonding_delay: params.unbonding_delay,
             uptime_blocks_window: params.uptime_blocks_window,
             uptime_min_required: params.uptime_min_required,
-            slashing_penalty_downtime: params.slashing_penalty_downtime.unwrap_or_default(),
+            slashing_penalty_downtime: params.slashing_penalty_downtime.unwrap_or(0.0),
             slashing_penalty_misbehavior: params.slashing_penalty_misbehavior,
-            min_validator_stake: params.min_validator_stake,
+            min_validator_stake: params.min_validator_stake.to_string().parse::<i64>().unwrap_or(0),
         })
     }
 
@@ -267,14 +268,14 @@ struct ValidatorRow {
 
 #[derive(FromRow)]
 struct StakingParamsRow {
-    total_staked: String,
+    total_staked: BigDecimal,
     active_validator_limit: i64,
-    unbonding_delay: String,
+    unbonding_delay: i64,
     uptime_blocks_window: i64,
-    uptime_min_required: String,
-    slashing_penalty_downtime: Option<String>,
-    slashing_penalty_misbehavior: String,
-    min_validator_stake: String,
+    uptime_min_required: f64,
+    slashing_penalty_downtime: Option<f64>,
+    slashing_penalty_misbehavior: f64,
+    min_validator_stake: BigDecimal,
 }
 
 #[derive(FromRow)]
