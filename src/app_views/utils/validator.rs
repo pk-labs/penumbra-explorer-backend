@@ -128,13 +128,13 @@ impl VotingPowerBatch {
 pub struct ValidatorParams {
     pub chain_id: String,
     pub active_validator_limit: i64,
-    pub min_validator_stake: String,
-    pub total_staked: String,
+    pub min_validator_stake: i64,
+    pub total_staked: i64,
     pub uptime_blocks_window: i64,
-    pub uptime_min_required: String,
-    pub slashing_penalty_downtime: String,
-    pub slashing_penalty_misbehavior: String,
-    pub unbonding_delay: String,
+    pub uptime_min_required: f64,
+    pub slashing_penalty_downtime: f64,
+    pub slashing_penalty_misbehavior: f64,
+    pub unbonding_delay: i64,
 }
 
 /// Represents a validator funding stream
@@ -920,8 +920,6 @@ impl Validator {
     pub async fn update_total_staked(dbtx: &mut PgTransaction<'_>) -> Result<()> {
         let total_active_voting_power = Self::calculate_total_voting_power(dbtx).await?;
 
-        let formatted_total = format!("{total_active_voting_power} UM");
-
         let chain_id: Option<String> =
             sqlx::query_scalar("SELECT chain_id FROM validator_staking_parameters LIMIT 1")
                 .fetch_optional(dbtx.as_mut())
@@ -935,7 +933,7 @@ impl Validator {
                 WHERE chain_id = $2
                 ",
             )
-            .bind(&formatted_total)
+            .bind(total_active_voting_power)
             .bind(&chain_id)
             .execute(dbtx.as_mut())
             .await?;
@@ -1812,12 +1810,10 @@ impl Validator {
         let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
         let window_start = std::cmp::max(0, current_height - uptime_window);
 
-        // Initialize uptime stats for any validators that don't have them
         for identity_key in validator_identities {
             Self::initialize_uptime_stats(identity_key, current_height, dbtx).await?;
         }
 
-        // Update all validators in the list
         let identity_list: Vec<&str> = validator_identities.iter().map(|s| s.as_str()).collect();
         
         sqlx::query(
@@ -2087,7 +2083,7 @@ impl ValidatorParams {
             .and_then(|lo| lo.as_str())
             .map(str::parse::<i64>)
         {
-            format!("{} UM", raw_val / 1_000_000)
+            raw_val / 1_000_000
         } else {
             tracing::error!("Failed to parse minValidatorStake.lo in genesis.json");
             return Err(anyhow::anyhow!(
@@ -2095,7 +2091,7 @@ impl ValidatorParams {
             ));
         };
 
-        let total_staked = String::new();
+        let total_staked = 0;
 
         let Some(Ok(uptime_blocks_window)) = stake_params
             .get("signedBlocksWindowLen")
@@ -2113,10 +2109,9 @@ impl ValidatorParams {
             .and_then(|max| max.as_str())
             .map(str::parse::<i64>)
         {
-            let min_percent = 100.0
+            100.0
                 * f64::from(i32::try_from(uptime_blocks_window - missed_max).unwrap_or(0))
-                / f64::from(i32::try_from(uptime_blocks_window).unwrap_or(1));
-            format!("{min_percent:.2}%")
+                / f64::from(i32::try_from(uptime_blocks_window).unwrap_or(1))
         } else {
             tracing::error!("Failed to parse missedBlocksMaximum in genesis.json");
             return Err(anyhow::anyhow!(
@@ -2129,11 +2124,10 @@ impl ValidatorParams {
             .and_then(|penalty| penalty.as_str())
             .map(str::parse::<i64>)
         {
-            let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
-            format!("{penalty_float:.2}%")
+            f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0
         } else {
             tracing::warn!("slashingPenaltyDowntime not found in genesis.json");
-            String::new()
+            0.0
         };
 
         let slashing_penalty_misbehavior = if let Some(Ok(penalty)) = stake_params
@@ -2141,8 +2135,7 @@ impl ValidatorParams {
             .and_then(|penalty| penalty.as_str())
             .map(str::parse::<i64>)
         {
-            let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
-            format!("{penalty_float:.2}%")
+            f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0
         } else {
             tracing::error!("Failed to parse slashingPenaltyMisbehavior in genesis.json");
             return Err(anyhow::anyhow!(
@@ -2150,14 +2143,14 @@ impl ValidatorParams {
             ));
         };
 
-        let Some(delay) = stake_params
+        let Some(Ok(unbonding_delay)) = stake_params
             .get("unbondingDelay")
             .and_then(|delay| delay.as_str())
+            .map(str::parse::<i64>)
         else {
-            tracing::error!("Failed to find unbondingDelay in genesis.json");
-            return Err(anyhow::anyhow!("Missing unbondingDelay in genesis.json"));
+            tracing::error!("Failed to parse unbondingDelay in genesis.json");
+            return Err(anyhow::anyhow!("Missing or invalid unbondingDelay in genesis.json"));
         };
-        let unbonding_delay = format!("{delay} blocks");
 
         Ok(Self {
             chain_id,
@@ -2204,13 +2197,13 @@ impl ValidatorParams {
         )
         .bind(&self.chain_id)
         .bind(self.active_validator_limit)
-        .bind(&self.min_validator_stake)
-        .bind(&self.total_staked)
+        .bind(self.min_validator_stake)
+        .bind(self.total_staked)
         .bind(self.uptime_blocks_window)
-        .bind(&self.uptime_min_required)
-        .bind(&self.slashing_penalty_downtime)
-        .bind(&self.slashing_penalty_misbehavior)
-        .bind(&self.unbonding_delay)
+        .bind(self.uptime_min_required)
+        .bind(self.slashing_penalty_downtime)
+        .bind(self.slashing_penalty_misbehavior)
+        .bind(self.unbonding_delay)
         .execute(dbtx.as_mut())
         .await?;
 
@@ -2328,9 +2321,9 @@ impl ValidatorParams {
                                 if let Some(lo) = stake.get("lo").and_then(|v| v.as_str()) {
                                     match lo.parse::<i64>() {
                                         Ok(raw_val) => {
-                                            let formatted = format!("{} UM", raw_val / 1_000_000);
+                                            let stake_amount = raw_val / 1_000_000;
                                             updates.push("min_validator_stake = $2");
-                                            bindings.push(formatted);
+                                            bindings.push(stake_amount.to_string());
                                         }
                                         Err(e) => {
                                             error!(
@@ -2365,9 +2358,8 @@ impl ValidatorParams {
                                                         / f64::from(
                                                             i32::try_from(window).unwrap_or(1),
                                                         );
-                                                    let formatted = format!("{min_percent:.2}%");
                                                     updates.push("uptime_min_required = $4");
-                                                    bindings.push(formatted);
+                                                    bindings.push(min_percent.to_string());
                                                 }
                                                 Err(e) => {
                                                     error!("Failed to parse missedBlocksMaximum '{}': {}", missed, e);
@@ -2393,13 +2385,12 @@ impl ValidatorParams {
                                         let penalty_float =
                                             f64::from(i32::try_from(penalty).unwrap_or(0))
                                                 / 1_000_000.0;
-                                        let formatted = format!("{penalty_float:.2}%");
                                         debug!(
                                             "Parsed slashingPenaltyDowntime '{}' as '{}'",
-                                            val, formatted
+                                            val, penalty_float
                                         );
                                         updates.push("slashing_penalty_downtime = $5");
-                                        bindings.push(formatted);
+                                        bindings.push(penalty_float.to_string());
                                     }
                                     Err(e) => {
                                         error!(
@@ -2419,9 +2410,8 @@ impl ValidatorParams {
                                         let penalty_float =
                                             f64::from(i32::try_from(penalty).unwrap_or(0))
                                                 / 1_000_000.0;
-                                        let formatted = format!("{penalty_float:.2}%");
                                         updates.push("slashing_penalty_misbehavior = $6");
-                                        bindings.push(formatted);
+                                        bindings.push(penalty_float.to_string());
                                     }
                                     Err(e) => {
                                         error!(
@@ -2435,9 +2425,15 @@ impl ValidatorParams {
                             if let Some(val) =
                                 stake_params.get("unbondingDelay").and_then(|v| v.as_str())
                             {
-                                let formatted = format!("{val} blocks");
-                                updates.push("unbonding_delay = $7");
-                                bindings.push(formatted);
+                                match val.parse::<i64>() {
+                                    Ok(delay) => {
+                                        updates.push("unbonding_delay = $7");
+                                        bindings.push(delay.to_string());
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to parse unbondingDelay '{}': {}", val, e);
+                                    }
+                                }
                             }
 
                             if !updates.is_empty() {
@@ -2486,7 +2482,13 @@ impl ValidatorParams {
                                         }
                                         1 => {
                                             if updates.contains(&"min_validator_stake = $2") {
-                                                q = q.bind(val);
+                                                match val.parse::<i64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind min_validator_stake '{}': {}", val, e);
+                                                        continue;
+                                                    }
+                                                }
                                             }
                                         }
                                         2 => {
@@ -2502,24 +2504,48 @@ impl ValidatorParams {
                                         }
                                         3 => {
                                             if updates.contains(&"uptime_min_required = $4") {
-                                                q = q.bind(val);
+                                                match val.parse::<f64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind uptime_min_required '{}': {}", val, e);
+                                                        continue;
+                                                    }
+                                                }
                                             }
                                         }
                                         4 => {
                                             if updates.contains(&"slashing_penalty_downtime = $5") {
-                                                q = q.bind(val);
+                                                match val.parse::<f64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind slashing_penalty_downtime '{}': {}", val, e);
+                                                        continue;
+                                                    }
+                                                }
                                             }
                                         }
                                         5 => {
                                             if updates
                                                 .contains(&"slashing_penalty_misbehavior = $6")
                                             {
-                                                q = q.bind(val);
+                                                match val.parse::<f64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind slashing_penalty_misbehavior '{}': {}", val, e);
+                                                        continue;
+                                                    }
+                                                }
                                             }
                                         }
                                         6 => {
                                             if updates.contains(&"unbonding_delay = $7") {
-                                                q = q.bind(val);
+                                                match val.parse::<i64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind unbonding_delay '{}': {}", val, e);
+                                                        continue;
+                                                    }
+                                                }
                                             }
                                         }
                                         _ => {}
@@ -2992,8 +3018,6 @@ impl Epoch {
                                                 0
                                             };
 
-                                            // The epoch_index represents the epoch that just ended,
-                                            // so we add 1 to get the current epoch
                                             let current_epoch = epoch_index + 1;
                                             
                                             tracing::info!(
