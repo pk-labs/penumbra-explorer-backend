@@ -1,8 +1,8 @@
 use crate::api::graphql::types::{ValidatorFilter, ValidatorStateFilter};
 use async_graphql::{Object, SimpleObject};
 use chrono::{DateTime, Utc};
-use sqlx::{FromRow, PgPool};
 use sqlx::types::BigDecimal;
+use sqlx::{FromRow, PgPool};
 
 #[derive(Debug, Clone, SimpleObject)]
 pub struct Validator {
@@ -216,7 +216,11 @@ impl ValidatorHomepageData {
             uptime_min_required: params.uptime_min_required,
             slashing_penalty_downtime: params.slashing_penalty_downtime.unwrap_or(0.0),
             slashing_penalty_misbehavior: params.slashing_penalty_misbehavior,
-            min_validator_stake: params.min_validator_stake.to_string().parse::<i64>().unwrap_or(0),
+            min_validator_stake: params
+                .min_validator_stake
+                .to_string()
+                .parse::<i64>()
+                .unwrap_or(0),
         })
     }
 
