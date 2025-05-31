@@ -377,10 +377,8 @@ impl Explorer {
 
         let _ = validator::Validator::record_validator_blocks_bulk(&validator_records, dbtx).await;
 
-
         Ok(())
     }
-
 }
 
 #[async_trait]
@@ -1374,7 +1372,11 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             height_to_timestamp.insert(*height, *ts);
         }
 
-        let latest_height = block_data_to_process.iter().map(|(h, _, _, _, _)| *h).max().unwrap_or(0);
+        let latest_height = block_data_to_process
+            .iter()
+            .map(|(h, _, _, _, _)| *h)
+            .max()
+            .unwrap_or(0);
         let batch_size = block_data_to_process.len();
 
         for (height, root, ts, tx_count, formatted_json) in block_data_to_process {
@@ -1523,12 +1525,17 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         if batch_size > 0 {
             if batch_size <= 10 {
-                tracing::debug!("Live processing mode: updating uptime stats for {} blocks", batch_size);
-                
+                tracing::debug!(
+                    "Live processing mode: updating uptime stats for {} blocks",
+                    batch_size
+                );
+
                 if let Err(e) = validator::Validator::update_uptime_stats_for_block(
                     i64::try_from(latest_height).unwrap_or(i64::MAX),
                     dbtx,
-                ).await {
+                )
+                .await
+                {
                     tracing::error!("Failed to update uptime stats in live mode: {}", e);
                 }
             } else {
@@ -1538,16 +1545,18 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         if ctx.is_last() {
             tracing::info!("Final batch processed - calculating uptime stats for all validators");
-            
+
             if let Err(e) = validator::Validator::update_uptime_stats_for_block(
                 i64::try_from(latest_height).unwrap_or(i64::MAX),
                 dbtx,
-            ).await {
+            )
+            .await
+            {
                 tracing::error!("Failed to calculate final uptime stats: {}", e);
             } else {
                 tracing::info!("Successfully calculated uptime stats for all validators");
             }
-            
+
             if let Err(e) = ibc::update_old_pending_transactions(dbtx).await {
                 tracing::error!("Error updating old pending transactions: {:?}", e);
             }
