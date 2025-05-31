@@ -2788,21 +2788,19 @@ impl ChainParameters {
         };
 
         let next_epoch_in = if epoch_duration > 0 {
-            let current_epoch_end_height: Option<i64> = sqlx::query_scalar(
-                "SELECT end_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2",
+            let last_epoch_end_height: Option<i64> = sqlx::query_scalar(
+                "SELECT end_height FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1",
             )
-            .bind(current_epoch)
             .bind(chain_id)
             .fetch_optional(dbtx.as_mut())
             .await?;
 
-            if let Some(epoch_end_height) = current_epoch_end_height {
-                let next_epoch_end = epoch_end_height + epoch_duration;
+            if let Some(last_end_height) = last_epoch_end_height {
+                let next_epoch_end = last_end_height + epoch_duration;
                 std::cmp::max(0, next_epoch_end - height_i64)
             } else {
                 tracing::debug!(
-                    "No end_height found for epoch {} in chain {}, cannot calculate next_epoch_in",
-                    current_epoch,
+                    "No epochs found in chain {}, cannot calculate next_epoch_in",
                     chain_id
                 );
                 0
@@ -2888,23 +2886,22 @@ impl ChainParameters {
                                                 .await?;
 
                                                 let next_epoch_in = if let Some((
-                                                    current_epoch,
+                                                    _current_epoch,
                                                     current_height,
                                                 )) = current_info
                                                 {
-                                                    let current_epoch_end_height: Option<i64> = sqlx::query_scalar(
-                                                        "SELECT end_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2"
+                                                    let last_epoch_end_height: Option<i64> = sqlx::query_scalar(
+                                                        "SELECT end_height FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1"
                                                     )
-                                                    .bind(current_epoch)
                                                     .bind(chain_id)
                                                     .fetch_optional(dbtx.as_mut())
                                                     .await?;
 
-                                                    if let Some(epoch_end_height) =
-                                                        current_epoch_end_height
+                                                    if let Some(last_end_height) =
+                                                        last_epoch_end_height
                                                     {
                                                         let next_epoch_end =
-                                                            epoch_end_height + epoch_duration;
+                                                            last_end_height + epoch_duration;
                                                         std::cmp::max(
                                                             0,
                                                             next_epoch_end - current_height,
@@ -2999,21 +2996,19 @@ impl ChainParameters {
             .map_err(|e| anyhow::anyhow!("Height conversion error: {}", e))?;
 
         let next_epoch_in = if epoch_duration > 0 {
-            let current_epoch_end_height: Option<i64> = sqlx::query_scalar(
-                "SELECT end_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2",
+            let last_epoch_end_height: Option<i64> = sqlx::query_scalar(
+                "SELECT end_height FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1",
             )
-            .bind(current_epoch)
             .bind(chain_id)
             .fetch_optional(dbtx.as_mut())
             .await?;
 
-            if let Some(epoch_end_height) = current_epoch_end_height {
-                let next_epoch_end = epoch_end_height + epoch_duration;
+            if let Some(last_end_height) = last_epoch_end_height {
+                let next_epoch_end = last_end_height + epoch_duration;
                 std::cmp::max(0, next_epoch_end - latest_height_i64)
             } else {
                 tracing::debug!(
-                    "No end_height found for epoch {} in chain {}, cannot calculate next_epoch_in",
-                    current_epoch,
+                    "No epochs found in chain {}, cannot calculate next_epoch_in",
                     chain_id
                 );
                 0
