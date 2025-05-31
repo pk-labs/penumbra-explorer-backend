@@ -339,8 +339,8 @@ impl Explorer {
         }
 
         let active_validators: Vec<String> = match sqlx::query_scalar(&format!(
-            "SELECT identity_key FROM validators WHERE state = '{}'",
-            active_state.unwrap()
+            "SELECT identity_key FROM validators WHERE state = '{active_state}'",
+            active_state = active_state.unwrap()
         ))
         .fetch_all(dbtx.as_mut())
         .await
@@ -381,31 +381,6 @@ impl Explorer {
         Ok(())
     }
 
-    /// Helper function to get active validators for live processing
-    async fn get_active_validators_at_height(
-        &self,
-        _height: u64,
-        dbtx: &mut PgTransaction<'_>,
-    ) -> Result<Vec<String>, anyhow::Error> {
-        let active_state: Option<String> = sqlx::query_scalar(
-            "SELECT DISTINCT state FROM validators WHERE state LIKE '%ACTIVE%' LIMIT 1",
-        )
-        .fetch_optional(dbtx.as_mut())
-        .await?;
-
-        if let Some(state) = active_state {
-            let validators: Vec<String> = sqlx::query_scalar(&format!(
-                "SELECT identity_key FROM validators WHERE state = '{}'",
-                state
-            ))
-            .fetch_all(dbtx.as_mut())
-            .await?;
-            
-            Ok(validators)
-        } else {
-            Ok(Vec::new())
-        }
-    }
 }
 
 #[async_trait]
