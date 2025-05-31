@@ -681,13 +681,13 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             CREATE TABLE IF NOT EXISTS validator_staking_parameters (
                 chain_id TEXT PRIMARY KEY,
                 active_validator_limit BIGINT NOT NULL,
-                min_validator_stake TEXT NOT NULL,
-                total_staked TEXT NOT NULL,
+                min_validator_stake NUMERIC(39, 0) NOT NULL,
+                total_staked NUMERIC(39, 0) NOT NULL,
                 uptime_blocks_window BIGINT NOT NULL,
-                uptime_min_required TEXT NOT NULL,
-                slashing_penalty_downtime TEXT,
-                slashing_penalty_misbehavior TEXT NOT NULL,
-                unbonding_delay TEXT NOT NULL
+                uptime_min_required DOUBLE PRECISION NOT NULL,
+                slashing_penalty_downtime DOUBLE PRECISION,
+                slashing_penalty_misbehavior DOUBLE PRECISION NOT NULL,
+                unbonding_delay BIGINT NOT NULL
             )
             ",
         )
