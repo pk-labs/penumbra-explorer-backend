@@ -1658,16 +1658,131 @@ impl Validator {
 
     /// Get uptime blocks window from validator staking parameters
     async fn get_uptime_blocks_window(dbtx: &mut PgTransaction<'_>) -> Result<i64> {
-        let window: Option<i64> = sqlx::query_scalar(
+        let window: i64 = sqlx::query_scalar(
             "SELECT uptime_blocks_window FROM validator_staking_parameters LIMIT 1",
         )
-        .fetch_optional(dbtx.as_mut())
+        .fetch_one(dbtx.as_mut())
         .await?;
 
-        Ok(window.unwrap_or(10000))
+        Ok(window)
+    }
+
+    /// Update uptime stats incrementally for a new block (rolling window approach)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn update_uptime_stats_incrementally(
+        height: i64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
+        let new_window_start = std::cmp::max(0, height - uptime_window);
+
+        let validators_in_block: Vec<(String, bool)> = sqlx::query_as(
+            "SELECT identity_key, signed FROM validator_blocks WHERE block_height = $1"
+        )
+        .bind(height)
+        .fetch_all(dbtx.as_mut())
+        .await?;
+
+        if validators_in_block.is_empty() {
+            return Ok(());
+        }
+
+        for (identity_key, signed) in validators_in_block {
+            Self::initialize_uptime_stats(&identity_key, height, dbtx).await?;
+
+            let old_window_start: Option<i64> = sqlx::query_scalar(
+                "SELECT window_start_height FROM validator_uptime_stats WHERE identity_key = $1"
+            )
+            .bind(&identity_key)
+            .fetch_optional(dbtx.as_mut())
+            .await?;
+
+            if let Some(old_start) = old_window_start {
+                if new_window_start > old_start {
+                    let blocks_to_remove: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM validator_blocks 
+                         WHERE identity_key = $1 AND block_height > $2 AND block_height <= $3"
+                    )
+                    .bind(&identity_key)
+                    .bind(old_start)
+                    .bind(new_window_start)
+                    .fetch_one(dbtx.as_mut())
+                    .await?;
+
+                    let signed_blocks_to_remove: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM validator_blocks 
+                         WHERE identity_key = $1 AND block_height > $2 AND block_height <= $3 AND signed = true"
+                    )
+                    .bind(&identity_key)
+                    .bind(old_start)
+                    .bind(new_window_start)
+                    .fetch_one(dbtx.as_mut())
+                    .await?;
+
+                    sqlx::query(
+                        r"
+                        UPDATE validator_uptime_stats
+                        SET 
+                            total_blocks = GREATEST(0, total_blocks - $2 + 1),
+                            signed_blocks = GREATEST(0, signed_blocks - $3 + CASE WHEN $4 THEN 1 ELSE 0 END),
+                            missed_blocks = GREATEST(0, missed_blocks - ($2 - $3) + CASE WHEN $4 THEN 0 ELSE 1 END),
+                            uptime_percentage = CASE 
+                                WHEN GREATEST(0, total_blocks - $2 + 1) > 0 THEN
+                                    ROUND((GREATEST(0, signed_blocks - $3 + CASE WHEN $4 THEN 1 ELSE 0 END)::numeric / 
+                                           GREATEST(0, total_blocks - $2 + 1)::numeric) * 100.0, 2)
+                                ELSE 0.00
+                            END,
+                            last_calculated_height = $5,
+                            window_start_height = $6,
+                            updated_at = NOW()
+                        WHERE identity_key = $1
+                        "
+                    )
+                    .bind(&identity_key)
+                    .bind(blocks_to_remove)
+                    .bind(signed_blocks_to_remove)
+                    .bind(signed)
+                    .bind(height)
+                    .bind(new_window_start)
+                    .execute(dbtx.as_mut())
+                    .await?;
+                } else {
+                    sqlx::query(
+                        r"
+                        UPDATE validator_uptime_stats
+                        SET 
+                            total_blocks = total_blocks + 1,
+                            signed_blocks = signed_blocks + CASE WHEN $2 THEN 1 ELSE 0 END,
+                            missed_blocks = missed_blocks + CASE WHEN $2 THEN 0 ELSE 1 END,
+                            uptime_percentage = CASE 
+                                WHEN (total_blocks + 1) > 0 THEN
+                                    ROUND(((signed_blocks + CASE WHEN $2 THEN 1 ELSE 0 END)::numeric / 
+                                           (total_blocks + 1)::numeric) * 100.0, 2)
+                                ELSE 0.00
+                            END,
+                            last_calculated_height = $3,
+                            updated_at = NOW()
+                        WHERE identity_key = $1
+                        "
+                    )
+                    .bind(&identity_key)
+                    .bind(signed)
+                    .bind(height)
+                    .execute(dbtx.as_mut())
+                    .await?;
+                }
+            }
+        }
+
+        debug!("Updated uptime stats incrementally for block height {}", height);
+        Ok(())
     }
 
     /// Update uptime stats for all active validators after a new block
+    /// This is the full recalculation version - use only for reindexing
     ///
     /// # Errors
     ///
