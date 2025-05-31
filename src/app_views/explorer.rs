@@ -1372,7 +1372,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             height_to_timestamp.insert(*height, *ts);
         }
 
-
         for (height, root, ts, tx_count, formatted_json) in block_data_to_process {
             let current_epoch = match validator::ChainParameters::update_basic_chain_info(
                 dbtx,

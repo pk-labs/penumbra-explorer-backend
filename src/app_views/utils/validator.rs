@@ -1680,7 +1680,7 @@ impl Validator {
         let new_window_start = std::cmp::max(0, height - uptime_window);
 
         let validators_in_block: Vec<(String, bool)> = sqlx::query_as(
-            "SELECT identity_key, signed FROM validator_blocks WHERE block_height = $1"
+            "SELECT identity_key, signed FROM validator_blocks WHERE block_height = $1",
         )
         .bind(height)
         .fetch_all(dbtx.as_mut())
@@ -1694,7 +1694,7 @@ impl Validator {
             Self::initialize_uptime_stats(&identity_key, height, dbtx).await?;
 
             let old_window_start: Option<i64> = sqlx::query_scalar(
-                "SELECT window_start_height FROM validator_uptime_stats WHERE identity_key = $1"
+                "SELECT window_start_height FROM validator_uptime_stats WHERE identity_key = $1",
             )
             .bind(&identity_key)
             .fetch_optional(dbtx.as_mut())
@@ -1704,7 +1704,7 @@ impl Validator {
                 if new_window_start > old_start {
                     let blocks_to_remove: i64 = sqlx::query_scalar(
                         "SELECT COUNT(*) FROM validator_blocks 
-                         WHERE identity_key = $1 AND block_height > $2 AND block_height <= $3"
+                         WHERE identity_key = $1 AND block_height > $2 AND block_height <= $3",
                     )
                     .bind(&identity_key)
                     .bind(old_start)
@@ -1777,7 +1777,10 @@ impl Validator {
             }
         }
 
-        debug!("Updated uptime stats incrementally for block height {}", height);
+        debug!(
+            "Updated uptime stats incrementally for block height {}",
+            height
+        );
         Ok(())
     }
 
