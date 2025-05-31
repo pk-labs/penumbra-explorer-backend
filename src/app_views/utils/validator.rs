@@ -1814,7 +1814,7 @@ impl Validator {
             Self::initialize_uptime_stats(identity_key, current_height, dbtx).await?;
         }
 
-        let identity_list: Vec<&str> = validator_identities.iter().map(|s| s.as_str()).collect();
+        let identity_list: Vec<&str> = validator_identities.iter().map(String::as_str).collect();
         
         sqlx::query(
             r"
