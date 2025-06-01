@@ -1535,7 +1535,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         }
 
         // Only calculate uptime stats for recent blocks to optimize reindexing
-        // Start calculating from block 5,200,000 (near current mainnet height)
+        // Start calculating from block 5,220,000 (near current mainnet height)
         const UPTIME_CALCULATION_START_HEIGHT: i64 = 5_220_000;
 
         for height in height_to_timestamp.keys() {
