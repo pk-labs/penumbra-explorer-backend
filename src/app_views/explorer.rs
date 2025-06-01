@@ -789,6 +789,24 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         sqlx::query(
             r"
+            CREATE INDEX IF NOT EXISTS idx_validator_blocks_block_height
+            ON validator_blocks(block_height)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_blocks_identity_height_signed
+            ON validator_blocks(identity_key, block_height, signed)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
             CREATE TABLE IF NOT EXISTS validator_uptime_stats (
                 identity_key TEXT PRIMARY KEY REFERENCES validators(identity_key),
                 total_blocks BIGINT NOT NULL DEFAULT 0,
@@ -1518,7 +1536,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         // Only calculate uptime stats for recent blocks to optimize reindexing
         // Start calculating from block 5,200,000 (near current mainnet height)
-        const UPTIME_CALCULATION_START_HEIGHT: i64 = 5_200_000;
+        const UPTIME_CALCULATION_START_HEIGHT: i64 = 5_220_000;
 
         for height in height_to_timestamp.keys() {
             let height_i64 = i64::try_from(*height).unwrap_or(i64::MAX);
