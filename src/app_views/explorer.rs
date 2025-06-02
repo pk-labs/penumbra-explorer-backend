@@ -1534,23 +1534,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             }
         }
 
-        // Only calculate uptime stats for recent blocks to optimize reindexing
-        // Start calculating from block 5,220,000 (near current mainnet height)
-        const UPTIME_CALCULATION_START_HEIGHT: i64 = 5_220_000;
-
-        for height in height_to_timestamp.keys() {
-            let height_i64 = i64::try_from(*height).unwrap_or(i64::MAX);
-
-            // Only calculate uptime if we're past the threshold
-            if height_i64 >= UPTIME_CALCULATION_START_HEIGHT {
-                if let Err(e) =
-                    validator::Validator::update_uptime_stats_incrementally(height_i64, dbtx).await
-                {
-                    tracing::error!("Failed to update uptime stats for block {}: {}", height, e);
-                }
-            }
-        }
-
         Ok(())
     }
 }
