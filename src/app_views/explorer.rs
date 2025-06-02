@@ -1364,7 +1364,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         let block_results = block::process_block_events(&batch).await?;
         let num_blocks = block_results.len();
-        
+
         // Capture first block height before consuming the vector
         let first_block_height = if block_results.is_empty() {
             None
@@ -1549,7 +1549,10 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         if num_blocks == 1 {
             // We're in live mode, processing a single block
             if let Some(height) = first_block_height {
-                tracing::debug!("Live mode detected: updating uptime stats for block {}", height);
+                tracing::debug!(
+                    "Live mode detected: updating uptime stats for block {}",
+                    height
+                );
                 if let Err(e) = validator::Validator::update_uptime_stats_incrementally(
                     i64::try_from(height).unwrap_or(i64::MAX),
                     dbtx,
