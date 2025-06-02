@@ -744,7 +744,7 @@ impl Validator {
                     .collect::<std::collections::HashSet<_>>()
                     .into_iter()
                     .collect();
-                
+
                 unique_heights.sort_unstable();
 
                 if unique_heights.len() == 1 {
@@ -758,7 +758,7 @@ impl Validator {
                         unique_heights.len()
                     );
                 }
-                
+
                 Ok(())
             }
             Err(e) => {
