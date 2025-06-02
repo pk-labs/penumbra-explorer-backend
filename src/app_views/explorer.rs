@@ -1363,10 +1363,20 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         let mut transactions_to_process = Vec::new();
 
         let block_results = block::process_block_events(&batch).await?;
+        let num_blocks = block_results.len();
+        
+        // Capture first block height before consuming the vector
+        let first_block_height = if block_results.is_empty() {
+            None
+        } else {
+            Some(block_results[0].0)
+        };
 
-        tracing::info!("Processed {} blocks from batch", block_results.len());
+        tracing::info!("Processed {} blocks from batch", num_blocks);
 
+        let mut block_heights = Vec::new();
         for (height, root, ts, tx_count, _, raw_json, block_txs) in block_results {
+            block_heights.push(height);
             let formatted_block_json = block::create_block_json(
                 height,
                 self.get_chain_id(),
@@ -1532,6 +1542,28 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     );
                 }
             }
+        }
+
+        // Update validator uptime stats only when we're in live mode (processing exactly 1 block)
+        // This avoids the performance overhead during reindexing
+        if num_blocks == 1 {
+            // We're in live mode, processing a single block
+            if let Some(height) = first_block_height {
+                tracing::debug!("Live mode detected: updating uptime stats for block {}", height);
+                if let Err(e) = validator::Validator::update_uptime_stats_incrementally(
+                    i64::try_from(height).unwrap_or(i64::MAX),
+                    dbtx,
+                )
+                .await
+                {
+                    tracing::error!("Failed to update uptime stats for block {}: {}", height, e);
+                }
+            }
+        } else {
+            tracing::debug!(
+                "Batch mode detected: skipping uptime calculation for {} blocks",
+                num_blocks
+            );
         }
 
         Ok(())
