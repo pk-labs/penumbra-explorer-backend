@@ -737,30 +737,7 @@ impl Validator {
         }
 
         match sqlx_query.execute(dbtx.as_mut()).await {
-            Ok(_) => {
-                let mut unique_heights: Vec<i64> = validator_records
-                    .iter()
-                    .map(|(_, height, _, _)| *height)
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
-
-                unique_heights.sort_unstable();
-
-                if unique_heights.len() == 1 {
-                    let height = unique_heights[0];
-                    if let Err(e) = Self::update_uptime_stats_incrementally(height, dbtx).await {
-                        error!("Failed to update uptime stats for block {}: {}", height, e);
-                    }
-                } else {
-                    debug!(
-                        "Skipping uptime calculation for batch of {} blocks (reindexing mode)",
-                        unique_heights.len()
-                    );
-                }
-
-                Ok(())
-            }
+            Ok(_) => Ok(()),
             Err(e) => {
                 error!("Failed to bulk record validator blocks: {}", e);
                 Ok(())
