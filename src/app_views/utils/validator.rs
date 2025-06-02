@@ -1691,7 +1691,7 @@ impl Validator {
     }
 
     /// Update uptime stats by recalculating the full window for each block
-    /// This ensures total_blocks = signed_blocks + missed_blocks always
+    /// This ensures `total_blocks` = `signed_blocks` + `missed_blocks` always
     ///
     /// # Errors
     ///
