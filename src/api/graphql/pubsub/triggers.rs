@@ -117,9 +117,10 @@ async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sqlx::
     )
     .execute(pool)
     .await;
-    let _ = sqlx::query("DROP TRIGGER IF EXISTS validator_block_update_trigger ON validator_blocks")
-        .execute(pool)
-        .await;
+    let _ =
+        sqlx::query("DROP TRIGGER IF EXISTS validator_block_update_trigger ON validator_blocks")
+            .execute(pool)
+            .await;
 
     sqlx::query(
         r"
