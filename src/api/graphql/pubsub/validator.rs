@@ -25,7 +25,7 @@ pub async fn listen_validator_blocks(
     validator_id: String,
 ) {
     info!("Starting validator block listener for {}", validator_id);
-    
+
     let mut listener = match PgListener::connect_with(&pool).await {
         Ok(listener) => listener,
         Err(e) => {
@@ -35,16 +35,16 @@ pub async fn listen_validator_blocks(
             return;
         }
     };
-    
+
     if let Err(e) = listener.listen("explorer_validator_block_update").await {
         error!("Failed to listen to validator block updates: {}", e);
         let interval = interval(Duration::from_secs(1));
         poll_validator_blocks(pubsub, pool, validator_id, interval).await;
         return;
     }
-    
+
     info!("Successfully connected to PostgreSQL notifications for validator blocks");
-    
+
     let pubsub_clone = pubsub.clone();
     let pool_clone = pool.clone();
     let validator_id_clone = validator_id.clone();
@@ -52,7 +52,7 @@ pub async fn listen_validator_blocks(
         let interval = interval(Duration::from_secs(10));
         poll_validator_blocks(pubsub_clone, pool_clone, validator_id_clone, interval).await;
     });
-    
+
     loop {
         match listener.recv().await {
             Ok(notification) => {
@@ -63,13 +63,13 @@ pub async fn listen_validator_blocks(
                                 "Notification: New validator block for {} at height {} (signed: {})",
                                 data.validator_id, data.block_height, data.signed
                             );
-                            
+
                             let event = ValidatorBlockEvent {
                                 validator_id: data.validator_id,
                                 block_height: data.block_height,
                                 signed: data.signed,
                             };
-                            
+
                             let pubsub_clone = pubsub.clone();
                             tokio::spawn(async move {
                                 pubsub_clone.publish_validator_block(event).await;
@@ -90,7 +90,7 @@ pub async fn listen_validator_blocks(
             }
         }
     }
-    
+
     warn!("Notification listener exited, falling back to polling");
     let interval = interval(Duration::from_secs(1));
     poll_validator_blocks(pubsub, pool, validator_id, interval).await;
