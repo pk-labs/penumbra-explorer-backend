@@ -37,7 +37,7 @@ impl PubSub {
         let (transaction_count_tx, _) = broadcast::channel(1000);
         let (ibc_transactions_tx, _) = broadcast::channel(1000);
         let (total_shielded_volume_tx, _) = broadcast::channel(1000);
-        
+
         Self {
             blocks_tx,
             transactions_tx,
@@ -79,20 +79,20 @@ impl PubSub {
         pool: Pool<Postgres>,
     ) -> broadcast::Receiver<ValidatorBlockEvent> {
         let mut channels = self.validator_blocks_channels.write().await;
-        
+
         if let Some(tx) = channels.get(&validator_id) {
             return tx.subscribe();
         }
-        
+
         let (tx, rx) = broadcast::channel(1000);
         channels.insert(validator_id.clone(), tx.clone());
-        
+
         let pubsub_clone = self.clone();
         let validator_id_clone = validator_id.clone();
         tokio::spawn(async move {
             validator::listen_validator_blocks(pubsub_clone, pool, validator_id_clone).await;
         });
-        
+
         rx
     }
 
@@ -169,7 +169,7 @@ impl PubSub {
 
     pub async fn publish_validator_block(&self, event: ValidatorBlockEvent) {
         let channels = self.validator_blocks_channels.read().await;
-        
+
         if let Some(tx) = channels.get(&event.validator_id) {
             match tx.send(event.clone()) {
                 Ok(_) => debug!(
@@ -179,7 +179,10 @@ impl PubSub {
                 Err(e) => {
                     let receiver_count = tx.receiver_count();
                     if receiver_count == 0 {
-                        debug!("No receivers for validator {} block update", event.validator_id);
+                        debug!(
+                            "No receivers for validator {} block update",
+                            event.validator_id
+                        );
                     } else {
                         warn!("Failed to publish validator block update: {}", e);
                     }
