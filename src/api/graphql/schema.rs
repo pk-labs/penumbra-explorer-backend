@@ -8,7 +8,7 @@ use crate::api::graphql::{
         Action, Block, BlockCollection, BlockParticipation, BlockUpdate, CollectionItem,
         CommissionInfo, Event, Fee, IbcStats, StakingParameters, Transaction, TransactionBody,
         TransactionCollection, TransactionCountUpdate, TransactionParameters, TransactionUpdate,
-        Validator, ValidatorDetails, ValidatorHomepageData, ValidatorSearchResult,
+        Validator, ValidatorDetails, ValidatorHomepageData, ValidatorSearchResult, ValidatorSearchResults,
     },
 };
 use async_graphql::Schema as AsyncGraphQLSchema;
@@ -59,6 +59,7 @@ pub fn create_schema(db_pool: PgPool) -> PenumbraSchema {
         .register_output_type::<StakingParameters>()
         .register_output_type::<ValidatorHomepageData>()
         .register_output_type::<ValidatorSearchResult>()
+        .register_output_type::<ValidatorSearchResults>()
         .register_output_type::<ValidatorDetails>()
         .register_output_type::<CommissionInfo>()
         .register_output_type::<BlockParticipation>();
