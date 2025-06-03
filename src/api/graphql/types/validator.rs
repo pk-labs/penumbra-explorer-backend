@@ -543,3 +543,11 @@ struct CommissionStreamRow {
     recipient_address: Option<String>,
     rate_bps: i32,
 }
+
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
+pub struct ValidatorBlockUpdate {
+    pub validator_id: String,
+    pub block_height: i64,
+    pub signed: bool,
+}
