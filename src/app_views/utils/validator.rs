@@ -85,14 +85,9 @@ impl VotingPowerBatch {
         );
 
         for (identity_key, voting_power) in &self.changes {
-            if let Err(e) = Validator::update_voting_power(
-                identity_key,
-                *voting_power,
-                0.0, // Temporary percentage, will be recalculated
-                dbtx,
-                timestamp,
-            )
-            .await
+            if let Err(e) =
+                Validator::update_voting_power(identity_key, *voting_power, 0.0, dbtx, timestamp)
+                    .await
             {
                 error!("Failed to update voting power for {}: {}", identity_key, e);
             }
@@ -128,13 +123,13 @@ impl VotingPowerBatch {
 pub struct ValidatorParams {
     pub chain_id: String,
     pub active_validator_limit: i64,
-    pub min_validator_stake: String,
-    pub total_staked: String,
+    pub min_validator_stake: i64,
+    pub total_staked: i64,
     pub uptime_blocks_window: i64,
-    pub uptime_min_required: String,
-    pub slashing_penalty_downtime: String,
-    pub slashing_penalty_misbehavior: String,
-    pub unbonding_delay: String,
+    pub uptime_min_required: f64,
+    pub slashing_penalty_downtime: f64,
+    pub slashing_penalty_misbehavior: f64,
+    pub unbonding_delay: i64,
 }
 
 /// Represents a validator funding stream
@@ -920,8 +915,6 @@ impl Validator {
     pub async fn update_total_staked(dbtx: &mut PgTransaction<'_>) -> Result<()> {
         let total_active_voting_power = Self::calculate_total_voting_power(dbtx).await?;
 
-        let formatted_total = format!("{total_active_voting_power} UM");
-
         let chain_id: Option<String> =
             sqlx::query_scalar("SELECT chain_id FROM validator_staking_parameters LIMIT 1")
                 .fetch_optional(dbtx.as_mut())
@@ -935,7 +928,7 @@ impl Validator {
                 WHERE chain_id = $2
                 ",
             )
-            .bind(&formatted_total)
+            .bind(total_active_voting_power)
             .bind(&chain_id)
             .execute(dbtx.as_mut())
             .await?;
@@ -1625,6 +1618,329 @@ impl Validator {
 
         Ok(())
     }
+
+    /// Initialize uptime stats for a new validator
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn initialize_uptime_stats(
+        identity_key: &str,
+        current_height: i64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        let uptime_window = Self::get_uptime_blocks_window(dbtx).await.unwrap_or(10000);
+        let window_start = std::cmp::max(0, current_height - uptime_window);
+
+        sqlx::query(
+            r"
+            INSERT INTO validator_uptime_stats (
+                identity_key, 
+                total_blocks, 
+                signed_blocks, 
+                missed_blocks, 
+                uptime_percentage,
+                last_calculated_height,
+                window_start_height,
+                updated_at
+            ) VALUES ($1, 0, 0, 0, 0.00, $2, $3, NOW())
+            ON CONFLICT (identity_key) DO NOTHING
+            ",
+        )
+        .bind(identity_key)
+        .bind(current_height)
+        .bind(window_start)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        Ok(())
+    }
+
+    /// Get uptime blocks window from validator staking parameters
+    async fn get_uptime_blocks_window(dbtx: &mut PgTransaction<'_>) -> Result<i64> {
+        let window: i64 = sqlx::query_scalar(
+            "SELECT uptime_blocks_window FROM validator_staking_parameters LIMIT 1",
+        )
+        .fetch_one(dbtx.as_mut())
+        .await?;
+
+        Ok(window)
+    }
+
+    /// Update uptime stats by recalculating the full window for each block
+    /// This ensures `total_blocks` = `signed_blocks` + `missed_blocks` always
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn update_uptime_stats_incrementally(
+        height: i64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
+
+        let window_start = if height < uptime_window {
+            1
+        } else {
+            height - uptime_window + 1
+        };
+
+        let validators_in_block: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT identity_key FROM validator_blocks WHERE block_height = $1",
+        )
+        .bind(height)
+        .fetch_all(dbtx.as_mut())
+        .await?;
+
+        if validators_in_block.is_empty() {
+            return Ok(());
+        }
+
+        for identity_key in &validators_in_block {
+            Self::initialize_uptime_stats(identity_key, height, dbtx).await?;
+        }
+
+        sqlx::query(
+            r"
+            WITH validator_block_counts AS (
+                SELECT 
+                    vb.identity_key,
+                    COUNT(*) as total_blocks,
+                    SUM(CASE WHEN vb.signed THEN 1 ELSE 0 END) as signed_blocks,
+                    SUM(CASE WHEN NOT vb.signed THEN 1 ELSE 0 END) as missed_blocks
+                FROM validator_blocks vb
+                WHERE vb.identity_key = ANY($1)
+                  AND vb.block_height >= $2 
+                  AND vb.block_height <= $3
+                GROUP BY vb.identity_key
+            )
+            UPDATE validator_uptime_stats us
+            SET 
+                total_blocks = COALESCE(vbc.total_blocks, 0),
+                signed_blocks = COALESCE(vbc.signed_blocks, 0),
+                missed_blocks = COALESCE(vbc.missed_blocks, 0),
+                uptime_percentage = CASE 
+                    WHEN COALESCE(vbc.total_blocks, 0) > 0 THEN
+                        ROUND((COALESCE(vbc.signed_blocks, 0)::numeric / vbc.total_blocks::numeric) * 100.0, 2)
+                    ELSE 0.00
+                END,
+                last_calculated_height = $3,
+                window_start_height = $2,
+                updated_at = NOW()
+            FROM validator_block_counts vbc
+            WHERE us.identity_key = vbc.identity_key
+               AND us.identity_key = ANY($1)
+            ",
+        )
+        .bind(&validators_in_block)
+        .bind(window_start)
+        .bind(height)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        debug!(
+            "Recalculated uptime stats for {} validators at block {} (window: {} to {})",
+            validators_in_block.len(),
+            height,
+            window_start,
+            height
+        );
+        Ok(())
+    }
+
+    /// Update uptime stats for all active validators after a new block
+    /// This is the full recalculation version - use only for reindexing
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn update_uptime_stats_for_block(
+        height: i64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
+        let window_start = std::cmp::max(0, height - uptime_window);
+
+        sqlx::query(
+            r"
+            WITH validator_block_counts AS (
+                SELECT 
+                    vb.identity_key,
+                    COUNT(*) as total_blocks,
+                    SUM(CASE WHEN vb.signed THEN 1 ELSE 0 END) as signed_blocks,
+                    SUM(CASE WHEN NOT vb.signed THEN 1 ELSE 0 END) as missed_blocks
+                FROM validator_blocks vb
+                WHERE vb.block_height > $1 AND vb.block_height <= $2
+                GROUP BY vb.identity_key
+            )
+            INSERT INTO validator_uptime_stats (
+                identity_key,
+                total_blocks,
+                signed_blocks,
+                missed_blocks,
+                uptime_percentage,
+                last_calculated_height,
+                window_start_height,
+                updated_at
+            )
+            SELECT 
+                vbc.identity_key,
+                vbc.total_blocks,
+                vbc.signed_blocks,
+                vbc.missed_blocks,
+                CASE 
+                    WHEN vbc.total_blocks > 0 THEN
+                        ROUND((vbc.signed_blocks::numeric / vbc.total_blocks::numeric) * 100.0, 2)
+                    ELSE 0.00
+                END as uptime_percentage,
+                $2 as last_calculated_height,
+                $1 as window_start_height,
+                NOW() as updated_at
+            FROM validator_block_counts vbc
+            ON CONFLICT (identity_key) DO UPDATE SET
+                total_blocks = EXCLUDED.total_blocks,
+                signed_blocks = EXCLUDED.signed_blocks,
+                missed_blocks = EXCLUDED.missed_blocks,
+                uptime_percentage = EXCLUDED.uptime_percentage,
+                last_calculated_height = EXCLUDED.last_calculated_height,
+                window_start_height = EXCLUDED.window_start_height,
+                updated_at = EXCLUDED.updated_at
+            ",
+        )
+        .bind(window_start)
+        .bind(height)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        debug!("Updated uptime stats for block height {}", height);
+        Ok(())
+    }
+
+    /// Update uptime stats for a specific validator after a missed block event
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn update_validator_uptime_stats(
+        identity_key: &str,
+        current_height: i64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
+        let window_start = std::cmp::max(0, current_height - uptime_window);
+
+        Self::initialize_uptime_stats(identity_key, current_height, dbtx).await?;
+
+        sqlx::query(
+            r"
+            WITH validator_block_counts AS (
+                SELECT 
+                    COUNT(*) as total_blocks,
+                    SUM(CASE WHEN signed THEN 1 ELSE 0 END) as signed_blocks,
+                    SUM(CASE WHEN NOT signed THEN 1 ELSE 0 END) as missed_blocks
+                FROM validator_blocks
+                WHERE identity_key = $1 
+                  AND block_height > $2 
+                  AND block_height <= $3
+            )
+            UPDATE validator_uptime_stats
+            SET 
+                total_blocks = vbc.total_blocks,
+                signed_blocks = vbc.signed_blocks,
+                missed_blocks = vbc.missed_blocks,
+                uptime_percentage = CASE 
+                    WHEN vbc.total_blocks > 0 THEN
+                        ROUND((vbc.signed_blocks::numeric / vbc.total_blocks::numeric) * 100.0, 2)
+                    ELSE 0.00
+                END,
+                last_calculated_height = $3,
+                window_start_height = $2,
+                updated_at = NOW()
+            FROM validator_block_counts vbc
+            WHERE identity_key = $1
+            ",
+        )
+        .bind(identity_key)
+        .bind(window_start)
+        .bind(current_height)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        debug!(
+            "Updated uptime stats for validator {} at height {}",
+            identity_key, current_height
+        );
+        Ok(())
+    }
+
+    /// Bulk update uptime stats for multiple validators
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn bulk_update_uptime_stats(
+        validator_identities: &[String],
+        current_height: i64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        if validator_identities.is_empty() {
+            return Ok(());
+        }
+
+        let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
+        let window_start = std::cmp::max(0, current_height - uptime_window);
+
+        for identity_key in validator_identities {
+            Self::initialize_uptime_stats(identity_key, current_height, dbtx).await?;
+        }
+
+        let identity_list: Vec<&str> = validator_identities.iter().map(String::as_str).collect();
+
+        sqlx::query(
+            r"
+            WITH validator_block_counts AS (
+                SELECT 
+                    vb.identity_key,
+                    COUNT(*) as total_blocks,
+                    SUM(CASE WHEN vb.signed THEN 1 ELSE 0 END) as signed_blocks,
+                    SUM(CASE WHEN NOT vb.signed THEN 1 ELSE 0 END) as missed_blocks
+                FROM validator_blocks vb
+                WHERE vb.identity_key = ANY($1) 
+                  AND vb.block_height > $2 
+                  AND vb.block_height <= $3
+                GROUP BY vb.identity_key
+            )
+            UPDATE validator_uptime_stats us
+            SET 
+                total_blocks = COALESCE(vbc.total_blocks, 0),
+                signed_blocks = COALESCE(vbc.signed_blocks, 0),
+                missed_blocks = COALESCE(vbc.missed_blocks, 0),
+                uptime_percentage = CASE 
+                    WHEN COALESCE(vbc.total_blocks, 0) > 0 THEN
+                        ROUND((COALESCE(vbc.signed_blocks, 0)::numeric / vbc.total_blocks::numeric) * 100.0, 2)
+                    ELSE 0.00
+                END,
+                last_calculated_height = $3,
+                window_start_height = $2,
+                updated_at = NOW()
+            FROM validator_block_counts vbc
+            WHERE us.identity_key = vbc.identity_key
+               AND us.identity_key = ANY($1)
+            ",
+        )
+        .bind(&identity_list)
+        .bind(window_start)
+        .bind(current_height)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        debug!(
+            "Bulk updated uptime stats for {} validators at height {}",
+            validator_identities.len(),
+            current_height
+        );
+        Ok(())
+    }
 }
 
 impl ValidatorFundingStream {
@@ -1850,7 +2166,7 @@ impl ValidatorParams {
             .and_then(|lo| lo.as_str())
             .map(str::parse::<i64>)
         {
-            format!("{} UM", raw_val / 1_000_000)
+            raw_val / 1_000_000
         } else {
             tracing::error!("Failed to parse minValidatorStake.lo in genesis.json");
             return Err(anyhow::anyhow!(
@@ -1858,7 +2174,7 @@ impl ValidatorParams {
             ));
         };
 
-        let total_staked = String::new();
+        let total_staked = 0;
 
         let Some(Ok(uptime_blocks_window)) = stake_params
             .get("signedBlocksWindowLen")
@@ -1876,10 +2192,8 @@ impl ValidatorParams {
             .and_then(|max| max.as_str())
             .map(str::parse::<i64>)
         {
-            let min_percent = 100.0
-                * f64::from(i32::try_from(uptime_blocks_window - missed_max).unwrap_or(0))
-                / f64::from(i32::try_from(uptime_blocks_window).unwrap_or(1));
-            format!("{min_percent:.2}%")
+            100.0 * f64::from(i32::try_from(uptime_blocks_window - missed_max).unwrap_or(0))
+                / f64::from(i32::try_from(uptime_blocks_window).unwrap_or(1))
         } else {
             tracing::error!("Failed to parse missedBlocksMaximum in genesis.json");
             return Err(anyhow::anyhow!(
@@ -1892,11 +2206,10 @@ impl ValidatorParams {
             .and_then(|penalty| penalty.as_str())
             .map(str::parse::<i64>)
         {
-            let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
-            format!("{penalty_float:.2}%")
+            f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0
         } else {
             tracing::warn!("slashingPenaltyDowntime not found in genesis.json");
-            String::new()
+            0.0
         };
 
         let slashing_penalty_misbehavior = if let Some(Ok(penalty)) = stake_params
@@ -1904,8 +2217,7 @@ impl ValidatorParams {
             .and_then(|penalty| penalty.as_str())
             .map(str::parse::<i64>)
         {
-            let penalty_float = f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0;
-            format!("{penalty_float:.2}%")
+            f64::from(i32::try_from(penalty).unwrap_or(0)) / 1_000_000.0
         } else {
             tracing::error!("Failed to parse slashingPenaltyMisbehavior in genesis.json");
             return Err(anyhow::anyhow!(
@@ -1913,14 +2225,16 @@ impl ValidatorParams {
             ));
         };
 
-        let Some(delay) = stake_params
+        let Some(Ok(unbonding_delay)) = stake_params
             .get("unbondingDelay")
             .and_then(|delay| delay.as_str())
+            .map(str::parse::<i64>)
         else {
-            tracing::error!("Failed to find unbondingDelay in genesis.json");
-            return Err(anyhow::anyhow!("Missing unbondingDelay in genesis.json"));
+            tracing::error!("Failed to parse unbondingDelay in genesis.json");
+            return Err(anyhow::anyhow!(
+                "Missing or invalid unbondingDelay in genesis.json"
+            ));
         };
-        let unbonding_delay = format!("{delay} blocks");
 
         Ok(Self {
             chain_id,
@@ -1967,13 +2281,13 @@ impl ValidatorParams {
         )
         .bind(&self.chain_id)
         .bind(self.active_validator_limit)
-        .bind(&self.min_validator_stake)
-        .bind(&self.total_staked)
+        .bind(self.min_validator_stake)
+        .bind(self.total_staked)
         .bind(self.uptime_blocks_window)
-        .bind(&self.uptime_min_required)
-        .bind(&self.slashing_penalty_downtime)
-        .bind(&self.slashing_penalty_misbehavior)
-        .bind(&self.unbonding_delay)
+        .bind(self.uptime_min_required)
+        .bind(self.slashing_penalty_downtime)
+        .bind(self.slashing_penalty_misbehavior)
+        .bind(self.unbonding_delay)
         .execute(dbtx.as_mut())
         .await?;
 
@@ -2091,9 +2405,9 @@ impl ValidatorParams {
                                 if let Some(lo) = stake.get("lo").and_then(|v| v.as_str()) {
                                     match lo.parse::<i64>() {
                                         Ok(raw_val) => {
-                                            let formatted = format!("{} UM", raw_val / 1_000_000);
+                                            let stake_amount = raw_val / 1_000_000;
                                             updates.push("min_validator_stake = $2");
-                                            bindings.push(formatted);
+                                            bindings.push(stake_amount.to_string());
                                         }
                                         Err(e) => {
                                             error!(
@@ -2128,9 +2442,8 @@ impl ValidatorParams {
                                                         / f64::from(
                                                             i32::try_from(window).unwrap_or(1),
                                                         );
-                                                    let formatted = format!("{min_percent:.2}%");
                                                     updates.push("uptime_min_required = $4");
-                                                    bindings.push(formatted);
+                                                    bindings.push(min_percent.to_string());
                                                 }
                                                 Err(e) => {
                                                     error!("Failed to parse missedBlocksMaximum '{}': {}", missed, e);
@@ -2156,13 +2469,12 @@ impl ValidatorParams {
                                         let penalty_float =
                                             f64::from(i32::try_from(penalty).unwrap_or(0))
                                                 / 1_000_000.0;
-                                        let formatted = format!("{penalty_float:.2}%");
                                         debug!(
                                             "Parsed slashingPenaltyDowntime '{}' as '{}'",
-                                            val, formatted
+                                            val, penalty_float
                                         );
                                         updates.push("slashing_penalty_downtime = $5");
-                                        bindings.push(formatted);
+                                        bindings.push(penalty_float.to_string());
                                     }
                                     Err(e) => {
                                         error!(
@@ -2182,9 +2494,8 @@ impl ValidatorParams {
                                         let penalty_float =
                                             f64::from(i32::try_from(penalty).unwrap_or(0))
                                                 / 1_000_000.0;
-                                        let formatted = format!("{penalty_float:.2}%");
                                         updates.push("slashing_penalty_misbehavior = $6");
-                                        bindings.push(formatted);
+                                        bindings.push(penalty_float.to_string());
                                     }
                                     Err(e) => {
                                         error!(
@@ -2198,9 +2509,15 @@ impl ValidatorParams {
                             if let Some(val) =
                                 stake_params.get("unbondingDelay").and_then(|v| v.as_str())
                             {
-                                let formatted = format!("{val} blocks");
-                                updates.push("unbonding_delay = $7");
-                                bindings.push(formatted);
+                                match val.parse::<i64>() {
+                                    Ok(delay) => {
+                                        updates.push("unbonding_delay = $7");
+                                        bindings.push(delay.to_string());
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to parse unbondingDelay '{}': {}", val, e);
+                                    }
+                                }
                             }
 
                             if !updates.is_empty() {
@@ -2249,7 +2566,13 @@ impl ValidatorParams {
                                         }
                                         1 => {
                                             if updates.contains(&"min_validator_stake = $2") {
-                                                q = q.bind(val);
+                                                match val.parse::<i64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind min_validator_stake '{}': {}", val, e);
+                                                        continue;
+                                                    }
+                                                }
                                             }
                                         }
                                         2 => {
@@ -2265,24 +2588,48 @@ impl ValidatorParams {
                                         }
                                         3 => {
                                             if updates.contains(&"uptime_min_required = $4") {
-                                                q = q.bind(val);
+                                                match val.parse::<f64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind uptime_min_required '{}': {}", val, e);
+                                                        continue;
+                                                    }
+                                                }
                                             }
                                         }
                                         4 => {
                                             if updates.contains(&"slashing_penalty_downtime = $5") {
-                                                q = q.bind(val);
+                                                match val.parse::<f64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind slashing_penalty_downtime '{}': {}", val, e);
+                                                        continue;
+                                                    }
+                                                }
                                             }
                                         }
                                         5 => {
                                             if updates
                                                 .contains(&"slashing_penalty_misbehavior = $6")
                                             {
-                                                q = q.bind(val);
+                                                match val.parse::<f64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind slashing_penalty_misbehavior '{}': {}", val, e);
+                                                        continue;
+                                                    }
+                                                }
                                             }
                                         }
                                         6 => {
                                             if updates.contains(&"unbonding_delay = $7") {
-                                                q = q.bind(val);
+                                                match val.parse::<i64>() {
+                                                    Ok(v) => q = q.bind(v),
+                                                    Err(e) => {
+                                                        error!("Failed to bind unbonding_delay '{}': {}", val, e);
+                                                        continue;
+                                                    }
+                                                }
                                             }
                                         }
                                         _ => {}
@@ -2331,6 +2678,56 @@ pub struct ChainParameters {
 }
 
 impl ChainParameters {
+    /// Get the epoch for a given block height
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if database operations fail
+    pub async fn get_epoch_for_height(
+        dbtx: &mut PgTransaction<'_>,
+        chain_id: &str,
+        height: u64,
+    ) -> Result<i64> {
+        let height_i64 = i64::try_from(height).unwrap_or(i64::MAX);
+
+        let block_epoch: Option<i64> = sqlx::query_scalar(
+            "SELECT epoch FROM explorer_block_details WHERE height = $1 AND chain_id = $2",
+        )
+        .bind(height_i64)
+        .bind(chain_id)
+        .fetch_optional(dbtx.as_mut())
+        .await?;
+
+        if let Some(epoch) = block_epoch {
+            return Ok(epoch);
+        }
+
+        let epoch_for_height: Option<i64> = sqlx::query_scalar(
+            r"
+            SELECT epoch_index 
+            FROM epochs 
+            WHERE chain_id = $1 
+            AND (
+                SELECT COALESCE(
+                    LAG(end_height) OVER (ORDER BY epoch_index), 
+                    0
+                ) + 1
+            ) <= $2 
+            AND end_height >= $2
+            ORDER BY epoch_index 
+            LIMIT 1
+            ",
+        )
+        .bind(chain_id)
+        .bind(height_i64)
+        .fetch_optional(dbtx.as_mut())
+        .await?;
+
+        epoch_for_height.ok_or_else(|| {
+            anyhow::anyhow!("No epoch found for height {} in chain {}", height, chain_id)
+        })
+    }
+
     /// Simple update of current block info and read latest epoch from epochs table
     ///
     /// # Errors
@@ -2341,47 +2738,51 @@ impl ChainParameters {
         chain_id: &str,
         block_height: u64,
         block_timestamp: DateTime<Utc>,
-    ) -> Result<()> {
-        let height_i64 = i64::try_from(block_height).unwrap_or(i64::MAX);
+    ) -> Result<i64> {
+        let height_i64 = i64::try_from(block_height)
+            .map_err(|e| anyhow::anyhow!("Height conversion error: {}", e))?;
 
-        // Get the latest epoch from epochs table
-        let latest_epoch: Option<i64> = sqlx::query_scalar(
-            "SELECT epoch_index FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1",
+        let (current_epoch, epoch_duration): (i64, i64) = if let Some((epoch, duration)) = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT current_epoch, epoch_duration FROM validator_chain_parameters WHERE chain_id = $1",
         )
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
-        .await?;
+        .await? {
+            (epoch, duration)
+        } else {
+            tracing::info!("No validator_chain_parameters found for chain {}, using epoch 0 (first batch)", chain_id);
+            (0, 0)
+        };
 
-        let current_epoch = latest_epoch.unwrap_or(0);
-
-        // Get existing epoch_duration if available
-        let existing_epoch_duration: Option<i64> = sqlx::query_scalar(
-            "SELECT epoch_duration FROM validator_chain_parameters WHERE chain_id = $1",
-        )
-        .bind(chain_id)
-        .fetch_optional(dbtx.as_mut())
-        .await?;
-
-        let epoch_duration = existing_epoch_duration.unwrap_or(0);
-
-        let next_epoch_in = if epoch_duration > 0 && current_epoch > 0 {
-            let current_epoch_start: Option<i64> = sqlx::query_scalar(
-                "SELECT start_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2",
+        let next_epoch_in = if epoch_duration > 0 {
+            let last_epoch_end_height: Option<i64> = sqlx::query_scalar(
+                "SELECT end_height FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1",
             )
-            .bind(current_epoch)
             .bind(chain_id)
             .fetch_optional(dbtx.as_mut())
             .await?;
 
-            if let Some(start_height) = current_epoch_start {
-                let next_epoch_start = start_height + epoch_duration;
-                std::cmp::max(0, next_epoch_start - height_i64)
+            if let Some(last_end_height) = last_epoch_end_height {
+                let next_epoch_end = last_end_height + epoch_duration;
+                std::cmp::max(0, next_epoch_end - height_i64)
             } else {
+                tracing::debug!(
+                    "No epochs found in chain {}, cannot calculate next_epoch_in",
+                    chain_id
+                );
                 0
             }
         } else {
             0
         };
+
+        tracing::debug!(
+            "Updating chain parameters: epoch={}, duration={}, next_epoch_in={} for chain {}",
+            current_epoch,
+            epoch_duration,
+            next_epoch_in,
+            chain_id
+        );
 
         sqlx::query(
             r"
@@ -2397,7 +2798,6 @@ impl ChainParameters {
             ON CONFLICT (chain_id) DO UPDATE SET
                 current_block_height = EXCLUDED.current_block_height,
                 current_block_time = EXCLUDED.current_block_time,
-                current_epoch = EXCLUDED.current_epoch,
                 next_epoch_in = EXCLUDED.next_epoch_in,
                 last_updated = EXCLUDED.last_updated
             ",
@@ -2412,7 +2812,7 @@ impl ChainParameters {
         .execute(dbtx.as_mut())
         .await?;
 
-        Ok(())
+        Ok(current_epoch)
     }
 
     /// Process events to update chain parameters
@@ -2445,14 +2845,57 @@ impl ChainParameters {
                                                         epoch_duration
                                                     );
 
-                                                sqlx::query(
-                                                        "UPDATE validator_chain_parameters SET epoch_duration = $1, last_updated = $2 WHERE chain_id = $3"
+                                                let current_info: Option<(i64, i64)> = sqlx::query_as(
+                                                    "SELECT current_epoch, current_block_height FROM validator_chain_parameters WHERE chain_id = $1"
+                                                )
+                                                .bind(chain_id)
+                                                .fetch_optional(dbtx.as_mut())
+                                                .await?;
+
+                                                let next_epoch_in = if let Some((
+                                                    _current_epoch,
+                                                    current_height,
+                                                )) = current_info
+                                                {
+                                                    let last_epoch_end_height: Option<i64> = sqlx::query_scalar(
+                                                        "SELECT end_height FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1"
                                                     )
-                                                    .bind(epoch_duration)
-                                                    .bind(timestamp)
                                                     .bind(chain_id)
-                                                    .execute(dbtx.as_mut())
+                                                    .fetch_optional(dbtx.as_mut())
                                                     .await?;
+
+                                                    if let Some(last_end_height) =
+                                                        last_epoch_end_height
+                                                    {
+                                                        let next_epoch_end =
+                                                            last_end_height + epoch_duration;
+                                                        std::cmp::max(
+                                                            0,
+                                                            next_epoch_end - current_height,
+                                                        )
+                                                    } else {
+                                                        0
+                                                    }
+                                                } else {
+                                                    0
+                                                };
+
+                                                tracing::info!(
+                                                    "Updating epoch duration to {} and next_epoch_in to {} for chain {}",
+                                                    epoch_duration,
+                                                    next_epoch_in,
+                                                    chain_id
+                                                );
+
+                                                sqlx::query(
+                                                    "UPDATE validator_chain_parameters SET epoch_duration = $1, next_epoch_in = $2, last_updated = $3 WHERE chain_id = $4"
+                                                )
+                                                .bind(epoch_duration)
+                                                .bind(next_epoch_in)
+                                                .bind(timestamp)
+                                                .bind(chain_id)
+                                                .execute(dbtx.as_mut())
+                                                .await?;
                                             }
                                             Err(e) => {
                                                 tracing::error!(
@@ -2504,39 +2947,41 @@ impl ChainParameters {
             .map(|(h, t)| (*h, *t))
             .unwrap();
 
-        let latest_epoch: Option<i64> = sqlx::query_scalar(
-            "SELECT epoch_index FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1",
+        let (current_epoch, epoch_duration): (i64, i64) = if let Some((epoch, duration)) = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT current_epoch, epoch_duration FROM validator_chain_parameters WHERE chain_id = $1",
         )
         .bind(chain_id)
         .fetch_optional(dbtx.as_mut())
-        .await?;
-
-        let current_epoch = latest_epoch.unwrap_or(0);
-
-        let latest_epoch_start_height: Option<i64> = sqlx::query_scalar(
-            "SELECT start_height FROM epochs WHERE epoch_index = $1 AND chain_id = $2",
-        )
-        .bind(current_epoch)
-        .bind(chain_id)
-        .fetch_optional(dbtx.as_mut())
-        .await?;
-
-        let epoch_duration: i64 = sqlx::query_scalar(
-            "SELECT epoch_duration FROM validator_chain_parameters WHERE chain_id = $1",
-        )
-        .bind(chain_id)
-        .fetch_optional(dbtx.as_mut())
-        .await?
-        .unwrap_or(34560);
-
-        let next_epoch_in = if let Some(epoch_start) = latest_epoch_start_height {
-            let next_epoch_start = epoch_start + epoch_duration;
-            std::cmp::max(
-                0,
-                next_epoch_start - i64::try_from(latest_height).unwrap_or(i64::MAX),
-            )
+        .await? {
+            (epoch, duration)
         } else {
-            epoch_duration
+            tracing::info!("No validator_chain_parameters found for chain {}, using epoch 0 (first batch)", chain_id);
+            (0, 0)
+        };
+
+        let latest_height_i64 = i64::try_from(latest_height)
+            .map_err(|e| anyhow::anyhow!("Height conversion error: {}", e))?;
+
+        let next_epoch_in = if epoch_duration > 0 {
+            let last_epoch_end_height: Option<i64> = sqlx::query_scalar(
+                "SELECT end_height FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1",
+            )
+            .bind(chain_id)
+            .fetch_optional(dbtx.as_mut())
+            .await?;
+
+            if let Some(last_end_height) = last_epoch_end_height {
+                let next_epoch_end = last_end_height + epoch_duration;
+                std::cmp::max(0, next_epoch_end - latest_height_i64)
+            } else {
+                tracing::debug!(
+                    "No epochs found in chain {}, cannot calculate next_epoch_in",
+                    chain_id
+                );
+                0
+            }
+        } else {
+            0
         };
 
         sqlx::query(
@@ -2553,13 +2998,12 @@ impl ChainParameters {
             ON CONFLICT (chain_id) DO UPDATE SET
                 current_block_height = EXCLUDED.current_block_height,
                 current_block_time = EXCLUDED.current_block_time,
-                current_epoch = EXCLUDED.current_epoch,
                 next_epoch_in = EXCLUDED.next_epoch_in,
                 last_updated = EXCLUDED.last_updated
             ",
         )
         .bind(chain_id)
-        .bind(i64::try_from(latest_height).unwrap_or(i64::MAX))
+        .bind(latest_height_i64)
         .bind(latest_timestamp)
         .bind(current_epoch)
         .bind(epoch_duration)
@@ -2576,8 +3020,8 @@ impl ChainParameters {
 pub struct Epoch {
     pub epoch_index: i64,
     pub chain_id: String,
-    pub start_height: i64,
-    pub start_time: DateTime<Utc>,
+    pub end_height: i64,
+    pub end_time: DateTime<Utc>,
     pub epoch_root: Vec<u8>,
 }
 
@@ -2587,6 +3031,7 @@ impl Epoch {
     /// # Errors
     ///
     /// Returns an error if database operations fail
+    #[allow(clippy::too_many_lines)]
     pub async fn process_events(
         dbtx: &mut PgTransaction<'_>,
         events: &[ContextualizedEvent<'_>],
@@ -2599,75 +3044,130 @@ impl Epoch {
                 let index_str = ValidatorParams::find_attribute_value(event, "index");
                 let root_str = ValidatorParams::find_attribute_value(event, "root");
 
-                match (index_str, root_str) {
-                    (Some(index_json), Some(root_json)) => {
-                        match (
-                            serde_json::from_str::<Value>(index_json),
-                            serde_json::from_str::<Value>(root_json),
-                        ) {
-                            (Ok(index_val), Ok(root_val)) => {
-                                if let (Some(epoch_index), Some(root_inner)) = (
-                                    index_val.as_str().and_then(|s| s.parse::<i64>().ok()),
-                                    root_val.get("inner").and_then(|r| r.as_str()),
-                                ) {
-                                    match general_purpose::STANDARD.decode(root_inner) {
-                                        Ok(epoch_root) => {
-                                            let chain_id = sqlx::query_scalar::<_, String>(
-                                                "SELECT chain_id FROM explorer_block_details WHERE height = $1 LIMIT 1"
-                                            )
-                                            .bind(i64::try_from(height).unwrap_or(i64::MAX))
-                                            .fetch_optional(dbtx.as_mut())
-                                            .await?
-                                            .unwrap_or_else(|| "unknown".to_string());
+                let chain_id = sqlx::query_scalar::<_, String>(
+                    "SELECT chain_id FROM explorer_block_details WHERE height = $1 LIMIT 1",
+                )
+                .bind(i64::try_from(height).unwrap_or(i64::MAX))
+                .fetch_optional(dbtx.as_mut())
+                .await?
+                .unwrap_or_else(|| "unknown".to_string());
 
-                                            tracing::info!(
-                                                "Processing epoch {} at height {} for chain {}",
-                                                epoch_index,
-                                                height,
-                                                chain_id
-                                            );
+                match root_str {
+                    Some(root_json) => match serde_json::from_str::<Value>(root_json) {
+                        Ok(root_val) => {
+                            if let Some(root_inner) = root_val.get("inner").and_then(|r| r.as_str())
+                            {
+                                match general_purpose::STANDARD.decode(root_inner) {
+                                    Ok(epoch_root) => {
+                                        let epoch_index = if let Some(index_json) = index_str {
+                                            match serde_json::from_str::<Value>(index_json) {
+                                                Ok(index_val) => index_val
+                                                    .as_str()
+                                                    .and_then(|s| s.parse::<i64>().ok())
+                                                    .unwrap_or(0),
+                                                Err(_) => 0,
+                                            }
+                                        } else {
+                                            0
+                                        };
 
-                                            sqlx::query(
-                                                r"
+                                        tracing::info!(
+                                            "Processing epoch {} ending at height {} for chain {}",
+                                            epoch_index,
+                                            height,
+                                            chain_id
+                                        );
+
+                                        sqlx::query(
+                                            r"
                                                 INSERT INTO epochs (
                                                     epoch_index,
                                                     chain_id,
-                                                    start_height,
-                                                    start_time,
+                                                    end_height,
+                                                    end_time,
                                                     epoch_root
                                                 ) VALUES ($1, $2, $3, $4, $5)
                                                 ON CONFLICT (epoch_index) DO UPDATE SET
                                                     chain_id = EXCLUDED.chain_id,
-                                                    start_height = EXCLUDED.start_height,
-                                                    start_time = EXCLUDED.start_time,
+                                                    end_height = EXCLUDED.end_height,
+                                                    end_time = EXCLUDED.end_time,
                                                     epoch_root = EXCLUDED.epoch_root
                                                 ",
+                                        )
+                                        .bind(epoch_index)
+                                        .bind(&chain_id)
+                                        .bind(i64::try_from(height).unwrap_or(i64::MAX))
+                                        .bind(timestamp)
+                                        .bind(&epoch_root)
+                                        .execute(dbtx.as_mut())
+                                        .await?;
+
+                                        let current_info: Option<(i64, i64)> = sqlx::query_as(
+                                                "SELECT epoch_duration, current_block_height FROM validator_chain_parameters WHERE chain_id = $1"
                                             )
-                                            .bind(epoch_index)
                                             .bind(&chain_id)
-                                            .bind(i64::try_from(height).unwrap_or(i64::MAX))
+                                            .fetch_optional(dbtx.as_mut())
+                                            .await?;
+
+                                        let next_epoch_in =
+                                            if let Some((epoch_duration, current_height)) =
+                                                current_info
+                                            {
+                                                if epoch_duration > 0 {
+                                                    let next_epoch_end = i64::try_from(height)
+                                                        .unwrap_or(i64::MAX)
+                                                        + epoch_duration;
+                                                    std::cmp::max(
+                                                        0,
+                                                        next_epoch_end - current_height,
+                                                    )
+                                                } else {
+                                                    0
+                                                }
+                                            } else {
+                                                0
+                                            };
+
+                                        let current_epoch = epoch_index + 1;
+
+                                        tracing::info!(
+                                                "Updating current_epoch to {} (ended epoch {} + 1) and next_epoch_in to {} in validator_chain_parameters for chain {}",
+                                                current_epoch,
+                                                epoch_index,
+                                                next_epoch_in,
+                                                chain_id
+                                            );
+
+                                        sqlx::query(
+                                                r"
+                                                UPDATE validator_chain_parameters 
+                                                SET current_epoch = $1, next_epoch_in = $2, last_updated = $3 
+                                                WHERE chain_id = $4
+                                                ",
+                                            )
+                                            .bind(current_epoch)
+                                            .bind(next_epoch_in)
                                             .bind(timestamp)
-                                            .bind(&epoch_root)
+                                            .bind(&chain_id)
                                             .execute(dbtx.as_mut())
                                             .await?;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to decode epoch root base64 '{}': {}",
-                                                root_inner,
-                                                e
-                                            );
-                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to decode epoch root base64 '{}': {}",
+                                            root_inner,
+                                            e
+                                        );
                                     }
                                 }
                             }
-                            _ => {
-                                tracing::error!("Failed to parse EventEpochRoot JSON data");
-                            }
                         }
-                    }
-                    _ => {
-                        tracing::error!("EventEpochRoot missing required attributes");
+                        Err(e) => {
+                            tracing::error!("Failed to parse EventEpochRoot root JSON: {}", e);
+                        }
+                    },
+                    None => {
+                        tracing::error!("EventEpochRoot missing required root attribute");
                     }
                 }
             }

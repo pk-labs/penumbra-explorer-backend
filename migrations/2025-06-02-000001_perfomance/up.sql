@@ -1,0 +1,27 @@
+-- Drop views in correct dependency order
+DROP VIEW IF EXISTS validator_performance;
+DROP VIEW IF EXISTS ibc_client_stats_with_periods;
+DROP VIEW IF EXISTS ibc_client_summary_30d;
+DROP VIEW IF EXISTS ibc_client_summary_24h;
+DROP VIEW IF EXISTS ibc_client_summary;
+DROP VIEW IF EXISTS explorer_transaction_summary;
+DROP VIEW IF EXISTS explorer_recent_blocks;
+
+-- Drop tables with foreign key dependencies first
+DROP TABLE IF EXISTS validator_blocks;
+DROP TABLE IF EXISTS validator_funding_streams;
+DROP TABLE IF EXISTS validator_uptime_stats;
+DROP TABLE IF EXISTS validators;
+DROP TABLE IF EXISTS ibc_transfers;
+DROP TABLE IF EXISTS validator_staking_parameters;
+DROP TABLE IF EXISTS ibc_stats;
+DROP TABLE IF EXISTS ibc_channels;
+DROP TABLE IF EXISTS ibc_connections;
+DROP TABLE IF EXISTS explorer_transactions;
+DROP TABLE IF EXISTS ibc_clients;
+DROP TABLE IF EXISTS explorer_block_details;
+DROP TABLE IF EXISTS index_watermarks;
+DROP TABLE IF EXISTS cometindex_tracking;
+DROP TABLE IF EXISTS asset_prices;
+DROP TABLE IF EXISTS validator_chain_parameters;
+DROP TABLE IF EXISTS epochs;

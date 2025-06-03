@@ -1,14 +1,71 @@
 use crate::api::graphql::types::{ValidatorFilter, ValidatorStateFilter};
-use async_graphql::{Object, SimpleObject};
+use async_graphql::{Enum, Object, SimpleObject};
 use chrono::{DateTime, Utc};
+use sqlx::types::BigDecimal;
 use sqlx::{FromRow, PgPool};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+#[allow(clippy::module_name_repetitions)]
+pub enum ValidatorState {
+    #[graphql(name = "VALIDATOR_STATE_ENUM_UNSPECIFIED")]
+    Unspecified,
+    #[graphql(name = "VALIDATOR_STATE_ENUM_ACTIVE")]
+    Active,
+    #[graphql(name = "VALIDATOR_STATE_ENUM_DEFINED")]
+    Defined,
+    #[graphql(name = "VALIDATOR_STATE_ENUM_DISABLED")]
+    Disabled,
+    #[graphql(name = "VALIDATOR_STATE_ENUM_INACTIVE")]
+    Inactive,
+    #[graphql(name = "VALIDATOR_STATE_ENUM_JAILED")]
+    Jailed,
+    #[graphql(name = "VALIDATOR_STATE_ENUM_TOMBSTONED")]
+    Tombstoned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
+pub enum BondingState {
+    #[graphql(name = "BONDING_STATE_ENUM_UNSPECIFIED")]
+    Unspecified,
+    #[graphql(name = "BONDING_STATE_ENUM_BONDED")]
+    Bonded,
+    #[graphql(name = "BONDING_STATE_ENUM_UNBONDED")]
+    Unbonded,
+    #[graphql(name = "BONDING_STATE_ENUM_UNBONDING")]
+    Unbonding,
+}
+
+impl ValidatorState {
+    fn from_db_string(s: &str) -> Self {
+        match s {
+            s if s.contains("VALIDATOR_STATE_ENUM_ACTIVE") => Self::Active,
+            s if s.contains("VALIDATOR_STATE_ENUM_DEFINED") => Self::Defined,
+            s if s.contains("VALIDATOR_STATE_ENUM_DISABLED") => Self::Disabled,
+            s if s.contains("VALIDATOR_STATE_ENUM_INACTIVE") => Self::Inactive,
+            s if s.contains("VALIDATOR_STATE_ENUM_JAILED") => Self::Jailed,
+            s if s.contains("VALIDATOR_STATE_ENUM_TOMBSTONED") => Self::Tombstoned,
+            _ => Self::Unspecified,
+        }
+    }
+}
+
+impl BondingState {
+    fn from_db_string(s: &str) -> Self {
+        match s {
+            s if s.contains("BONDING_STATE_ENUM_BONDED") => Self::Bonded,
+            s if s.contains("BONDING_STATE_ENUM_UNBONDED") => Self::Unbonded,
+            s if s.contains("BONDING_STATE_ENUM_UNBONDING") => Self::Unbonding,
+            _ => Self::Unspecified,
+        }
+    }
+}
 
 #[derive(Debug, Clone, SimpleObject)]
 pub struct Validator {
-    pub id: Option<String>,
+    pub id: String,
     pub name: Option<String>,
-    pub state: String,
-    pub bonding_state: Option<String>,
+    pub state: ValidatorState,
+    pub bonding_state: BondingState,
     pub voting_power: i64,
     pub voting_power_active_percentage: f64,
     pub uptime: Option<f64>,
@@ -43,8 +100,8 @@ pub struct ValidatorDetails {
     pub name: Option<String>,
     pub website: Option<String>,
     pub description: Option<String>,
-    pub state: String,
-    pub bonding_state: Option<String>,
+    pub state: ValidatorState,
+    pub bonding_state: BondingState,
     pub total_uptime: Option<f64>,
     pub uptime_block_window: i64,
     pub missed_blocks: i64,
@@ -59,15 +116,15 @@ pub struct ValidatorDetails {
 
 #[derive(Debug, Clone, SimpleObject)]
 pub struct StakingParameters {
-    pub total_staked: String,
+    pub total_staked: i64,
     pub active_validator_limit: i64,
     pub active_validator_count: i64,
-    pub unbonding_delay: String,
+    pub unbonding_delay: i64,
     pub uptime_blocks_window: i64,
-    pub uptime_min_required: String,
-    pub slashing_penalty_downtime: String,
-    pub slashing_penalty_misbehavior: String,
-    pub min_validator_stake: String,
+    pub uptime_min_required: f64,
+    pub slashing_penalty_downtime: f64,
+    pub slashing_penalty_misbehavior: f64,
+    pub min_validator_stake: i64,
 }
 
 #[derive(Debug, Clone, SimpleObject)]
@@ -162,10 +219,13 @@ impl ValidatorHomepageData {
         Ok(validators
             .into_iter()
             .map(|row| Validator {
-                id: row.decoded_address,
+                id: row.decoded_address.unwrap_or_default(),
                 name: row.name,
-                state: row.state,
-                bonding_state: row.bonding_state,
+                state: ValidatorState::from_db_string(&row.state),
+                bonding_state: row
+                    .bonding_state
+                    .as_deref()
+                    .map_or(BondingState::Unspecified, BondingState::from_db_string),
                 voting_power: row.voting_power,
                 voting_power_active_percentage: row.voting_power_active_percentage,
                 uptime: row.uptime_percentage,
@@ -207,15 +267,19 @@ impl ValidatorHomepageData {
         .await?;
 
         Ok(StakingParameters {
-            total_staked: params.total_staked,
+            total_staked: params.total_staked.to_string().parse::<i64>().unwrap_or(0),
             active_validator_limit: params.active_validator_limit,
             active_validator_count: active_count,
             unbonding_delay: params.unbonding_delay,
             uptime_blocks_window: params.uptime_blocks_window,
             uptime_min_required: params.uptime_min_required,
-            slashing_penalty_downtime: params.slashing_penalty_downtime.unwrap_or_default(),
+            slashing_penalty_downtime: params.slashing_penalty_downtime.unwrap_or(0.0),
             slashing_penalty_misbehavior: params.slashing_penalty_misbehavior,
-            min_validator_stake: params.min_validator_stake,
+            min_validator_stake: params
+                .min_validator_stake
+                .to_string()
+                .parse::<i64>()
+                .unwrap_or(0),
         })
     }
 
@@ -267,14 +331,14 @@ struct ValidatorRow {
 
 #[derive(FromRow)]
 struct StakingParamsRow {
-    total_staked: String,
+    total_staked: BigDecimal,
     active_validator_limit: i64,
-    unbonding_delay: String,
+    unbonding_delay: i64,
     uptime_blocks_window: i64,
-    uptime_min_required: String,
-    slashing_penalty_downtime: Option<String>,
-    slashing_penalty_misbehavior: String,
-    min_validator_stake: String,
+    uptime_min_required: f64,
+    slashing_penalty_downtime: Option<f64>,
+    slashing_penalty_misbehavior: f64,
+    min_validator_stake: BigDecimal,
 }
 
 #[derive(FromRow)]
@@ -429,8 +493,11 @@ impl ValidatorDetails {
             name: info.name,
             website: info.website,
             description: info.description,
-            state: info.state,
-            bonding_state: info.bonding_state,
+            state: ValidatorState::from_db_string(&info.state),
+            bonding_state: info
+                .bonding_state
+                .as_deref()
+                .map_or(BondingState::Unspecified, BondingState::from_db_string),
             total_uptime: info.uptime_percentage,
             uptime_block_window: info.uptime_block_window,
             missed_blocks: info.missed_blocks,
