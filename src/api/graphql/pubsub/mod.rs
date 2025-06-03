@@ -199,7 +199,7 @@ impl PubSub {
         }
     }
 
-    pub async fn publish_chain_parameters(&self, event: ChainParametersEvent) {
+    pub fn publish_chain_parameters(&self, event: &ChainParametersEvent) {
         match self.chain_parameters_tx.send(event.clone()) {
             Ok(_) => debug!(
                 "Published chain parameters update - block height: {}, epoch: {}",
