@@ -407,7 +407,6 @@ impl ValidatorSearchResult {
         }
 
         let starts_with_pattern = format!("{}%", search_term.to_lowercase());
-        let contains_pattern = format!("%{}%", search_term.to_lowercase());
 
         let result: Option<(Option<String>, Option<String>)> = sqlx::query_as(
             r"
@@ -418,21 +417,13 @@ impl ValidatorSearchResult {
                 validators
             WHERE 
                 name IS NOT NULL
-                AND (
-                    LOWER(name) LIKE $1  -- starts with
-                    OR LOWER(name) LIKE $2  -- contains
-                )
+                AND LOWER(name) LIKE $1  -- starts with only
             ORDER BY
-                CASE 
-                    WHEN LOWER(name) LIKE $1 THEN 1  -- prioritize starts with
-                    ELSE 2  -- then contains
-                END,
                 voting_power DESC
             LIMIT 1
             ",
         )
         .bind(&starts_with_pattern)
-        .bind(&contains_pattern)
         .fetch_optional(pool)
         .await?;
 
@@ -465,7 +456,6 @@ impl ValidatorSearchResult {
         }
 
         let starts_with_pattern = format!("{}%", search_term.to_lowercase());
-        let contains_pattern = format!("%{}%", search_term.to_lowercase());
 
         let results: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
             r"
@@ -476,21 +466,13 @@ impl ValidatorSearchResult {
                 validators
             WHERE 
                 name IS NOT NULL
-                AND (
-                    LOWER(name) LIKE $1  -- starts with
-                    OR LOWER(name) LIKE $2  -- contains
-                )
+                AND LOWER(name) LIKE $1  -- starts with only
             ORDER BY
-                CASE 
-                    WHEN LOWER(name) LIKE $1 THEN 1  -- prioritize starts with
-                    ELSE 2  -- then contains
-                END,
                 voting_power DESC
             LIMIT 20
             ",
         )
         .bind(&starts_with_pattern)
-        .bind(&contains_pattern)
         .fetch_all(pool)
         .await?;
 
