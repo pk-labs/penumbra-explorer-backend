@@ -29,7 +29,7 @@ pub async fn resolve_search(ctx: &Context<'_>, slug: String) -> Result<Option<Se
             total: 1,
         })));
     }
-    
+
     let validators = ValidatorSearchResult::search_all_by_name(pool, &slug).await?;
     if !validators.is_empty() {
         let total = i32::try_from(validators.len()).unwrap_or(i32::MAX);
