@@ -1,6 +1,6 @@
 use crate::api::graphql::{
     resolvers::{block::get, transaction::resolve_transaction},
-    types::{SearchResult, ValidatorSearchResult},
+    types::{SearchResult, ValidatorSearchResult, ValidatorSearchResults},
 };
 use async_graphql::{Context, Result};
 use sqlx::PgPool;
@@ -24,7 +24,19 @@ pub async fn resolve_search(ctx: &Context<'_>, slug: String) -> Result<Option<Se
     }
 
     if let Some(validator) = ValidatorSearchResult::search_by_address(pool, &slug).await? {
-        return Ok(Some(SearchResult::Validator(validator)));
+        return Ok(Some(SearchResult::Validators(ValidatorSearchResults {
+            items: vec![validator],
+            total: 1,
+        })));
+    }
+    
+    let validators = ValidatorSearchResult::search_all_by_name(pool, &slug).await?;
+    if !validators.is_empty() {
+        let total = validators.len() as i32;
+        return Ok(Some(SearchResult::Validators(ValidatorSearchResults {
+            items: validators,
+            total,
+        })));
     }
 
     Ok(None)
