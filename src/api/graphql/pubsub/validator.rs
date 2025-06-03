@@ -5,6 +5,7 @@ use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
 #[derive(Clone, Debug)]
+#[allow(clippy::module_name_repetitions)]
 pub struct ValidatorBlockEvent {
     pub validator_id: String,
     pub block_height: i64,
@@ -55,7 +56,7 @@ pub async fn listen_validator_blocks(
     loop {
         match listener.recv().await {
             Ok(notification) => {
-                match serde_json::from_str::<ValidatorBlockNotification>(&notification.payload()) {
+                match serde_json::from_str::<ValidatorBlockNotification>(notification.payload()) {
                     Ok(data) => {
                         if data.validator_id == validator_id {
                             debug!(
