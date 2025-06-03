@@ -445,6 +445,7 @@ impl Root {
         }))
     }
 
+    #[allow(clippy::unused_async)]
     async fn chain_parameters(
         &self,
         ctx: &Context<'_>,
