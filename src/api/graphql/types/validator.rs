@@ -392,7 +392,7 @@ impl ValidatorSearchResult {
             None => Ok(None),
         }
     }
-    
+
     /// Searches for a validator by name
     ///
     /// # Errors
@@ -405,10 +405,10 @@ impl ValidatorSearchResult {
         if search_term.len() < 2 {
             return Ok(None);
         }
-        
+
         let starts_with_pattern = format!("{}%", search_term.to_lowercase());
         let contains_pattern = format!("%{}%", search_term.to_lowercase());
-        
+
         let result: Option<(Option<String>, Option<String>)> = sqlx::query_as(
             r"
             SELECT 
@@ -450,7 +450,7 @@ impl ValidatorSearchResult {
             None => Ok(None),
         }
     }
-    
+
     /// Searches for all validators by name
     ///
     /// # Errors
@@ -463,10 +463,10 @@ impl ValidatorSearchResult {
         if search_term.len() < 2 {
             return Ok(Vec::new());
         }
-        
+
         let starts_with_pattern = format!("{}%", search_term.to_lowercase());
         let contains_pattern = format!("%{}%", search_term.to_lowercase());
-        
+
         let results: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
             r"
             SELECT 
