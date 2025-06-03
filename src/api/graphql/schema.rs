@@ -8,7 +8,8 @@ use crate::api::graphql::{
         Action, Block, BlockCollection, BlockParticipation, BlockUpdate, CollectionItem,
         CommissionInfo, Event, Fee, IbcStats, StakingParameters, Transaction, TransactionBody,
         TransactionCollection, TransactionCountUpdate, TransactionParameters, TransactionUpdate,
-        Validator, ValidatorDetails, ValidatorHomepageData, ValidatorSearchResult, ValidatorSearchResults,
+        Validator, ValidatorDetails, ValidatorHomepageData, ValidatorSearchResult,
+        ValidatorSearchResults,
     },
 };
 use async_graphql::Schema as AsyncGraphQLSchema;
