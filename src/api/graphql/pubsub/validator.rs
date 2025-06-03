@@ -236,7 +236,7 @@ pub async fn listen_chain_parameters(
 
                         let pubsub_clone = pubsub.clone();
                         tokio::spawn(async move {
-                            pubsub_clone.publish_chain_parameters(event).await;
+                            pubsub_clone.publish_chain_parameters(&event);
                         });
                     }
                     Err(e) => {
@@ -279,7 +279,7 @@ async fn poll_chain_parameters(
                     let last_updated = params.last_updated;
                     let pubsub_clone = pubsub.clone();
                     tokio::spawn(async move {
-                        pubsub_clone.publish_chain_parameters(params).await;
+                        pubsub_clone.publish_chain_parameters(&params);
                     });
                     last_update = Some(last_updated);
                 }
