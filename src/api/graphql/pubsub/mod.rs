@@ -90,8 +90,7 @@ impl PubSub {
         let pubsub_clone = self.clone();
         let validator_id_clone = validator_id.clone();
         tokio::spawn(async move {
-            let interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
-            validator::poll_validator_blocks(pubsub_clone, pool, validator_id_clone, interval).await;
+            validator::listen_validator_blocks(pubsub_clone, pool, validator_id_clone).await;
         });
         
         rx
