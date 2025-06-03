@@ -182,10 +182,7 @@ struct ChainParametersNotification {
     last_updated: DateTime<Utc>,
 }
 
-pub async fn listen_chain_parameters(
-    pubsub: super::PubSub,
-    pool: Pool<Postgres>,
-) {
+pub async fn listen_chain_parameters(pubsub: super::PubSub, pool: Pool<Postgres>) {
     info!("Starting chain parameters listener");
 
     let mut listener = match PgListener::connect_with(&pool).await {
@@ -311,8 +308,8 @@ async fn get_chain_parameters(
     .fetch_optional(pool)
     .await?;
 
-    Ok(result.map(|(chain_id, current_block_height, current_block_time, current_epoch, epoch_duration, next_epoch_in, last_updated)| {
-        ChainParametersEvent {
+    Ok(result.map(
+        |(
             chain_id,
             current_block_height,
             current_block_time,
@@ -320,6 +317,16 @@ async fn get_chain_parameters(
             epoch_duration,
             next_epoch_in,
             last_updated,
-        }
-    }))
+        )| {
+            ChainParametersEvent {
+                chain_id,
+                current_block_height,
+                current_block_time,
+                current_epoch,
+                epoch_duration,
+                next_epoch_in,
+                last_updated,
+            }
+        },
+    ))
 }
