@@ -7,7 +7,7 @@ use crate::api::graphql::{
         BlockUpdate, IbcTransactionUpdate, TotalShieldedVolumeUpdate, TransactionCountUpdate,
         TransactionUpdate,
     },
-    types::validator::ValidatorBlockUpdate,
+    types::validator::{ChainParametersUpdate, ValidatorBlockUpdate},
 };
 use async_graphql::{Context, Result, Subscription};
 use futures_util::stream::{Stream, StreamExt};
@@ -439,6 +439,34 @@ impl Root {
                 }),
                 Err(e) => {
                     error!("Error receiving validator block update: {}", e);
+                    None
+                }
+            }
+        }))
+    }
+
+    async fn chain_parameters(
+        &self,
+        ctx: &Context<'_>,
+    ) -> Result<impl Stream<Item = ChainParametersUpdate> + '_> {
+        let pubsub = ctx.data::<PubSub>()?;
+
+        let receiver = pubsub.chain_parameters_subscribe();
+        let stream = tokio_stream::wrappers::BroadcastStream::new(receiver);
+
+        Ok(stream.filter_map(|result| async move {
+            match result {
+                Ok(event) => Some(ChainParametersUpdate {
+                    chain_id: event.chain_id,
+                    current_block_height: event.current_block_height,
+                    current_block_time: event.current_block_time,
+                    current_epoch: event.current_epoch,
+                    epoch_duration: event.epoch_duration,
+                    next_epoch_in: event.next_epoch_in,
+                    last_updated: event.last_updated,
+                }),
+                Err(e) => {
+                    error!("Error receiving chain parameters update: {}", e);
                     None
                 }
             }
