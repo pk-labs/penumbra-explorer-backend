@@ -11,7 +11,7 @@ mod triggers;
 pub mod validator;
 use ibc::IbcTransactionEvent;
 pub use triggers::start;
-use validator::ValidatorBlockEvent;
+use validator::{ChainParametersEvent, ValidatorBlockEvent};
 
 #[derive(Clone)]
 pub struct PubSub {
@@ -21,6 +21,7 @@ pub struct PubSub {
     ibc_transactions_tx: broadcast::Sender<IbcTransactionEvent>,
     total_shielded_volume_tx: broadcast::Sender<String>,
     validator_blocks_channels: Arc<RwLock<HashMap<String, broadcast::Sender<ValidatorBlockEvent>>>>,
+    chain_parameters_tx: broadcast::Sender<ChainParametersEvent>,
 }
 
 impl Default for PubSub {
@@ -37,6 +38,7 @@ impl PubSub {
         let (transaction_count_tx, _) = broadcast::channel(1000);
         let (ibc_transactions_tx, _) = broadcast::channel(1000);
         let (total_shielded_volume_tx, _) = broadcast::channel(1000);
+        let (chain_parameters_tx, _) = broadcast::channel(1000);
 
         Self {
             blocks_tx,
@@ -45,6 +47,7 @@ impl PubSub {
             ibc_transactions_tx,
             total_shielded_volume_tx,
             validator_blocks_channels: Arc::new(RwLock::new(HashMap::new())),
+            chain_parameters_tx,
         }
     }
 
@@ -71,6 +74,11 @@ impl PubSub {
     #[must_use]
     pub fn total_shielded_volume_subscribe(&self) -> broadcast::Receiver<String> {
         self.total_shielded_volume_tx.subscribe()
+    }
+
+    #[must_use]
+    pub fn chain_parameters_subscribe(&self) -> broadcast::Receiver<ChainParametersEvent> {
+        self.chain_parameters_tx.subscribe()
     }
 
     pub async fn validator_blocks_subscribe(
@@ -191,6 +199,23 @@ impl PubSub {
         }
     }
 
+    pub async fn publish_chain_parameters(&self, event: ChainParametersEvent) {
+        match self.chain_parameters_tx.send(event.clone()) {
+            Ok(_) => debug!(
+                "Published chain parameters update - block height: {}, epoch: {}",
+                event.current_block_height, event.current_epoch
+            ),
+            Err(e) => {
+                let receiver_count = self.chain_parameters_tx.receiver_count();
+                if receiver_count == 0 {
+                    debug!("No receivers for chain parameters update");
+                } else {
+                    warn!("Failed to publish chain parameters update: {}", e);
+                }
+            }
+        }
+    }
+
     #[must_use]
     pub fn from_context<'a>(ctx: &'a Context<'_>) -> Option<&'a Self> {
         ctx.data_opt::<Self>()
@@ -204,6 +229,12 @@ impl PubSub {
 
         tokio::spawn(async move {
             start(pubsub_clone, pool_clone).await;
+        });
+
+        let pubsub_clone = self.clone();
+        let pool_clone = pool.clone();
+        tokio::spawn(async move {
+            validator::listen_chain_parameters(pubsub_clone, pool_clone).await;
         });
     }
 }
