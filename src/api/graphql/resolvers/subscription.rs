@@ -7,6 +7,7 @@ use crate::api::graphql::{
         BlockUpdate, IbcTransactionUpdate, TotalShieldedVolumeUpdate, TransactionCountUpdate,
         TransactionUpdate,
     },
+    types::validator::ValidatorBlockUpdate,
 };
 use async_graphql::{Context, Result, Subscription};
 use futures_util::stream::{Stream, StreamExt};
@@ -414,6 +415,32 @@ impl Root {
         let combined_stream = StreamExt::chain(initial_stream, real_time_stream);
 
         Ok(combined_stream)
+    }
+
+    async fn validator_blocks(
+        &self,
+        ctx: &Context<'_>,
+        validator_id: String,
+    ) -> Result<impl Stream<Item = ValidatorBlockUpdate> + '_> {
+        let pool = ctx.data::<PgPool>()?;
+        let pubsub = ctx.data::<PubSub>()?;
+        
+        let receiver = pubsub.validator_blocks_subscribe(validator_id, pool.clone()).await;
+        let stream = tokio_stream::wrappers::BroadcastStream::new(receiver);
+        
+        Ok(stream.filter_map(|result| async move {
+            match result {
+                Ok(event) => Some(ValidatorBlockUpdate {
+                    validator_id: event.validator_id,
+                    block_height: event.block_height,
+                    signed: event.signed,
+                }),
+                Err(e) => {
+                    error!("Error receiving validator block update: {}", e);
+                    None
+                }
+            }
+        }))
     }
 }
 
