@@ -417,7 +417,7 @@ impl ValidatorSearchResult {
                 validators
             WHERE 
                 name IS NOT NULL
-                AND LOWER(name) LIKE $1  -- starts with only
+                AND LOWER(TRIM(name)) LIKE $1  -- trim spaces and starts with only
             ORDER BY
                 voting_power DESC
             LIMIT 1
@@ -466,7 +466,7 @@ impl ValidatorSearchResult {
                 validators
             WHERE 
                 name IS NOT NULL
-                AND LOWER(name) LIKE $1  -- starts with only
+                AND LOWER(TRIM(name)) LIKE $1  -- trim spaces and starts with only
             ORDER BY
                 voting_power DESC
             LIMIT 20
