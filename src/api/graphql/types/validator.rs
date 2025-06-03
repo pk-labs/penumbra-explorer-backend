@@ -392,6 +392,118 @@ impl ValidatorSearchResult {
             None => Ok(None),
         }
     }
+    
+    /// Searches for a validator by name
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails
+    pub async fn search_by_name(
+        pool: &PgPool,
+        search_term: &str,
+    ) -> async_graphql::Result<Option<Self>> {
+        if search_term.len() < 2 {
+            return Ok(None);
+        }
+        
+        let starts_with_pattern = format!("{}%", search_term.to_lowercase());
+        let contains_pattern = format!("%{}%", search_term.to_lowercase());
+        
+        let result: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            r"
+            SELECT 
+                decoded_address,
+                name
+            FROM 
+                validators
+            WHERE 
+                name IS NOT NULL
+                AND (
+                    LOWER(name) LIKE $1  -- starts with
+                    OR LOWER(name) LIKE $2  -- contains
+                )
+            ORDER BY
+                CASE 
+                    WHEN LOWER(name) LIKE $1 THEN 1  -- prioritize starts with
+                    ELSE 2  -- then contains
+                END,
+                voting_power DESC
+            LIMIT 1
+            ",
+        )
+        .bind(&starts_with_pattern)
+        .bind(&contains_pattern)
+        .fetch_optional(pool)
+        .await?;
+
+        match result {
+            Some((decoded_address, name)) => {
+                if let Some(addr) = decoded_address {
+                    Ok(Some(Self {
+                        id: addr.clone(),
+                        display_name: name.unwrap_or(addr),
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
+    }
+    
+    /// Searches for all validators by name
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails
+    pub async fn search_all_by_name(
+        pool: &PgPool,
+        search_term: &str,
+    ) -> async_graphql::Result<Vec<Self>> {
+        if search_term.len() < 2 {
+            return Ok(Vec::new());
+        }
+        
+        let starts_with_pattern = format!("{}%", search_term.to_lowercase());
+        let contains_pattern = format!("%{}%", search_term.to_lowercase());
+        
+        let results: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+            r"
+            SELECT 
+                decoded_address,
+                name
+            FROM 
+                validators
+            WHERE 
+                name IS NOT NULL
+                AND (
+                    LOWER(name) LIKE $1  -- starts with
+                    OR LOWER(name) LIKE $2  -- contains
+                )
+            ORDER BY
+                CASE 
+                    WHEN LOWER(name) LIKE $1 THEN 1  -- prioritize starts with
+                    ELSE 2  -- then contains
+                END,
+                voting_power DESC
+            LIMIT 20
+            ",
+        )
+        .bind(&starts_with_pattern)
+        .bind(&contains_pattern)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(results
+            .into_iter()
+            .filter_map(|(decoded_address, name)| {
+                decoded_address.map(|addr| Self {
+                    id: addr.clone(),
+                    display_name: name.unwrap_or(addr),
+                })
+            })
+            .collect())
+    }
 }
 
 impl ValidatorDetails {
