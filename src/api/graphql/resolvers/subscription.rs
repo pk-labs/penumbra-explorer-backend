@@ -424,10 +424,12 @@ impl Root {
     ) -> Result<impl Stream<Item = ValidatorBlockUpdate> + '_> {
         let pool = ctx.data::<PgPool>()?;
         let pubsub = ctx.data::<PubSub>()?;
-        
-        let receiver = pubsub.validator_blocks_subscribe(validator_id, pool.clone()).await;
+
+        let receiver = pubsub
+            .validator_blocks_subscribe(validator_id, pool.clone())
+            .await;
         let stream = tokio_stream::wrappers::BroadcastStream::new(receiver);
-        
+
         Ok(stream.filter_map(|result| async move {
             match result {
                 Ok(event) => Some(ValidatorBlockUpdate {
