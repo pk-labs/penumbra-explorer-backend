@@ -1,12 +1,17 @@
 use async_graphql::Context;
 use sqlx::{Pool, Postgres};
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::broadcast;
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 pub mod ibc;
 mod triggers;
+pub mod validator;
 use ibc::IbcTransactionEvent;
 pub use triggers::start;
+use validator::ValidatorBlockEvent;
 
 #[derive(Clone)]
 pub struct PubSub {
@@ -14,8 +19,8 @@ pub struct PubSub {
     transactions_tx: broadcast::Sender<i64>,
     transaction_count_tx: broadcast::Sender<i64>,
     ibc_transactions_tx: broadcast::Sender<IbcTransactionEvent>,
-
     total_shielded_volume_tx: broadcast::Sender<String>,
+    validator_blocks_channels: Arc<RwLock<HashMap<String, broadcast::Sender<ValidatorBlockEvent>>>>,
 }
 
 impl Default for PubSub {
@@ -31,14 +36,15 @@ impl PubSub {
         let (transactions_tx, _) = broadcast::channel(1000);
         let (transaction_count_tx, _) = broadcast::channel(1000);
         let (ibc_transactions_tx, _) = broadcast::channel(1000);
-
         let (total_shielded_volume_tx, _) = broadcast::channel(1000);
+        
         Self {
             blocks_tx,
             transactions_tx,
             transaction_count_tx,
             ibc_transactions_tx,
             total_shielded_volume_tx,
+            validator_blocks_channels: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -65,6 +71,30 @@ impl PubSub {
     #[must_use]
     pub fn total_shielded_volume_subscribe(&self) -> broadcast::Receiver<String> {
         self.total_shielded_volume_tx.subscribe()
+    }
+
+    pub async fn validator_blocks_subscribe(
+        &self,
+        validator_id: String,
+        pool: Pool<Postgres>,
+    ) -> broadcast::Receiver<ValidatorBlockEvent> {
+        let mut channels = self.validator_blocks_channels.write().await;
+        
+        if let Some(tx) = channels.get(&validator_id) {
+            return tx.subscribe();
+        }
+        
+        let (tx, rx) = broadcast::channel(1000);
+        channels.insert(validator_id.clone(), tx.clone());
+        
+        let pubsub_clone = self.clone();
+        let validator_id_clone = validator_id.clone();
+        tokio::spawn(async move {
+            let interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+            validator::poll_validator_blocks(pubsub_clone, pool, validator_id_clone, interval).await;
+        });
+        
+        rx
     }
 
     pub fn publish_block(&self, height: i64) {
@@ -133,6 +163,27 @@ impl PubSub {
                     debug!("No receivers for total shielded volume update");
                 } else {
                     warn!("Failed to publish total shielded volume update: {}", e);
+                }
+            }
+        }
+    }
+
+    pub async fn publish_validator_block(&self, event: ValidatorBlockEvent) {
+        let channels = self.validator_blocks_channels.read().await;
+        
+        if let Some(tx) = channels.get(&event.validator_id) {
+            match tx.send(event.clone()) {
+                Ok(_) => debug!(
+                    "Published validator block update for {}: height {} signed {}",
+                    event.validator_id, event.block_height, event.signed
+                ),
+                Err(e) => {
+                    let receiver_count = tx.receiver_count();
+                    if receiver_count == 0 {
+                        debug!("No receivers for validator {} block update", event.validator_id);
+                    } else {
+                        warn!("Failed to publish validator block update: {}", e);
+                    }
                 }
             }
         }
