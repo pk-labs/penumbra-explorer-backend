@@ -646,3 +646,15 @@ pub struct ValidatorBlockUpdate {
     pub block_height: i64,
     pub signed: bool,
 }
+
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
+pub struct ChainParametersUpdate {
+    pub chain_id: String,
+    pub current_block_height: i64,
+    pub current_block_time: DateTime<Utc>,
+    pub current_epoch: i64,
+    pub epoch_duration: i64,
+    pub next_epoch_in: i64,
+    pub last_updated: DateTime<Utc>,
+}
