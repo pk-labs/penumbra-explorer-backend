@@ -658,6 +658,7 @@ struct CommissionStreamRow {
 
 #[derive(SimpleObject, Clone)]
 #[graphql(rename_fields = "camelCase")]
+#[allow(clippy::module_name_repetitions)]
 pub struct ValidatorBlockUpdate {
     pub validator_id: String,
     pub block_height: i64,
