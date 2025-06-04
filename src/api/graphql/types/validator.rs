@@ -392,6 +392,100 @@ impl ValidatorSearchResult {
             None => Ok(None),
         }
     }
+
+    /// Searches for a validator by name
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails
+    pub async fn search_by_name(
+        pool: &PgPool,
+        search_term: &str,
+    ) -> async_graphql::Result<Option<Self>> {
+        if search_term.len() < 2 {
+            return Ok(None);
+        }
+
+        let starts_with_pattern = format!("{}%", search_term.to_lowercase());
+
+        let result: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            r"
+            SELECT 
+                decoded_address,
+                name
+            FROM 
+                validators
+            WHERE 
+                name IS NOT NULL
+                AND LOWER(TRIM(name)) LIKE $1  -- trim spaces and starts with only
+            ORDER BY
+                voting_power DESC
+            LIMIT 1
+            ",
+        )
+        .bind(&starts_with_pattern)
+        .fetch_optional(pool)
+        .await?;
+
+        match result {
+            Some((decoded_address, name)) => {
+                if let Some(addr) = decoded_address {
+                    Ok(Some(Self {
+                        id: addr.clone(),
+                        display_name: name.unwrap_or(addr),
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Searches for all validators by name
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails
+    pub async fn search_all_by_name(
+        pool: &PgPool,
+        search_term: &str,
+    ) -> async_graphql::Result<Vec<Self>> {
+        if search_term.len() < 2 {
+            return Ok(Vec::new());
+        }
+
+        let starts_with_pattern = format!("{}%", search_term.to_lowercase());
+
+        let results: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+            r"
+            SELECT 
+                decoded_address,
+                name
+            FROM 
+                validators
+            WHERE 
+                name IS NOT NULL
+                AND LOWER(TRIM(name)) LIKE $1  -- trim spaces and starts with only
+            ORDER BY
+                voting_power DESC
+            LIMIT 20
+            ",
+        )
+        .bind(&starts_with_pattern)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(results
+            .into_iter()
+            .filter_map(|(decoded_address, name)| {
+                decoded_address.map(|addr| Self {
+                    id: addr.clone(),
+                    display_name: name.unwrap_or(addr),
+                })
+            })
+            .collect())
+    }
 }
 
 impl ValidatorDetails {
@@ -542,4 +636,25 @@ struct CommissionStreamRow {
     stream_type: String,
     recipient_address: Option<String>,
     rate_bps: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
+#[allow(clippy::module_name_repetitions)]
+pub struct ValidatorBlockUpdate {
+    pub validator_id: String,
+    pub block_height: i64,
+    pub signed: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
+pub struct ChainParametersUpdate {
+    pub chain_id: String,
+    pub current_block_height: i64,
+    pub current_block_time: DateTime<Utc>,
+    pub current_epoch: i64,
+    pub epoch_duration: i64,
+    pub next_epoch_in: i64,
+    pub last_updated: DateTime<Utc>,
 }

@@ -5,7 +5,13 @@ use async_graphql::{SimpleObject, Union};
 pub enum SearchResult {
     Block(Block),
     Transaction(Transaction),
-    Validator(ValidatorSearchResult),
+    Validators(ValidatorSearchResults),
+}
+
+#[derive(SimpleObject)]
+pub struct ValidatorSearchResults {
+    pub items: Vec<ValidatorSearchResult>,
+    pub total: i32,
 }
 
 #[derive(Union)]
