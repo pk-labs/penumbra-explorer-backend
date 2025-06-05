@@ -46,14 +46,6 @@ pub async fn listen_validator_blocks(
 
     info!("Successfully connected to PostgreSQL notifications for validator blocks");
 
-    let pubsub_clone = pubsub.clone();
-    let pool_clone = pool.clone();
-    let validator_id_clone = validator_id.clone();
-    tokio::spawn(async move {
-        let interval = interval(Duration::from_secs(10));
-        poll_validator_blocks(pubsub_clone, pool_clone, validator_id_clone, interval).await;
-    });
-
     loop {
         match listener.recv().await {
             Ok(notification) => {
@@ -203,13 +195,6 @@ pub async fn listen_chain_parameters(pubsub: super::PubSub, pool: Pool<Postgres>
     }
 
     info!("Successfully connected to PostgreSQL notifications for chain parameters");
-
-    let pubsub_clone = pubsub.clone();
-    let pool_clone = pool.clone();
-    tokio::spawn(async move {
-        let interval = interval(Duration::from_secs(30));
-        poll_chain_parameters(pubsub_clone, pool_clone, interval).await;
-    });
 
     loop {
         match listener.recv().await {
