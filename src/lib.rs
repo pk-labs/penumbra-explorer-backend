@@ -66,7 +66,7 @@ impl Explorer {
             .context("Failed to run database migrations")?;
 
         let pool = PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(20)
             .connect(&self.options.dest_db_url)
             .await
             .context("Failed to connect to destination database for API")?;
