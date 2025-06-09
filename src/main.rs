@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
     let explorer = Explorer::new(opts);
 
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(20)
         .connect(explorer.get_dest_db_url())
         .await?;
 
