@@ -7,6 +7,7 @@ use crate::api::graphql::{
         BlockUpdate, IbcTransactionUpdate, TotalShieldedVolumeUpdate, TransactionCountUpdate,
         TransactionUpdate,
     },
+    types::validator::{ChainParametersUpdate, ValidatorBlockUpdate},
 };
 use async_graphql::{Context, Result, Subscription};
 use futures_util::stream::{Stream, StreamExt};
@@ -414,6 +415,63 @@ impl Root {
         let combined_stream = StreamExt::chain(initial_stream, real_time_stream);
 
         Ok(combined_stream)
+    }
+
+    async fn validator_blocks(
+        &self,
+        ctx: &Context<'_>,
+        validator_id: String,
+    ) -> Result<impl Stream<Item = ValidatorBlockUpdate> + '_> {
+        let pool = ctx.data::<PgPool>()?;
+        let pubsub = ctx.data::<PubSub>()?;
+
+        let receiver = pubsub
+            .validator_blocks_subscribe(validator_id, pool.clone())
+            .await;
+        let stream = tokio_stream::wrappers::BroadcastStream::new(receiver);
+
+        Ok(stream.filter_map(|result| async move {
+            match result {
+                Ok(event) => Some(ValidatorBlockUpdate {
+                    validator_id: event.validator_id,
+                    block_height: event.block_height,
+                    signed: event.signed,
+                }),
+                Err(e) => {
+                    error!("Error receiving validator block update: {}", e);
+                    None
+                }
+            }
+        }))
+    }
+
+    #[allow(clippy::unused_async)]
+    async fn chain_parameters(
+        &self,
+        ctx: &Context<'_>,
+    ) -> Result<impl Stream<Item = ChainParametersUpdate> + '_> {
+        let pubsub = ctx.data::<PubSub>()?;
+
+        let receiver = pubsub.chain_parameters_subscribe();
+        let stream = tokio_stream::wrappers::BroadcastStream::new(receiver);
+
+        Ok(stream.filter_map(|result| async move {
+            match result {
+                Ok(event) => Some(ChainParametersUpdate {
+                    chain_id: event.chain_id,
+                    current_block_height: event.current_block_height,
+                    current_block_time: event.current_block_time,
+                    current_epoch: event.current_epoch,
+                    epoch_duration: event.epoch_duration,
+                    next_epoch_in: event.next_epoch_in,
+                    last_updated: event.last_updated,
+                }),
+                Err(e) => {
+                    error!("Error receiving chain parameters update: {}", e);
+                    None
+                }
+            }
+        }))
     }
 }
 

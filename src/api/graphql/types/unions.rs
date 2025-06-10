@@ -1,10 +1,17 @@
-use crate::api::graphql::types::{Block, Transaction};
+use crate::api::graphql::types::{Block, Transaction, ValidatorSearchResult};
 use async_graphql::{SimpleObject, Union};
 
 #[derive(Union)]
 pub enum SearchResult {
     Block(Block),
     Transaction(Transaction),
+    Validators(ValidatorSearchResults),
+}
+
+#[derive(SimpleObject)]
+pub struct ValidatorSearchResults {
+    pub items: Vec<ValidatorSearchResult>,
+    pub total: i32,
 }
 
 #[derive(Union)]

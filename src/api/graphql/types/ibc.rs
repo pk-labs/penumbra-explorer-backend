@@ -14,17 +14,11 @@ pub enum ClientStatus {
 #[derive(SimpleObject)]
 #[graphql(rename_fields = "camelCase")]
 pub struct ChannelPair {
-    // Our local channel
     pub channel_id: String,
-    // The channel ID on the counterparty chain
     pub counterparty_channel_id: Option<String>,
-    // The client ID associated with this channel
     pub client_id: String,
-    // The connection ID if available
     pub connection_id: Option<String>,
-    // Count of pending transactions over this channel
     pub pending_tx_count: i64,
-    // Count of completed transactions over this channel
     pub completed_tx_count: i64,
 }
 

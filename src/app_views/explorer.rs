@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use crate::app_views::utils::block::Metadata as BlockMetadata;
 use crate::app_views::utils::transaction::Metadata as TransactionMetadata;
-use crate::app_views::utils::{block, ibc, transaction};
+use crate::app_views::utils::validator::ValidatorParams;
+use crate::app_views::utils::{block, ibc, transaction, validator};
 use crate::parsing::encode_to_base64;
 
 #[derive(Debug)]
@@ -69,6 +70,7 @@ impl Explorer {
             return None;
         }
 
+        // Parse genesis JSON as a generic Value
         let genesis: Result<Value, _> = serde_json::from_str(&contents);
         if let Err(e) = genesis {
             tracing::error!("Failed to parse genesis.json: {}", e);
@@ -76,17 +78,306 @@ impl Explorer {
         }
 
         let genesis = genesis.unwrap();
+
         let chain_id = genesis["chain_id"].as_str().map(String::from);
 
         if chain_id.is_none() {
-            tracing::error!("Could not find chain_id in genesis.json");
-        }
+            let app_chain_id = genesis["app_state"]["genesisContent"]["chainId"]
+                .as_str()
+                .map(String::from);
 
-        chain_id
+            if app_chain_id.is_none() {
+                tracing::error!("Could not find chain_id in genesis.json");
+            }
+
+            app_chain_id
+        } else {
+            chain_id
+        }
     }
 
     fn get_chain_id(&self) -> &str {
         self.chain_id.as_deref().unwrap_or("unknown")
+    }
+
+    /// Initialize validators from genesis.json
+    #[allow(clippy::too_many_lines)]
+    async fn initialize_validators_from_genesis(
+        &self,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<(), anyhow::Error> {
+        let validator_count: i64 = match sqlx::query_scalar("SELECT COUNT(*) FROM validators")
+            .fetch_one(dbtx.as_mut())
+            .await
+        {
+            Ok(count) => count,
+            Err(e) => {
+                tracing::error!("Failed to check validator count: {}", e);
+                return Err(anyhow::anyhow!("Failed to check validator count: {}", e));
+            }
+        };
+
+        if validator_count > 0 {
+            tracing::info!(
+                "Validators already initialized (found {}), skipping genesis initialization",
+                validator_count
+            );
+            return Ok(());
+        }
+
+        let file = match File::open("genesis.json") {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::error!("Failed to open genesis.json: {}", e);
+                return Err(anyhow::anyhow!("Failed to open genesis.json: {}", e));
+            }
+        };
+
+        let mut contents = String::new();
+        if let Err(e) = file.take(10_000_000).read_to_string(&mut contents) {
+            tracing::error!("Failed to read genesis.json: {}", e);
+            return Err(anyhow::anyhow!("Failed to read genesis.json: {}", e));
+        }
+
+        let genesis: serde_json::Value = match serde_json::from_str(&contents) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Failed to parse genesis.json: {}", e);
+                return Err(anyhow::anyhow!("Failed to parse genesis.json: {}", e));
+            }
+        };
+
+        let Some(genesis_time) = genesis["genesis_time"].as_str() else {
+            tracing::error!("Missing genesis_time in genesis.json");
+            return Err(anyhow::anyhow!("Missing genesis_time in genesis.json"));
+        };
+
+        let timestamp = match chrono::DateTime::parse_from_rfc3339(genesis_time) {
+            Ok(t) => t.with_timezone(&Utc),
+            Err(e) => {
+                tracing::error!("Failed to parse genesis time: {}", e);
+                return Err(anyhow::anyhow!("Failed to parse genesis time: {}", e));
+            }
+        };
+
+        let Some(validators) = genesis
+            .get("app_state")
+            .and_then(|app_state| app_state.get("genesisContent"))
+            .and_then(|content| content.get("stakeContent"))
+            .and_then(|stake| stake.get("validators"))
+            .and_then(|vals| vals.as_array())
+        else {
+            tracing::warn!("No validators found in genesis.json structure");
+            return Ok(());
+        };
+
+        if validators.is_empty() {
+            tracing::warn!("Empty validators array in genesis.json");
+            return Ok(());
+        }
+
+        tracing::info!("Found {} validators in genesis.json", validators.len());
+
+        let mut successful_count = 0;
+        let mut failed_count = 0;
+
+        for (i, validator_data) in validators.iter().enumerate() {
+            let validator_name = validator_data["name"].as_str().unwrap_or("unknown");
+
+            if validator_data
+                .get("identityKey")
+                .and_then(|key| key.get("ik"))
+                .and_then(|ik| ik.as_str())
+                .is_none()
+            {
+                failed_count += 1;
+                tracing::error!(
+                    "Validator #{} missing required identityKey.ik field, skipping",
+                    i
+                );
+                continue;
+            }
+
+            let state = "VALIDATOR_STATE_ENUM_ACTIVE";
+
+            let bonding_state = validator_data
+                .get("bondingState")
+                .and_then(|s| s.get("state"))
+                .and_then(|s| s.as_str());
+
+            match validator::Validator::from_event(
+                validator_data,
+                1,
+                timestamp,
+                state,
+                bonding_state.unwrap_or("BONDING_STATE_ENUM_BONDED"),
+                0,
+                0.0,
+            ) {
+                Ok(validator) => match validator.insert_or_update(dbtx).await {
+                    Ok(()) => {
+                        if let Some(funding_streams) = validator_data.get("fundingStreams") {
+                            if let Err(e) =
+                                validator::ValidatorFundingStream::process_funding_streams(
+                                    &validator.identity_key,
+                                    funding_streams,
+                                    timestamp,
+                                    dbtx,
+                                )
+                                .await
+                            {
+                                tracing::error!("Failed to process funding streams for genesis validator #{} ({}): {}", i, validator_name, e);
+                            }
+                        }
+
+                        successful_count += 1;
+                        tracing::info!(
+                            "Successfully inserted genesis validator #{}: {}",
+                            i,
+                            validator_name
+                        );
+                    }
+                    Err(e) => {
+                        failed_count += 1;
+                        tracing::error!(
+                            "Failed to insert genesis validator #{} ({}): {}",
+                            i,
+                            validator_name,
+                            e
+                        );
+                    }
+                },
+                Err(e) => {
+                    failed_count += 1;
+                    tracing::error!(
+                        "Failed to parse genesis validator #{} ({}): {}",
+                        i,
+                        validator_name,
+                        e
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
+            "Genesis validator initialization complete: {} successful, {} failed",
+            successful_count,
+            failed_count
+        );
+
+        Ok(())
+    }
+
+    /// Record signed blocks for all active validators for a given height
+    async fn record_validator_blocks_for_height(
+        &self,
+        dbtx: &mut PgTransaction<'_>,
+        height: u64,
+        timestamp: DateTime<Utc>,
+        _ctx: &EventBatchContext,
+    ) -> Result<(), anyhow::Error> {
+        let block_exists: i64 = match sqlx::query_scalar(
+            "SELECT COUNT(*) FROM explorer_block_details WHERE height = $1",
+        )
+        .bind(i64::try_from(height).unwrap_or(i64::MAX))
+        .fetch_one(dbtx.as_mut())
+        .await
+        {
+            Ok(count) => count,
+            Err(e) => {
+                tracing::error!(
+                    "Failed to check if block exists at height {}: {}",
+                    height,
+                    e
+                );
+                return Ok(());
+            }
+        };
+
+        if block_exists == 0 {
+            tracing::debug!(
+                "Skipping validator block records for non-existent block at height {}",
+                height
+            );
+            return Ok(());
+        }
+
+        let validator_count: i64 = match sqlx::query_scalar("SELECT COUNT(*) FROM validators")
+            .fetch_one(dbtx.as_mut())
+            .await
+        {
+            Ok(count) => count,
+            Err(e) => {
+                tracing::error!("Failed to check validator count: {}", e);
+                return Ok(());
+            }
+        };
+
+        if validator_count == 0 {
+            tracing::debug!("No validators in database, skipping block participation records");
+            return Ok(());
+        }
+
+        let active_state: Option<String> = match sqlx::query_scalar(
+            "SELECT DISTINCT state FROM validators WHERE state LIKE '%ACTIVE%' LIMIT 1",
+        )
+        .fetch_optional(dbtx.as_mut())
+        .await
+        {
+            Ok(state) => state,
+            Err(e) => {
+                tracing::error!("Failed to determine active validator state: {}", e);
+                return Ok(());
+            }
+        };
+
+        if active_state.is_none() {
+            tracing::debug!(
+                "No active validator state found, skipping block participation records"
+            );
+            return Ok(());
+        }
+
+        let active_validators: Vec<String> = match sqlx::query_scalar(&format!(
+            "SELECT identity_key FROM validators WHERE state = '{active_state}'",
+            active_state = active_state.unwrap()
+        ))
+        .fetch_all(dbtx.as_mut())
+        .await
+        {
+            Ok(validators) => validators,
+            Err(e) => {
+                tracing::error!("Failed to retrieve active validators: {}", e);
+                return Ok(());
+            }
+        };
+
+        if active_validators.is_empty() {
+            tracing::debug!("No active validators found, skipping block participation records");
+            return Ok(());
+        }
+
+        tracing::debug!(
+            "Recording signed blocks for {} active validators at height {}",
+            active_validators.len(),
+            height
+        );
+
+        let validator_records: Vec<(String, i64, DateTime<Utc>, bool)> = active_validators
+            .iter()
+            .map(|identity_key| {
+                (
+                    identity_key.clone(),
+                    i64::try_from(height).unwrap_or(i64::MAX),
+                    timestamp,
+                    true,
+                )
+            })
+            .collect();
+
+        let _ = validator::Validator::record_validator_blocks_bulk(&validator_records, dbtx).await;
+
+        Ok(())
     }
 }
 
@@ -115,6 +406,7 @@ impl AppView for Explorer {
                 previous_block_hash BYTEA,
                 block_hash BYTEA,
                 chain_id TEXT,
+                epoch BIGINT,
                 raw_json JSONB
             )
             ",
@@ -142,6 +434,15 @@ impl AppView for Explorer {
 
         sqlx::query(
             r"
+            CREATE INDEX IF NOT EXISTS idx_explorer_block_details_epoch
+            ON explorer_block_details(epoch)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
             CREATE TABLE IF NOT EXISTS explorer_transactions (
                 tx_hash BYTEA PRIMARY KEY,
                 block_height BIGINT NOT NULL,
@@ -156,6 +457,8 @@ impl AppView for Explorer {
                 ibc_status TEXT,
                 ibc_direction TEXT,
                 ibc_sequence TEXT,
+                -- Validator field
+                validator_identity_key TEXT,
                 FOREIGN KEY (block_height) REFERENCES explorer_block_details(height)
                     DEFERRABLE INITIALLY DEFERRED
             )
@@ -184,6 +487,15 @@ impl AppView for Explorer {
 
         sqlx::query(
             r"
+            CREATE INDEX IF NOT EXISTS idx_explorer_transactions_validator_identity_key
+            ON explorer_transactions(validator_identity_key)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
             CREATE OR REPLACE VIEW explorer_recent_blocks AS
             SELECT
                 height,
@@ -192,6 +504,7 @@ impl AppView for Explorer {
                 total_fees,
                 validator_identity_key,
                 chain_id,
+                epoch,
                 raw_json
             FROM
                 explorer_block_details
@@ -216,7 +529,8 @@ impl AppView for Explorer {
                 t.ibc_client_id,
                 t.ibc_status,
                 t.ibc_direction,
-                t.ibc_sequence
+                t.ibc_sequence,
+                t.validator_identity_key
             FROM
                 explorer_transactions t
             ORDER BY
@@ -337,6 +651,253 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         sqlx::query(
             r"
+            CREATE TABLE IF NOT EXISTS validator_staking_parameters (
+                chain_id TEXT PRIMARY KEY,
+                active_validator_limit BIGINT NOT NULL,
+                min_validator_stake NUMERIC(39, 0) NOT NULL,
+                total_staked NUMERIC(39, 0) NOT NULL,
+                uptime_blocks_window BIGINT NOT NULL,
+                uptime_min_required DOUBLE PRECISION NOT NULL,
+                slashing_penalty_downtime DOUBLE PRECISION,
+                slashing_penalty_misbehavior DOUBLE PRECISION NOT NULL,
+                unbonding_delay BIGINT NOT NULL
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS validator_chain_parameters (
+                chain_id TEXT PRIMARY KEY,
+                current_block_height BIGINT NOT NULL,
+                current_block_time TIMESTAMPTZ NOT NULL,
+                current_epoch BIGINT NOT NULL,
+                epoch_duration BIGINT NOT NULL,
+                next_epoch_in BIGINT NOT NULL,
+                last_updated TIMESTAMPTZ NOT NULL
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_chain_parameters_chain_id
+            ON validator_chain_parameters(chain_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS epochs (
+                epoch_index BIGINT PRIMARY KEY,
+                chain_id TEXT NOT NULL,
+                end_height BIGINT NOT NULL,
+                end_time TIMESTAMPTZ NOT NULL,
+                epoch_root BYTEA NOT NULL
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_epochs_chain_id
+            ON epochs(chain_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_epochs_end_height
+            ON epochs(end_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS validators (
+                identity_key TEXT PRIMARY KEY,
+                decoded_address TEXT,
+                name TEXT,
+                website TEXT,
+                description TEXT,
+                consensus_key TEXT,
+                governance_key TEXT,
+                state TEXT DEFAULT 'unknown',
+                bonding_state TEXT DEFAULT 'unknown',
+                voting_power BIGINT DEFAULT 0,
+                voting_power_active_percentage DOUBLE PRECISION DEFAULT 0,
+                first_seen_height BIGINT,
+                first_seen_time TIMESTAMPTZ,
+                last_updated TIMESTAMPTZ
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS validator_funding_streams (
+                id SERIAL PRIMARY KEY,
+                identity_key TEXT NOT NULL REFERENCES validators(identity_key),
+                stream_type TEXT NOT NULL, -- 'toAddress' or 'toCommunityPool'
+                recipient_address TEXT, -- Only for 'toAddress' type
+                rate_bps INTEGER NOT NULL, -- Rate in basis points
+                created_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL,
+                UNIQUE(identity_key, stream_type, recipient_address)
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_funding_streams_identity_key
+            ON validator_funding_streams(identity_key)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS validator_blocks (
+                identity_key TEXT NOT NULL REFERENCES validators(identity_key),
+                block_height BIGINT NOT NULL REFERENCES explorer_block_details(height),
+                timestamp TIMESTAMPTZ NOT NULL,
+                signed BOOLEAN NOT NULL DEFAULT TRUE,
+                PRIMARY KEY (identity_key, block_height)
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_blocks_block_height
+            ON validator_blocks(block_height)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_blocks_identity_height_signed
+            ON validator_blocks(identity_key, block_height, signed)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS validator_uptime_stats (
+                identity_key TEXT PRIMARY KEY REFERENCES validators(identity_key),
+                total_blocks BIGINT NOT NULL DEFAULT 0,
+                signed_blocks BIGINT NOT NULL DEFAULT 0,
+                missed_blocks BIGINT NOT NULL DEFAULT 0,
+                uptime_percentage NUMERIC(5,2) DEFAULT 0.00,
+                last_calculated_height BIGINT NOT NULL DEFAULT 0,
+                window_start_height BIGINT NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validators_state
+            ON validators(state)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validators_voting_power
+            ON validators(voting_power DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_uptime_stats_identity_key
+            ON validator_uptime_stats(identity_key)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_uptime_stats_updated_at
+            ON validator_uptime_stats(updated_at DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE OR REPLACE VIEW validator_performance AS
+            WITH commission_rates AS (
+                SELECT
+                    identity_key,
+                    ROUND(SUM(rate_bps)::numeric / 100.0, 2) as commission_rate_percentage
+                FROM validator_funding_streams
+                GROUP BY identity_key
+            )
+            SELECT 
+                v.identity_key,
+                v.decoded_address,
+                COALESCE(v.name, '') as name,
+                v.website,
+                v.description,
+                v.state,
+                COALESCE(v.bonding_state, '') as bonding_state,
+                v.voting_power,
+                v.voting_power_active_percentage,
+                v.first_seen_height,
+                v.first_seen_time,
+                COALESCE(cr.commission_rate_percentage, 0.0) as commission_rate,
+                COALESCE(us.missed_blocks, 0) as missed_blocks,
+                COALESCE(us.signed_blocks, 0) as signed_blocks,
+                COALESCE(us.total_blocks, 0) as total_tracked_blocks,
+                COALESCE(us.uptime_percentage, 0.00) as uptime_percentage
+            FROM 
+                validators v
+            LEFT JOIN validator_uptime_stats us ON v.identity_key = us.identity_key
+            LEFT JOIN commission_rates cr ON v.identity_key = cr.identity_key
+            ORDER BY 
+                v.voting_power DESC
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
             CREATE TABLE IF NOT EXISTS ibc_stats (
                 client_id TEXT PRIMARY KEY REFERENCES ibc_clients(client_id),
                 shielded_volume BIGINT NOT NULL DEFAULT 0,
@@ -448,7 +1009,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             .execute(dbtx.as_mut())
             .await?;
 
-        // Create or replace the 24h summary view
         sqlx::query(
             r"
         CREATE OR REPLACE VIEW ibc_client_summary_24h AS
@@ -765,6 +1325,30 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             .execute(dbtx.as_mut())
             .await?;
 
+        tracing::info!("Reading genesis file to initialize validator staking parameters");
+
+        match ValidatorParams::from_genesis_json() {
+            Ok(validator_params) => {
+                tracing::info!(
+                    "Initializing validator staking parameters for chain_id = {}",
+                    validator_params.chain_id
+                );
+
+                if let Err(e) = validator_params.initialize_table(dbtx).await {
+                    tracing::error!("Failed to initialize validator staking parameters: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to extract validator staking parameters: {}", e);
+                return Err(e);
+            }
+        }
+
+        tracing::info!("Reading genesis file to initialize validators");
+        if let Err(e) = self.initialize_validators_from_genesis(dbtx).await {
+            tracing::error!("Failed to initialize validators from genesis: {}", e);
+        }
+
         Ok(())
     }
 
@@ -779,10 +1363,20 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         let mut transactions_to_process = Vec::new();
 
         let block_results = block::process_block_events(&batch).await?;
+        let num_blocks = block_results.len();
 
-        tracing::info!("Processed {} blocks from batch", block_results.len());
+        // Capture first block height before consuming the vector
+        let first_block_height = if block_results.is_empty() {
+            None
+        } else {
+            Some(block_results[0].0)
+        };
 
+        tracing::info!("Processed {} blocks from batch", num_blocks);
+
+        let mut block_heights = Vec::new();
         for (height, root, ts, tx_count, _, raw_json, block_txs) in block_results {
+            block_heights.push(height);
             let formatted_block_json = block::create_block_json(
                 height,
                 self.get_chain_id(),
@@ -798,22 +1392,48 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             }
         }
 
+        let mut height_to_timestamp: HashMap<u64, DateTime<Utc>> = HashMap::new();
+        for (height, _, ts, _, _) in &block_data_to_process {
+            height_to_timestamp.insert(*height, *ts);
+        }
+        for (_, _, _, height, ts, _) in &transactions_to_process {
+            height_to_timestamp.insert(*height, *ts);
+        }
+
         for (height, root, ts, tx_count, formatted_json) in block_data_to_process {
+            let current_epoch = match validator::ChainParameters::update_basic_chain_info(
+                dbtx,
+                self.get_chain_id(),
+                height,
+                ts,
+            )
+            .await
+            {
+                Ok(epoch) => Some(epoch),
+                Err(e) => {
+                    tracing::error!(
+                        "Error updating basic chain parameters for block {}: {:?}",
+                        height,
+                        e
+                    );
+                    None
+                }
+            };
+
             let meta = BlockMetadata {
                 height,
                 root,
                 timestamp: ts,
                 tx_count,
                 chain_id: self.get_chain_id(),
+                epoch: current_epoch,
                 raw_json: formatted_json,
             };
 
             block::insert(dbtx, meta).await?;
-        }
 
-        let mut height_to_timestamp: HashMap<u64, DateTime<Utc>> = HashMap::new();
-        for (_, _, _, height, ts, _) in &transactions_to_process {
-            height_to_timestamp.insert(*height, *ts);
+            self.record_validator_blocks_for_height(dbtx, height, ts, &ctx)
+                .await?;
         }
 
         for (tx_hash, tx_bytes, tx_index, height, timestamp, tx_events) in &transactions_to_process
@@ -880,13 +1500,73 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 if let Err(e) = ibc::process_events(dbtx, &events, height, timestamp).await {
                     tracing::error!("Error processing IBC events for block {}: {:?}", height, e);
                 }
+
+                if let Err(e) =
+                    validator::ValidatorParams::process_events(dbtx, &events, height, timestamp)
+                        .await
+                {
+                    tracing::error!(
+                        "Error processing validator parameter events for block {}: {:?}",
+                        height,
+                        e
+                    );
+                }
+                if let Err(e) =
+                    validator::Validator::process_events(dbtx, &events, height, timestamp).await
+                {
+                    tracing::error!(
+                        "Error processing validator events for block {}: {:?}",
+                        height,
+                        e
+                    );
+                }
+
+                if let Err(e) =
+                    validator::ChainParameters::process_events(dbtx, &events, height, timestamp)
+                        .await
+                {
+                    tracing::error!(
+                        "Error processing chain parameter events for block {}: {:?}",
+                        height,
+                        e
+                    );
+                }
+
+                if let Err(e) =
+                    validator::Epoch::process_events(dbtx, &events, height, timestamp).await
+                {
+                    tracing::error!(
+                        "Error processing epoch events for block {}: {:?}",
+                        height,
+                        e
+                    );
+                }
             }
         }
 
-        if ctx.is_last() {
-            if let Err(e) = ibc::update_old_pending_transactions(dbtx).await {
-                tracing::error!("Error updating old pending transactions: {:?}", e);
+        // Update validator uptime stats only when we're in live mode (processing exactly 1 block)
+        // This avoids the performance overhead during reindexing
+        if num_blocks == 1 {
+            // We're in live mode, processing a single block
+            if let Some(height) = first_block_height {
+                tracing::debug!(
+                    "Live mode detected: updating uptime stats for block {}",
+                    height
+                );
+                if let Err(e) = validator::Validator::update_uptime_stats_incrementally(
+                    i64::try_from(height).unwrap_or(i64::MAX),
+                    dbtx,
+                )
+                .await
+                {
+                    tracing::error!("Failed to update uptime stats for block {}: {}", height, e);
+                }
             }
+        } else {
+            tracing::debug!(
+                "Batch mode detected: skipping uptime calculation for {} blocks",
+                num_blocks
+            );
         }
 
         Ok(())

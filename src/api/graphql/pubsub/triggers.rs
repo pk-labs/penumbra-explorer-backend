@@ -80,6 +80,50 @@ async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sqlx::
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r"
+        CREATE OR REPLACE FUNCTION notify_validator_block_update()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            PERFORM pg_notify('explorer_validator_block_update', 
+                json_build_object(
+                    'validator_id', (SELECT decoded_address FROM validators WHERE identity_key = NEW.identity_key),
+                    'block_height', NEW.block_height,
+                    'signed', NEW.signed
+                )::text
+            );
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    ",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r"
+        CREATE OR REPLACE FUNCTION notify_chain_parameters_update()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            PERFORM pg_notify('explorer_chain_parameters_update', 
+                json_build_object(
+                    'chain_id', NEW.chain_id,
+                    'current_block_height', NEW.current_block_height,
+                    'current_block_time', NEW.current_block_time,
+                    'current_epoch', NEW.current_epoch,
+                    'epoch_duration', NEW.epoch_duration,
+                    'next_epoch_in', NEW.next_epoch_in,
+                    'last_updated', NEW.last_updated
+                )::text
+            );
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    ",
+    )
+    .execute(pool)
+    .await?;
+
     let _ = sqlx::query("DROP TRIGGER IF EXISTS block_update_trigger ON explorer_block_details")
         .execute(pool)
         .await;
@@ -94,6 +138,15 @@ async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sqlx::
     .await;
     let _ = sqlx::query(
         "DROP TRIGGER IF EXISTS total_shielded_volume_update_trigger ON explorer_transactions",
+    )
+    .execute(pool)
+    .await;
+    let _ =
+        sqlx::query("DROP TRIGGER IF EXISTS validator_block_update_trigger ON validator_blocks")
+            .execute(pool)
+            .await;
+    let _ = sqlx::query(
+        "DROP TRIGGER IF EXISTS chain_parameters_update_trigger ON validator_chain_parameters",
     )
     .execute(pool)
     .await;
@@ -133,6 +186,26 @@ async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sqlx::
         CREATE TRIGGER total_shielded_volume_update_trigger
         AFTER INSERT OR UPDATE OF ibc_status ON explorer_transactions
         FOR EACH ROW EXECUTE FUNCTION notify_total_shielded_volume_update();
+    ",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r"
+        CREATE TRIGGER validator_block_update_trigger
+        AFTER INSERT OR UPDATE ON validator_blocks
+        FOR EACH ROW EXECUTE FUNCTION notify_validator_block_update();
+    ",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r"
+        CREATE TRIGGER chain_parameters_update_trigger
+        AFTER INSERT OR UPDATE ON validator_chain_parameters
+        FOR EACH ROW EXECUTE FUNCTION notify_chain_parameters_update();
     ",
     )
     .execute(pool)

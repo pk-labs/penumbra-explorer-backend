@@ -16,6 +16,7 @@ pub struct Metadata<'a> {
     pub timestamp: DateTime<Utc>,
     pub tx_count: usize,
     pub chain_id: &'a str,
+    pub epoch: Option<i64>,
     pub raw_json: Value,
 }
 
@@ -291,7 +292,8 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
                 timestamp = $3,
                 num_transactions = $4,
                 chain_id = $5,
-                raw_json = $6
+                epoch = $6,
+                raw_json = $7
             WHERE height = $1
             ",
         )
@@ -300,6 +302,7 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
         .bind(meta.timestamp)
         .bind(i32::try_from(meta.tx_count).unwrap_or(0))
         .bind(meta.chain_id)
+        .bind(meta.epoch)
         .bind(&meta.raw_json)
         .execute(dbtx.as_mut())
         .await?;
@@ -310,8 +313,8 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
             r"
             INSERT INTO explorer_block_details
             (height, root, timestamp, num_transactions, chain_id,
-             validator_identity_key, previous_block_hash, block_hash, raw_json)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             validator_identity_key, previous_block_hash, block_hash, epoch, raw_json)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ",
         )
         .bind(height_i64)
@@ -322,6 +325,7 @@ pub async fn insert(dbtx: &mut PgTransaction<'_>, meta: Metadata<'_>) -> Result<
         .bind(validator_key)
         .bind(previous_hash)
         .bind(block_hash)
+        .bind(meta.epoch)
         .bind(&meta.raw_json)
         .execute(dbtx.as_mut())
         .await?;

@@ -21,6 +21,30 @@ pub fn encode_to_base64<T: AsRef<[u8]>>(data: T) -> String {
     BASE64.encode(bytes)
 }
 
+/// Convert a base64-encoded validator identity key to a bech32 "penumbravalid" address
+///
+/// Takes a base64 string like "AADLG+rOXS+9MbdthgyMqjVga507jmtVFJemUM6PJgE="
+/// and returns a bech32 address like "penumbravalid1..."
+///
+/// # Errors
+///
+/// Returns an error if the base64 string cannot be decoded.
+pub fn identity_key_to_validator_address(
+    base64_identity_key: &str,
+) -> Result<String, anyhow::Error> {
+    let identity_key_bytes = BASE64
+        .decode(base64_identity_key)
+        .map_err(|e| anyhow::anyhow!("Failed to decode base64 identity key: {}", e))?;
+
+    let validator_address = penumbra_sdk_proto::serializers::bech32str::encode(
+        &identity_key_bytes,
+        penumbra_sdk_proto::serializers::bech32str::validator_identity_key::BECH32_PREFIX,
+        penumbra_sdk_proto::serializers::bech32str::Bech32m,
+    );
+
+    Ok(validator_address)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +78,37 @@ mod tests {
 
         let array = [84, 101, 115, 116, 105, 110, 103];
         assert_eq!(encode_to_base64(&array[..]), "VGVzdGluZw==");
+    }
+
+    #[test]
+    fn test_identity_key_to_validator_address() {
+        let identity_key = "AADLG+rOXS+9MbdthgyMqjVga507jmtVFJemUM6PJgE=";
+        let result = identity_key_to_validator_address(identity_key);
+        assert!(result.is_ok());
+
+        let validator_address = result.unwrap();
+        assert!(validator_address.starts_with("penumbravalid1"));
+
+        let invalid_key = "invalid-base64!@#";
+        let result = identity_key_to_validator_address(invalid_key);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_specific_identity_key_to_validator_address() {
+        let identity_key = "fnQuZXrkGEYXXsl9lY5uWPyTOq/s6ZCRk+eUkk40iwY=";
+        let result = identity_key_to_validator_address(identity_key);
+
+        assert!(
+            result.is_ok(),
+            "Failed to convert identity key to validator address"
+        );
+
+        let validator_address = result.unwrap();
+        println!("Identity Key: {identity_key}");
+        println!("Decoded Validator Address: {validator_address}");
+
+        assert!(validator_address.starts_with("penumbravalid1"));
+        assert!(!validator_address.is_empty());
     }
 }

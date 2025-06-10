@@ -52,6 +52,7 @@ pub struct BlockFilter {
 pub struct TransactionFilter {
     pub hash: Option<String>,
     pub client_id: Option<String>,
+    pub validator: Option<String>,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -72,4 +73,19 @@ pub struct IbcChannelFilter {
     pub client_id: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum ValidatorStateFilter {
+    #[graphql(name = "ALL")]
+    All,
+    #[graphql(name = "ACTIVE")]
+    Active,
+    #[graphql(name = "INACTIVE")]
+    Inactive,
+}
+
+#[derive(InputObject)]
+pub struct ValidatorFilter {
+    pub state: Option<ValidatorStateFilter>,
 }

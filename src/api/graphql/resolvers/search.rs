@@ -1,8 +1,9 @@
 use crate::api::graphql::{
     resolvers::{block::get, transaction::resolve_transaction},
-    types::SearchResult,
+    types::{SearchResult, ValidatorSearchResult, ValidatorSearchResults},
 };
 use async_graphql::{Context, Result};
+use sqlx::PgPool;
 
 /// Resolves a search request by slug
 ///
@@ -10,14 +11,32 @@ use async_graphql::{Context, Result};
 /// Returns an error if database queries fail
 #[allow(clippy::module_name_repetitions)]
 pub async fn resolve_search(ctx: &Context<'_>, slug: String) -> Result<Option<SearchResult>> {
+    let pool = ctx.data::<PgPool>()?;
+
     if let Ok(height) = slug.parse::<i32>() {
         if let Some(block) = get(ctx, height).await? {
             return Ok(Some(SearchResult::Block(block)));
         }
     }
 
-    if let Some(tx) = resolve_transaction(ctx, slug).await? {
+    if let Some(tx) = resolve_transaction(ctx, slug.clone()).await? {
         return Ok(Some(SearchResult::Transaction(tx)));
+    }
+
+    if let Some(validator) = ValidatorSearchResult::search_by_address(pool, &slug).await? {
+        return Ok(Some(SearchResult::Validators(ValidatorSearchResults {
+            items: vec![validator],
+            total: 1,
+        })));
+    }
+
+    let validators = ValidatorSearchResult::search_all_by_name(pool, &slug).await?;
+    if !validators.is_empty() {
+        let total = i32::try_from(validators.len()).unwrap_or(i32::MAX);
+        return Ok(Some(SearchResult::Validators(ValidatorSearchResults {
+            items: validators,
+            total,
+        })));
     }
 
     Ok(None)
