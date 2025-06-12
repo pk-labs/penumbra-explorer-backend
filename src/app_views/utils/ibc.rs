@@ -17,9 +17,9 @@ use sqlx::{
     types::chrono::{DateTime, Utc},
     Row,
 };
-use std::cmp::min;
 use std::collections::HashMap;
 use tracing::{debug, error, warn};
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -131,161 +131,6 @@ fn extract_error_from_ack(ack_data: &str) -> bool {
     false
 }
 
-fn validate_price(price: f64) -> f64 {
-    const MIN_PRICE: f64 = 0.000_001;
-    const MAX_PRICE: f64 = 1_000.0;
-
-    if !price.is_finite() || price <= 0.0 {
-        return 1.0;
-    }
-
-    price.clamp(MIN_PRICE, MAX_PRICE)
-}
-
-async fn update_asset_price(
-    dbtx: &mut PgTransaction<'_>,
-    asset_id: &[u8],
-    price_usd: f64,
-    timestamp: DateTime<Utc>,
-    symbol: Option<String>,
-) -> Result<(), anyhow::Error> {
-    let validated_price = validate_price(price_usd);
-
-    if let Some(symbol_val) = &symbol {
-        sqlx::query(
-            r"
-            INSERT INTO asset_prices (asset_id, price_usd, last_updated, symbol)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (asset_id)
-            DO UPDATE SET
-                price_usd = $2,
-                last_updated = $3,
-                symbol = COALESCE($4, asset_prices.symbol)
-            ",
-        )
-        .bind(asset_id)
-        .bind(validated_price)
-        .bind(timestamp)
-        .bind(symbol_val)
-        .execute(dbtx.as_mut())
-        .await?;
-    } else {
-        sqlx::query(
-            r"
-            INSERT INTO asset_prices (asset_id, price_usd, last_updated)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (asset_id)
-            DO UPDATE SET
-                price_usd = $2,
-                last_updated = $3
-            ",
-        )
-        .bind(asset_id)
-        .bind(validated_price)
-        .bind(timestamp)
-        .execute(dbtx.as_mut())
-        .await?;
-    }
-
-    debug!(
-        "🟢 PRICE STORED: Updated price for asset {} (hex: {}): ${:.8} with symbol {:?}",
-        String::from_utf8_lossy(asset_id),
-        hex::encode(asset_id),
-        validated_price,
-        symbol.as_ref()
-    );
-
-    Ok(())
-}
-
-async fn get_asset_price(
-    dbtx: &mut PgTransaction<'_>,
-    asset_id: &[u8],
-) -> Result<Option<f64>, anyhow::Error> {
-    let now = Utc::now();
-
-    let mut asset_symbol = None;
-    if let Ok(s) = std::str::from_utf8(asset_id) {
-        if s.chars().all(|c| c.is_ascii_alphabetic()) {
-            asset_symbol = Some(s.to_uppercase());
-        }
-    }
-
-    if asset_id == USDC_ASSET_ID {
-        let _ = update_asset_price(dbtx, asset_id, 1.0, now, Some("USDC".to_string())).await;
-        return Ok(Some(1.0));
-    }
-
-    if asset_id == b"usdt" {
-        let _ = update_asset_price(dbtx, asset_id, 1.0, now, Some("USDT".to_string())).await;
-        return Ok(Some(1.0));
-    }
-
-    let asset_hex = hex::encode(asset_id);
-    if asset_hex.contains("usd") || asset_hex.contains("dai") {
-        let is_likely_stablecoin = asset_hex.contains("usd")
-            && (asset_hex.contains("usdc")
-                || asset_hex.contains("usdt")
-                || asset_hex.contains("busd")
-                || asset_hex.contains("tusd")
-                || asset_hex.contains("dai"));
-
-        if is_likely_stablecoin {
-            debug!("Identified stablecoin: {}", asset_hex);
-
-            let symbol = if asset_symbol.is_some() {
-                asset_symbol.clone()
-            } else if asset_hex.contains("dai") {
-                Some("DAI".to_string())
-            } else {
-                Some(format!("USD_{}", &asset_hex[0..min(8, asset_hex.len())]))
-            };
-
-            let _ = update_asset_price(dbtx, asset_id, 1.0, now, symbol).await;
-            return Ok(Some(1.0));
-        }
-    }
-
-    let price: Option<f64> =
-        sqlx::query_scalar("SELECT price_usd FROM asset_prices WHERE asset_id = $1")
-            .bind(asset_id)
-            .fetch_optional(dbtx.as_mut())
-            .await?;
-
-    if let Some(price) = price {
-        debug!(
-            "Found existing price for asset {}: ${:.8}",
-            hex::encode(asset_id),
-            price
-        );
-        return Ok(Some(price));
-    }
-
-    let first_price: Option<(f64, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT price_usd, last_updated FROM asset_prices
-         WHERE asset_id = $1
-         ORDER BY last_updated ASC
-         LIMIT 1",
-    )
-    .bind(asset_id)
-    .fetch_optional(dbtx.as_mut())
-    .await?;
-
-    if let Some((first_price, _)) = first_price {
-        debug!(
-            "Using earliest known price for asset {}: ${:.8}",
-            hex::encode(asset_id),
-            first_price
-        );
-        return Ok(Some(first_price));
-    }
-
-    debug!(
-        "No price data available for asset {}",
-        hex::encode(asset_id)
-    );
-    Ok(None)
-}
 
 /// Extract amount using the same approach as the old code
 /// Prioritizes the lo part of amount object
@@ -321,22 +166,6 @@ fn extract_full_amount(value: &Value) -> u128 {
     0
 }
 
-/// Gets the appropriate decimal places for an asset
-fn get_asset_decimals(asset_id: &[u8]) -> u32 {
-    let asset_hex = hex::encode(asset_id);
-
-    if asset_hex == "cc0d3c9eef0c7ff4e225eca85a3094603691d289aeaf428ab0d87319ad93a302" {
-        debug!("Identified USDY with 12 decimals: {}", asset_hex);
-        return 12;
-    }
-
-    if asset_id == USDC_ASSET_ID || asset_hex.contains("75736463") {
-        debug!("Identified USDC with 6 decimals: {}", asset_hex);
-        return 6;
-    }
-
-    DEFAULT_TOKEN_DECIMALS
-}
 /// Records an IBC transfer in the database
 ///
 /// # Errors
@@ -375,40 +204,6 @@ pub async fn record_transfer(
 
     let tx_status = status.to_string();
 
-    let usd_amount: Option<f64> = if let Some(asset) = &asset_id {
-        match get_asset_price(dbtx, asset).await? {
-            Some(price) if price > 0.0 => {
-                let validated_price = validate_price(price);
-
-                let decimal_adjusted_amount = amount_numeric as f64 / 1_000_000.0;
-                let amount_usd = decimal_adjusted_amount * validated_price;
-
-                if (validated_price - price).abs() > f64::EPSILON {
-                    debug!(
-                        "Price validation applied: original=${:.8}, validated=${:.8} for asset {}",
-                        price,
-                        validated_price,
-                        hex::encode(asset)
-                    );
-                }
-
-                debug!(
-                    "Calculated USD amount for transfer: ${:.2} (raw_amount={}, adjusted_amount={:.8}, price=${:.8})",
-                    amount_usd, amount_value, decimal_adjusted_amount, validated_price
-                );
-                Some(amount_usd)
-            }
-            _ => {
-                debug!(
-                    "No valid price for asset {}, not calculating USD amount",
-                    hex::encode(asset)
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
 
     sqlx::query(
         r"
@@ -418,12 +213,11 @@ pub async fn record_transfer(
             direction,
             amount,
             asset_id,
-            usd_amount,
             timestamp,
             tx_hash,
             status
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ",
     )
     .bind(client_id)
@@ -431,7 +225,6 @@ pub async fn record_transfer(
     .bind(direction.to_string())
     .bind(amount_numeric)
     .bind(asset_id)
-    .bind(usd_amount)
     .bind(timestamp)
     .bind(tx_hash)
     .bind(&tx_status)
@@ -439,18 +232,18 @@ pub async fn record_transfer(
     .await?;
 
     debug!(
-        "Recorded {} IBC transfer: client={}, channel={}, original_amount={} (db_value={}), usd_amount=${:?}, status={}",
-        direction, client_id, channel_id, amount_value, amount_numeric, usd_amount, tx_status
+        "Recorded {} IBC transfer: client={}, channel={}, original_amount={} (db_value={}), status={}",
+        direction, client_id, channel_id, amount_value, amount_numeric, tx_status
     );
 
     Ok(())
 }
 
-/// Updates the client stats with USD amount
+/// Updates the client stats with raw amount (no USD conversion)
 ///
 /// # Errors
 /// Returns an error if the database operation fails
-async fn update_client_stats_with_usd(
+async fn update_client_stats(
     dbtx: &mut PgTransaction<'_>,
     client_id: &str,
     direction: Direction,
@@ -476,145 +269,66 @@ async fn update_client_stats_with_usd(
         }
     };
 
-    debug!("Amount value for USD calculation: {}", amount_value);
-
-    let amount_for_calculation = amount_value;
+    debug!("Amount value for stats calculation: {}", amount_value);
 
     if amount_value == 0 {
-        debug!("Amount is zero, skipping USD stats update");
+        debug!("Amount is zero, skipping stats update");
         return Ok(());
     }
 
-    match get_asset_price(dbtx, asset_id).await? {
-        Some(price) if price > 0.0 => {
-            let validated_price = validate_price(price);
+    // Convert to i64 for database storage, use raw amount as volume
+    let amount_numeric = i64::try_from(amount_value.min(i64::MAX as u128))
+        .unwrap_or(i64::MAX);
 
-            let decimals = get_asset_decimals(asset_id);
-            let decimal_divisor = 10u128.pow(decimals);
+    match direction {
+        Direction::Inbound => {
+            debug!("Updating stats for inbound transfer: client={}, amount={}", client_id, amount_numeric);
 
-            let decimal_adjusted_amount = amount_for_calculation as f64 / decimal_divisor as f64;
-            let usd_amount = decimal_adjusted_amount * validated_price;
+            sqlx::query(
+                r"
+                UPDATE ibc_stats
+                SET
+                    shielded_volume = shielded_volume + $2,
+                    shielded_tx_count = shielded_tx_count + 1,
+                    last_updated = $3
+                WHERE client_id = $1
+                ",
+            )
+            .bind(client_id)
+            .bind(amount_numeric)
+            .bind(timestamp)
+            .execute(dbtx.as_mut())
+            .await?;
 
-            if (validated_price - price).abs() > f64::EPSILON {
-                debug!(
-                    "Price validation applied: original=${:.8}, validated=${:.8}",
-                    price, validated_price
-                );
-            }
-
-            match direction {
-                Direction::Inbound => {
-                    debug!("Updating USD stats for inbound transfer: client={}, amount=${:.2} (raw amount={}, decimals={}, adjusted_amount={:.8}, price=${:.4})",
-                         client_id, usd_amount, amount_value, decimals, decimal_adjusted_amount, validated_price);
-
-                    sqlx::query(
-                        r"
-                        UPDATE ibc_stats
-                        SET
-                            shielded_volume = shielded_volume + $2,
-                            shielded_tx_count = shielded_tx_count + 1,
-                            last_updated = $3
-                        WHERE client_id = $1
-                        ",
-                    )
-                    .bind(client_id)
-                    .bind(usd_amount)
-                    .bind(timestamp)
-                    .execute(dbtx.as_mut())
-                    .await?;
-
-                    debug!(
-                        "✅ Updated USD stats for inbound transfer: client={}, amount=${:.2}",
-                        client_id, usd_amount
-                    );
-                }
-                Direction::Outbound => {
-                    debug!("Updating USD stats for outbound transfer: client={}, amount=${:.2} (raw amount={}, decimals={}, adjusted_amount={:.8}, price=${:.4})",
-                         client_id, usd_amount, amount_value, decimals, decimal_adjusted_amount, validated_price);
-
-                    sqlx::query(
-                        r"
-                        UPDATE ibc_stats
-                        SET
-                            unshielded_volume = unshielded_volume + $2,
-                            unshielded_tx_count = unshielded_tx_count + 1,
-                            last_updated = $3
-                        WHERE client_id = $1
-                        ",
-                    )
-                    .bind(client_id)
-                    .bind(usd_amount)
-                    .bind(timestamp)
-                    .execute(dbtx.as_mut())
-                    .await?;
-
-                    debug!(
-                        "✅ Updated USD stats for outbound transfer: client={}, amount=${:.2}",
-                        client_id, usd_amount
-                    );
-                }
-                Direction::Other => {
-                    debug!(
-                        "Skipping USD stats update for 'other' IBC event - not a token transfer"
-                    );
-                }
-            }
-
-            Ok(())
+            debug!("✅ Updated stats for inbound transfer: client={}, amount={}", client_id, amount_numeric);
         }
-        _ => {
-            match direction {
-                Direction::Inbound => {
-                    debug!(
-                        "No valid price for asset {}. Updating only tx count for inbound transfer",
-                        hex::encode(asset_id)
-                    );
+        Direction::Outbound => {
+            debug!("Updating stats for outbound transfer: client={}, amount={}", client_id, amount_numeric);
 
-                    sqlx::query(
-                        r"
-                        UPDATE ibc_stats
-                        SET
-                            shielded_tx_count = shielded_tx_count + 1,
-                            last_updated = $2
-                        WHERE client_id = $1
-                        ",
-                    )
-                    .bind(client_id)
-                    .bind(timestamp)
-                    .execute(dbtx.as_mut())
-                    .await?;
-                }
-                Direction::Outbound => {
-                    debug!(
-                        "No valid price for asset {}. Updating only tx count for outbound transfer",
-                        hex::encode(asset_id)
-                    );
+            sqlx::query(
+                r"
+                UPDATE ibc_stats
+                SET
+                    unshielded_volume = unshielded_volume + $2,
+                    unshielded_tx_count = unshielded_tx_count + 1,
+                    last_updated = $3
+                WHERE client_id = $1
+                ",
+            )
+            .bind(client_id)
+            .bind(amount_numeric)
+            .bind(timestamp)
+            .execute(dbtx.as_mut())
+            .await?;
 
-                    sqlx::query(
-                        r"
-                        UPDATE ibc_stats
-                        SET
-                            unshielded_tx_count = unshielded_tx_count + 1,
-                            last_updated = $2
-                        WHERE client_id = $1
-                        ",
-                    )
-                    .bind(client_id)
-                    .bind(timestamp)
-                    .execute(dbtx.as_mut())
-                    .await?;
-                }
-                Direction::Other => {
-                    debug!(
-                        "Skipping stats update for 'other' IBC event with asset {} - not a token transfer",
-                        hex::encode(asset_id)
-                    );
-                }
-            }
-
-            Ok(())
+            debug!("✅ Updated stats for outbound transfer: client={}, amount={}", client_id, amount_numeric);
+        }
+        Direction::Other => {
+            debug!("Skipping stats update for 'other' IBC event - not a token transfer");
         }
     }
+
+    Ok(())
 }
 
 async fn process_candlestick_data(
@@ -770,61 +484,12 @@ async fn process_candlestick_data(
             asset == USDC_ASSET_ID || hex::encode(asset).contains("75736463")
         };
 
-        if is_usdc(quote) {
-            debug!(
-                "💰 USDC DIRECT PAIR: base={} quote=USDC price=${}",
-                hex::encode(base),
-                price
-            );
-            update_asset_price(dbtx, base, *price, timestamp, base_symbol).await?;
-        } else if is_usdc(base) {
-            if *price > 0.0 {
-                let inverse_price = 1.0 / *price;
-                debug!(
-                    "💰 USDC INVERSE PAIR: base=USDC quote={} price=${:.8}",
-                    hex::encode(quote),
-                    inverse_price
-                );
-                update_asset_price(dbtx, quote, inverse_price, timestamp, quote_symbol).await?;
-            }
-        } else {
-            let asset_id_to_store = base;
-            let symbol_to_use = base_symbol.clone();
-            let price_to_store = *price;
-
-            debug!(
-                "📊 NON-USDC PAIR: Storing direct price data for {} at price {}",
-                hex::encode(asset_id_to_store),
-                price_to_store
-            );
-            update_asset_price(
-                dbtx,
-                asset_id_to_store,
-                price_to_store,
-                timestamp,
-                symbol_to_use,
-            )
-            .await?;
-
-            let inverse_asset_id = quote;
-            let inverse_symbol = quote_symbol.clone();
-            if *price > 0.0 {
-                let inverse_price = 1.0 / *price;
-                debug!(
-                    "📊 NON-USDC PAIR: Storing inverse price data for {} at price {:.8}",
-                    hex::encode(inverse_asset_id),
-                    inverse_price
-                );
-                update_asset_price(
-                    dbtx,
-                    inverse_asset_id,
-                    inverse_price,
-                    timestamp,
-                    inverse_symbol,
-                )
-                .await?;
-            }
-        }
+        debug!(
+            "📊 Candlestick data processed: base={} quote={} price=${}",
+            hex::encode(base),
+            hex::encode(quote),
+            price
+        );
     } else {
         debug!(
             "Incomplete candlestick data: base={:?}, quote={:?}, price={:?}",
@@ -2607,39 +2272,6 @@ pub async fn process_events(
                             hex::encode(asset_id_ref)
                         );
 
-                        let mut symbol = None;
-                        if let Ok(s) = std::str::from_utf8(asset_id_ref) {
-                            if s.chars()
-                                .all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '_')
-                            {
-                                symbol = Some(s.to_uppercase());
-                                debug!(
-                                    "Extracted asset symbol for inbound transfer: {}",
-                                    s.to_uppercase()
-                                );
-                            }
-                        }
-
-                        let existing_price = sqlx::query_scalar::<_, Option<f64>>(
-                            "SELECT price_usd FROM asset_prices WHERE asset_id = $1",
-                        )
-                        .bind(asset_id_ref)
-                        .fetch_optional(dbtx.as_mut())
-                        .await;
-
-                        if existing_price.is_err() || existing_price.as_ref().unwrap().is_none() {
-                            debug!(
-                                "No existing price for asset {}, getting fallback price",
-                                hex::encode(asset_id_ref)
-                            );
-                            if let Err(e) = get_asset_price(dbtx, asset_id_ref).await {
-                                error!(
-                                    "Failed to get and store price for asset {}: {}",
-                                    hex::encode(asset_id_ref),
-                                    e
-                                );
-                            }
-                        }
                     }
 
                     let mut resolved_client_id: Option<String> = None;
@@ -2838,7 +2470,7 @@ pub async fn process_events(
                         }
 
                         if let Some(ref asset_id) = asset_id {
-                            if let Err(e) = update_client_stats_with_usd(
+                            if let Err(e) = update_client_stats(
                                 dbtx,
                                 &client_id,
                                 Direction::Inbound,
@@ -2848,7 +2480,7 @@ pub async fn process_events(
                             )
                             .await
                             {
-                                error!("Failed to update USD stats for inbound transfer: {}", e);
+                                error!("Failed to update stats for inbound transfer: {}", e);
 
                                 if let Err(e) = sqlx::query(
                                     r"
@@ -2964,39 +2596,6 @@ pub async fn process_events(
                             hex::encode(asset_id_ref)
                         );
 
-                        let mut symbol = None;
-                        if let Ok(s) = std::str::from_utf8(asset_id_ref) {
-                            if s.chars()
-                                .all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '_')
-                            {
-                                symbol = Some(s.to_uppercase());
-                                debug!(
-                                    "Extracted asset symbol for outbound transfer: {}",
-                                    s.to_uppercase()
-                                );
-                            }
-                        }
-
-                        let existing_price = sqlx::query_scalar::<_, Option<f64>>(
-                            "SELECT price_usd FROM asset_prices WHERE asset_id = $1",
-                        )
-                        .bind(asset_id_ref)
-                        .fetch_optional(dbtx.as_mut())
-                        .await;
-
-                        if existing_price.is_err() || existing_price.as_ref().unwrap().is_none() {
-                            debug!(
-                                "No existing price for asset {}, getting fallback price",
-                                hex::encode(asset_id_ref)
-                            );
-                            if let Err(e) = get_asset_price(dbtx, asset_id_ref).await {
-                                error!(
-                                    "Failed to get and store price for asset {}: {}",
-                                    hex::encode(asset_id_ref),
-                                    e
-                                );
-                            }
-                        }
                     }
 
                     let mut resolved_client_id: Option<String> = None;
@@ -3035,7 +2634,7 @@ pub async fn process_events(
                         }
 
                         if let Some(ref asset_id) = asset_id {
-                            if let Err(e) = update_client_stats_with_usd(
+                            if let Err(e) = update_client_stats(
                                 dbtx,
                                 &client_id,
                                 Direction::Outbound,
@@ -3045,7 +2644,7 @@ pub async fn process_events(
                             )
                             .await
                             {
-                                error!("Failed to update USD stats for outbound transfer: {}", e);
+                                error!("Failed to update stats for outbound transfer: {}", e);
 
                                 if let Err(e) = sqlx::query(
                                     r#"
