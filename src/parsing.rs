@@ -1,7 +1,7 @@
+use anyhow::Error;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use std::fmt::Write;
-use anyhow::{Error};
 use penumbra_sdk_asset::asset;
+use std::fmt::Write;
 
 /// Helper function to convert bytes to a hexadecimal string
 #[must_use]
@@ -53,7 +53,7 @@ pub fn identity_key_to_validator_address(
 ///
 /// # Errors
 ///
-/// Returns an error if the base64 string cannot be decoded or the bytes do not form a valid asset::Id.
+/// Returns an error if the base64 string cannot be decoded or the bytes do not form a valid `asset::Id`.
 pub fn asset_id_to_denom(base64_asset_id: &str) -> Result<String, Error> {
     let raw = BASE64.decode(base64_asset_id)?;
     let bytes: [u8; 32] = raw.as_slice().try_into()?;
@@ -129,16 +129,15 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_asset_id_to_denom() {
-        let id1 = "WdHeHDmklWKxFf0g86MiYy6Mt6lUQza5g+NfNuK2oAE=";
-        let denom1 = asset_id_to_denom(id1).expect("decoding id1");
-        println!("Decoded denom1: {}", denom1);
-        assert!(!denom1.is_empty(), "denom1 should not be empty");
+#[test]
+fn test_asset_id_to_denom() {
+    let id1 = "WdHeHDmklWKxFf0g86MiYy6Mt6lUQza5g+NfNuK2oAE=";
+    let denom1 = asset_id_to_denom(id1).expect("decoding id1");
+    println!("Decoded denom1: {denom1}");
+    assert!(!denom1.is_empty(), "denom1 should not be empty");
 
-        let id2 = "B+9mATKkwyNfqyctQ9m5dSqDN7LRCFl6v/r/XyRtDw8=";
-        let denom2 = asset_id_to_denom(id2).expect("decoding id2");
-        println!("Decoded denom2: {}", denom2);
-        assert!(!denom2.is_empty(), "denom2 should not be empty");
-    }
-
+    let id2 = "B+9mATKkwyNfqyctQ9m5dSqDN7LRCFl6v/r/XyRtDw8=";
+    let denom2 = asset_id_to_denom(id2).expect("decoding id2");
+    println!("Decoded denom2: {denom2}");
+    assert!(!denom2.is_empty(), "denom2 should not be empty");
+}
