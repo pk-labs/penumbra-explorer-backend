@@ -62,16 +62,15 @@ impl Explorer {
     /// # Panics
     /// Panics if CORS origin URLs cannot be parsed
     pub async fn run(&self) -> Result<()> {
-        db_migrations::run_migrations(&self.options.dest_db_url)
-            .context("Failed to run database migrations")?;
-
         let pool = PgPoolOptions::new()
             .max_connections(200)
             .connect(&self.options.dest_db_url)
             .await
             .context("Failed to connect to destination database for API")?;
 
-        let schema = crate::api::graphql::schema::create_schema(pool.clone());
+        let schema = crate::api::graphql::schema::create_schema(pool.clone())
+            .await
+            .context("Failed to create GraphQL schema and setup database triggers")?;
 
         let cors = CorsLayer::new()
             .allow_origin([
