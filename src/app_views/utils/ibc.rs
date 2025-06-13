@@ -20,7 +20,6 @@ use sqlx::{
 use std::collections::HashMap;
 use tracing::{debug, error, warn};
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Inbound,
@@ -131,7 +130,6 @@ fn extract_error_from_ack(ack_data: &str) -> bool {
     false
 }
 
-
 /// Extract amount using the same approach as the old code
 /// Prioritizes the lo part of amount object
 fn extract_full_amount(value: &Value) -> u128 {
@@ -203,7 +201,6 @@ pub async fn record_transfer(
     debug!("Using amount for database storage: {}", amount_numeric);
 
     let tx_status = status.to_string();
-
 
     sqlx::query(
         r"
@@ -277,12 +274,14 @@ async fn update_client_stats(
     }
 
     // Convert to i64 for database storage, use raw amount as volume
-    let amount_numeric = i64::try_from(amount_value.min(i64::MAX as u128))
-        .unwrap_or(i64::MAX);
+    let amount_numeric = i64::try_from(amount_value.min(i64::MAX as u128)).unwrap_or(i64::MAX);
 
     match direction {
         Direction::Inbound => {
-            debug!("Updating stats for inbound transfer: client={}, amount={}", client_id, amount_numeric);
+            debug!(
+                "Updating stats for inbound transfer: client={}, amount={}",
+                client_id, amount_numeric
+            );
 
             sqlx::query(
                 r"
@@ -300,10 +299,16 @@ async fn update_client_stats(
             .execute(dbtx.as_mut())
             .await?;
 
-            debug!("✅ Updated stats for inbound transfer: client={}, amount={}", client_id, amount_numeric);
+            debug!(
+                "✅ Updated stats for inbound transfer: client={}, amount={}",
+                client_id, amount_numeric
+            );
         }
         Direction::Outbound => {
-            debug!("Updating stats for outbound transfer: client={}, amount={}", client_id, amount_numeric);
+            debug!(
+                "Updating stats for outbound transfer: client={}, amount={}",
+                client_id, amount_numeric
+            );
 
             sqlx::query(
                 r"
@@ -321,7 +326,10 @@ async fn update_client_stats(
             .execute(dbtx.as_mut())
             .await?;
 
-            debug!("✅ Updated stats for outbound transfer: client={}, amount={}", client_id, amount_numeric);
+            debug!(
+                "✅ Updated stats for outbound transfer: client={}, amount={}",
+                client_id, amount_numeric
+            );
         }
         Direction::Other => {
             debug!("Skipping stats update for 'other' IBC event - not a token transfer");
@@ -2271,7 +2279,6 @@ pub async fn process_events(
                             "Using asset ID for inbound transfer: {}",
                             hex::encode(asset_id_ref)
                         );
-
                     }
 
                     let mut resolved_client_id: Option<String> = None;
@@ -2595,7 +2602,6 @@ pub async fn process_events(
                             "Using asset ID for outbound transfer: {}",
                             hex::encode(asset_id_ref)
                         );
-
                     }
 
                     let mut resolved_client_id: Option<String> = None;
