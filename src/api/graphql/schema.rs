@@ -14,15 +14,29 @@ use crate::api::graphql::{
 };
 use async_graphql::Schema as AsyncGraphQLSchema;
 use sqlx::PgPool;
+use tracing::warn;
 
 #[allow(clippy::module_name_repetitions)]
 pub type PenumbraSchema =
     AsyncGraphQLSchema<QueryRoot, async_graphql::EmptyMutation, SubscriptionRoot>;
 
+/// Create GraphQL schema with database triggers setup
+///
+/// # Errors
+/// Returns an error if database triggers cannot be set up or schema creation fails
 #[allow(clippy::module_name_repetitions)]
-#[must_use]
-pub fn create_schema(db_pool: PgPool) -> PenumbraSchema {
+pub async fn create_schema(db_pool: PgPool) -> anyhow::Result<PenumbraSchema> {
     let pubsub = PubSub::new();
+
+    // Setup triggers asynchronously - don't block startup if tables don't exist yet
+    let pubsub_clone_for_triggers = pubsub.clone();
+    let pool_clone_for_triggers = db_pool.clone();
+    tokio::spawn(async move {
+        if let Err(e) = pubsub_clone_for_triggers.setup_triggers(&pool_clone_for_triggers).await {
+            warn!("Failed to setup triggers during startup: {}", e);
+        }
+    });
+
     let pool_clone = db_pool.clone();
     let pubsub_clone = pubsub.clone();
 
@@ -65,5 +79,5 @@ pub fn create_schema(db_pool: PgPool) -> PenumbraSchema {
         .register_output_type::<CommissionInfo>()
         .register_output_type::<BlockParticipation>();
 
-    builder.finish()
+    Ok(builder.finish())
 }
