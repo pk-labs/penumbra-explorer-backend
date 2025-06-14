@@ -236,6 +236,131 @@ pub async fn record_transfer(
     Ok(())
 }
 
+/// IBC transfer data for batch processing
+#[derive(Debug, Clone)]
+pub struct TransferData {
+    pub client_id: String,
+    pub channel_id: String,
+    pub direction: Direction,
+    pub amount_numeric: i64,
+    pub asset_id: Option<Vec<u8>>,
+    pub timestamp: DateTime<Utc>,
+    pub tx_hash: Option<Vec<u8>>,
+    pub status: TransactionStatus,
+}
+
+impl TransferData {
+    pub fn new(
+        client_id: &str,
+        channel_id: &str,
+        direction: Direction,
+        value_str: &str,
+        timestamp: DateTime<Utc>,
+        tx_hash: Option<Vec<u8>>,
+        status: TransactionStatus,
+        asset_id: Option<Vec<u8>>,
+    ) -> Self {
+        let amount_value = if let Ok(value_json) = serde_json::from_str::<Value>(value_str) {
+            extract_full_amount(&value_json)
+        } else {
+            match value_str.parse::<u128>() {
+                Ok(value) => {
+                    debug!("Successfully parsed amount string '{}' as u128", value_str);
+                    value
+                }
+                Err(e) => {
+                    debug!("Failed to parse amount string '{}' as u128: {}", value_str, e);
+                    0
+                }
+            }
+        };
+
+        let amount_numeric = amount_value.to_string().parse::<i64>().unwrap_or_default();
+
+        Self {
+            client_id: client_id.to_string(),
+            channel_id: channel_id.to_string(),
+            direction,
+            amount_numeric,
+            asset_id,
+            timestamp,
+            tx_hash,
+            status,
+        }
+    }
+}
+
+/// Records multiple IBC transfers in a single batch operation for better performance
+///
+/// # Errors
+/// Returns an error if the database operation fails
+pub async fn record_transfers_batch(
+    dbtx: &mut PgTransaction<'_>,
+    transfers: &[TransferData],
+) -> Result<(), anyhow::Error> {
+    if transfers.is_empty() {
+        return Ok(());
+    }
+
+    debug!("Batch recording {} IBC transfers", transfers.len());
+
+    // Build dynamic VALUES clauses for bulk insert
+    let mut values_clauses = Vec::new();
+    for i in 0..transfers.len() {
+        let param_base = i * 8;
+        values_clauses.push(format!(
+            "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+            param_base + 1,
+            param_base + 2,
+            param_base + 3,
+            param_base + 4,
+            param_base + 5,
+            param_base + 6,
+            param_base + 7,
+            param_base + 8
+        ));
+    }
+
+    let query = format!(
+        r"
+        INSERT INTO ibc_transfers (
+            client_id,
+            channel_id,
+            direction,
+            amount,
+            asset_id,
+            timestamp,
+            tx_hash,
+            status
+        )
+        VALUES {}
+        ",
+        values_clauses.join(", ")
+    );
+
+    let mut sqlx_query = sqlx::query(&query);
+    for transfer in transfers {
+        sqlx_query = sqlx_query
+            .bind(&transfer.client_id)
+            .bind(&transfer.channel_id)
+            .bind(transfer.direction.to_string())
+            .bind(transfer.amount_numeric)
+            .bind(&transfer.asset_id)
+            .bind(transfer.timestamp)
+            .bind(&transfer.tx_hash)
+            .bind(transfer.status.to_string());
+    }
+
+    sqlx_query.execute(dbtx.as_mut()).await?;
+
+    debug!(
+        "Successfully batch recorded {} IBC transfers",
+        transfers.len()
+    );
+
+    Ok(())
+}
+
 /// Updates the client stats with raw amount (no USD conversion)
 ///
 /// # Errors
@@ -848,6 +973,9 @@ pub async fn process_events(
         events.len()
     );
 
+    // Collect all transfers for batch processing
+    let mut transfers_to_record = Vec::new();
+
     let mut candlestick_count = 0;
     for event in events {
         if event.event.kind.as_str() == "penumbra.core.component.dex.v1.EventCandlestickData" {
@@ -1031,8 +1159,8 @@ pub async fn process_events(
                     .execute(dbtx.as_mut())
                     .await?;
 
-                    if let Err(e) = record_transfer(
-                        dbtx,
+                    // Collect transfer for batch processing
+                    transfers_to_record.push(TransferData::new(
                         client_id,
                         "unknown",
                         Direction::Other,
@@ -1041,11 +1169,7 @@ pub async fn process_events(
                         Some(tx_hash.to_vec()),
                         TransactionStatus::Completed,
                         None,
-                    )
-                    .await
-                    {
-                        error!("Failed to record create_client event as transfer: {}", e);
-                    }
+                    ));
                 }
 
                 debug!("Processed create_client: {}", client_id);
@@ -1123,8 +1247,8 @@ pub async fn process_events(
                     .execute(dbtx.as_mut())
                     .await?;
 
-                    if let Err(e) = record_transfer(
-                        dbtx,
+                    // Collect transfer for batch processing
+                    transfers_to_record.push(TransferData::new(
                         client_id,
                         "unknown",
                         Direction::Other,
@@ -1133,11 +1257,7 @@ pub async fn process_events(
                         Some(tx_hash.to_vec()),
                         TransactionStatus::Completed,
                         None,
-                    )
-                    .await
-                    {
-                        error!("Failed to record connection_open_init as transfer: {}", e);
-                    }
+                    ));
                 }
 
                 debug!(
@@ -1311,8 +1431,8 @@ pub async fn process_events(
                         .execute(dbtx.as_mut())
                         .await?;
 
-                        if let Err(e) = record_transfer(
-                            dbtx,
+                        // Collect transfer for batch processing
+                        transfers_to_record.push(TransferData::new(
                             &client_id,
                             channel_id,
                             Direction::Other,
@@ -1321,11 +1441,7 @@ pub async fn process_events(
                             Some(tx_hash.to_vec()),
                             TransactionStatus::Completed,
                             None,
-                        )
-                        .await
-                        {
-                            error!("Failed to record channel_open_init as transfer: {}", e);
-                        }
+                        ));
                     }
 
                     debug!(
@@ -1578,8 +1694,8 @@ pub async fn process_events(
                     .execute(dbtx.as_mut())
                     .await?;
 
-                    if let Err(e) = record_transfer(
-                        dbtx,
+                    // Collect transfer for batch processing
+                    transfers_to_record.push(TransferData::new(
                         &client_id,
                         channel_id.unwrap_or("unknown"),
                         Direction::Other,
@@ -1588,11 +1704,7 @@ pub async fn process_events(
                         Some(tx_hash.to_vec()),
                         TransactionStatus::Completed,
                         None,
-                    )
-                    .await
-                    {
-                        error!("Failed to record IBC event as transfer: {}", e);
-                    }
+                    ));
                 }
             }
         }
@@ -1875,8 +1987,8 @@ pub async fn process_events(
 
                         let packet_amount = "0".to_string();
 
-                        if let Err(e) = record_transfer(
-                            dbtx,
+                        // Collect transfer for batch processing
+                        transfers_to_record.push(TransferData::new(
                             &client_id,
                             our_channel,
                             direction,
@@ -1885,11 +1997,7 @@ pub async fn process_events(
                             Some(tx_hash.to_vec()),
                             TransactionStatus::Pending,
                             None,
-                        )
-                        .await
-                        {
-                            error!("Failed to record pending transfer: {}", e);
-                        }
+                        ));
 
                         debug!(
                             "Processed send_packet for channel {} with client {}",
@@ -1955,8 +2063,8 @@ pub async fn process_events(
                         .execute(dbtx.as_mut())
                         .await?;
 
-                        if let Err(e) = record_transfer(
-                            dbtx,
+                        // Collect transfer for batch processing
+                        transfers_to_record.push(TransferData::new(
                             &client_id,
                             our_channel,
                             Direction::Inbound,
@@ -1965,11 +2073,7 @@ pub async fn process_events(
                             Some(tx_hash.to_vec()),
                             TransactionStatus::Completed,
                             None,
-                        )
-                        .await
-                        {
-                            error!("Failed to record recv_packet as completed transfer: {}", e);
-                        }
+                        ));
 
                         debug!(
                             "Processed recv_packet for channel {} with client {}",
@@ -2460,8 +2564,8 @@ pub async fn process_events(
                             }
                         }
 
-                        if let Err(e) = record_transfer(
-                            dbtx,
+                        // Collect transfer for batch processing
+                        transfers_to_record.push(TransferData::new(
                             &client_id,
                             &channel_for_transfer,
                             Direction::Inbound,
@@ -2470,11 +2574,7 @@ pub async fn process_events(
                             event.tx_hash().map(|tx| tx.to_vec()),
                             TransactionStatus::Completed,
                             asset_id.clone(),
-                        )
-                        .await
-                        {
-                            error!("Failed to record inbound transfer: {}", e);
-                        }
+                        ));
 
                         if let Some(ref asset_id) = asset_id {
                             if let Err(e) = update_client_stats(
@@ -2623,8 +2723,8 @@ pub async fn process_events(
                     }
 
                     if let Some(client_id) = resolved_client_id {
-                        if let Err(e) = record_transfer(
-                            dbtx,
+                        // Collect transfer for batch processing
+                        transfers_to_record.push(TransferData::new(
                             &client_id,
                             channel_id,
                             Direction::Outbound,
@@ -2633,11 +2733,7 @@ pub async fn process_events(
                             event.tx_hash().map(|tx| tx.to_vec()),
                             TransactionStatus::Completed,
                             asset_id.clone(),
-                        )
-                        .await
-                        {
-                            error!("Failed to record outbound transfer: {}", e);
-                        }
+                        ));
 
                         if let Some(ref asset_id) = asset_id {
                             if let Err(e) = update_client_stats(
@@ -2718,6 +2814,14 @@ pub async fn process_events(
                 }
             }
             _ => {}
+        }
+    }
+
+    // Batch process all collected transfers
+    if !transfers_to_record.is_empty() {
+        debug!("Batch processing {} IBC transfers for block {}", transfers_to_record.len(), height);
+        if let Err(e) = record_transfers_batch(dbtx, &transfers_to_record).await {
+            error!("Failed to batch record transfers for block {}: {}", height, e);
         }
     }
 
