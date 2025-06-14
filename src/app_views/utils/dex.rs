@@ -1,3 +1,4 @@
+use crate::parsing::asset_id_to_denom;
 use anyhow::Result;
 use cometindex::ContextualizedEvent;
 use serde_json::Value;
@@ -6,8 +7,7 @@ use sqlx::types::BigDecimal;
 use sqlx::PgTransaction;
 use std::collections::HashMap;
 use std::str::FromStr;
-use tracing::{debug, error, info};
-use crate::parsing::asset_id_to_denom;
+use tracing::{debug, error};
 
 /// Asset management for DEX operations
 pub struct AssetManager;
@@ -51,6 +51,7 @@ impl AssetManager {
 
         Ok(())
     }
+
 }
 
 /// Liquidity position data structure
@@ -112,7 +113,7 @@ impl LiquidityPosition {
                 Value::Number(n) => n.to_string(),
                 _ => "0".to_string(),
             };
-            
+
             BigDecimal::from_str(&amount_str).unwrap_or_else(|_| BigDecimal::from(0))
         }
     }
@@ -122,9 +123,9 @@ impl LiquidityPosition {
         let fee_bps: i32 = Self::find_attribute_value(event, "tradingFee")
             .and_then(|fee_str| fee_str.parse().ok())
             .unwrap_or(0);
-        
+
         // Convert basis points to percentage: 100 bps = 1.00%, 10 bps = 0.10%
-        let percentage = fee_bps as f64 / 100.0;
+        let percentage = f64::from(fee_bps) / 100.0;
         // Round to 2 decimal places
         (percentage * 100.0).round() / 100.0
     }
@@ -287,7 +288,10 @@ impl LiquidityPosition {
         .bind(&self.reserves1_amount)
         .bind(&self.reserves2_amount)
         .bind(&self.state)
-        .bind(BigDecimal::from_str(&format!("{:.2}", self.fee_percentage)).unwrap_or_else(|_| BigDecimal::from(0)))
+        .bind(
+            BigDecimal::from_str(&format!("{:.2}", self.fee_percentage))
+                .unwrap_or_else(|_| BigDecimal::from(0)),
+        )
         .bind(self.created_height)
         .bind(self.created_at)
         .bind(self.updated_height)
@@ -407,6 +411,301 @@ impl LiquidityPosition {
     }
 }
 
+/// Batch swap data structure (represents the entire batch)
+#[derive(Debug, Clone)]
+pub struct BatchSwap {
+    pub block_height: i64,
+    pub block_timestamp: DateTime<Utc>,
+    pub execution_type: String,
+    pub total_input_amount: BigDecimal,
+    pub total_input_asset_id: String,
+    pub total_output_amount: BigDecimal,
+    pub total_output_asset_id: String,
+    pub individual_swaps_count: i32,
+    pub individual_swaps: Vec<IndividualSwap>,
+    pub raw_execution_data: Value,
+}
+
+/// Individual swap within a batch
+#[derive(Debug, Clone)]
+pub struct IndividualSwap {
+    pub swap_index: i32,
+    pub input_amount: BigDecimal,
+    pub input_asset_id: String,
+    pub output_amount: BigDecimal,
+    pub output_asset_id: String,
+    pub route_steps_count: i32,
+    pub route_steps: Vec<RouteStep>,
+}
+
+/// Route step within an individual swap
+#[derive(Debug, Clone)]
+pub struct RouteStep {
+    pub route_step: i32,
+    pub amount: BigDecimal,
+    pub asset_id: String,
+}
+
+impl BatchSwap {
+    /// Create BatchSwap from EventBatchSwap
+    pub fn from_batch_swap_event(
+        event: &ContextualizedEvent,
+        height: u64,
+        timestamp: DateTime<Utc>,
+    ) -> Result<Self> {
+        let swap_execution_json = Self::find_batch_swap_execution(event)?;
+
+        Self::parse_batch_swap(&swap_execution_json, height, timestamp, "Swap")
+    }
+
+    /// Create BatchSwap from EventArbExecution
+    pub fn from_arb_execution_event(
+        event: &ContextualizedEvent,
+        height: u64,
+        timestamp: DateTime<Utc>,
+    ) -> Result<Self> {
+        let swap_execution_json =
+            LiquidityPosition::find_attribute_value(event, "swapExecution")
+                .ok_or_else(|| anyhow::anyhow!("Missing swapExecution in EventArbExecution"))?;
+
+        Self::parse_batch_swap(&swap_execution_json, height, timestamp, "Arb")
+    }
+
+    /// Find all swap executions in EventBatchSwap (both directions if present)
+    fn find_all_batch_swap_executions(event: &ContextualizedEvent) -> Result<Vec<String>> {
+        let mut executions = Vec::new();
+
+        if let Some(execution) =
+            LiquidityPosition::find_attribute_value(event, "swapExecution1For2")
+        {
+            executions.push(execution);
+        }
+        if let Some(execution) =
+            LiquidityPosition::find_attribute_value(event, "swapExecution2For1")
+        {
+            executions.push(execution);
+        }
+
+        if executions.is_empty() {
+            Err(anyhow::anyhow!(
+                "EventBatchSwap has no actual swap execution - only batchSwapOutputData"
+            ))
+        } else {
+            Ok(executions)
+        }
+    }
+
+    /// Find swapExecution1For2 or swapExecution2For1 in EventBatchSwap (legacy method)
+    fn find_batch_swap_execution(event: &ContextualizedEvent) -> Result<String> {
+        if let Some(execution) =
+            LiquidityPosition::find_attribute_value(event, "swapExecution1For2")
+        {
+            return Ok(execution);
+        }
+        if let Some(execution) =
+            LiquidityPosition::find_attribute_value(event, "swapExecution2For1")
+        {
+            return Ok(execution);
+        }
+        Err(anyhow::anyhow!(
+            "EventBatchSwap has no actual swap execution - only batchSwapOutputData"
+        ))
+    }
+
+    /// Parse batch swap JSON into BatchSwap struct
+    fn parse_batch_swap(
+        swap_execution_json: &str,
+        height: u64,
+        timestamp: DateTime<Utc>,
+        execution_type: &str,
+    ) -> Result<Self> {
+        let execution_data: Value = serde_json::from_str(swap_execution_json)?;
+
+        let total_input_amount_str = execution_data["input"]["amount"]["lo"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing input.amount.lo"))?;
+
+        let total_input_asset_id = execution_data["input"]["assetId"]["inner"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing input.assetId.inner"))?;
+
+        let total_output_amount_str = execution_data["output"]["amount"]["lo"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing output.amount.lo"))?;
+
+        let total_output_asset_id = execution_data["output"]["assetId"]["inner"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing output.assetId.inner"))?;
+
+        let traces_array = execution_data["traces"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Missing or invalid traces array"))?;
+
+        let individual_swaps_count = traces_array.len() as i32;
+        let individual_swaps = Self::parse_individual_swaps(traces_array)?;
+
+        Ok(Self {
+            block_height: i64::try_from(height).unwrap_or(i64::MAX),
+            block_timestamp: timestamp,
+            execution_type: execution_type.to_string(),
+            total_input_amount: BigDecimal::from_str(total_input_amount_str)?,
+            total_input_asset_id: total_input_asset_id.to_string(),
+            total_output_amount: BigDecimal::from_str(total_output_amount_str)?,
+            total_output_asset_id: total_output_asset_id.to_string(),
+            individual_swaps_count,
+            individual_swaps,
+            raw_execution_data: execution_data,
+        })
+    }
+
+    /// Parse traces array into individual swaps
+    fn parse_individual_swaps(traces_array: &[Value]) -> Result<Vec<IndividualSwap>> {
+        let mut individual_swaps = Vec::new();
+
+        for (swap_index, trace) in traces_array.iter().enumerate() {
+            let value_array = trace["value"].as_array().ok_or_else(|| {
+                anyhow::anyhow!("Missing or invalid value array in trace {}", swap_index)
+            })?;
+
+            if value_array.len() < 2 {
+                return Err(anyhow::anyhow!(
+                    "Expected at least 2 elements in trace {}, found {}",
+                    swap_index,
+                    value_array.len()
+                ));
+            }
+
+            let mut route_steps = Vec::new();
+            for (step_index, step_value) in value_array.iter().enumerate() {
+                let amount_str = step_value["amount"]["lo"].as_str().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Missing amount.lo in swap {} step {}",
+                        swap_index,
+                        step_index
+                    )
+                })?;
+
+                let asset_id = step_value["assetId"]["inner"].as_str().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Missing assetId.inner in swap {} step {}",
+                        swap_index,
+                        step_index
+                    )
+                })?;
+
+                route_steps.push(RouteStep {
+                    route_step: step_index as i32,
+                    amount: BigDecimal::from_str(amount_str)?,
+                    asset_id: asset_id.to_string(),
+                });
+            }
+
+            let input_step = &route_steps[0];
+            let output_step = &route_steps[route_steps.len() - 1];
+
+            individual_swaps.push(IndividualSwap {
+                swap_index: swap_index as i32,
+                input_amount: input_step.amount.clone(),
+                input_asset_id: input_step.asset_id.clone(),
+                output_amount: output_step.amount.clone(),
+                output_asset_id: output_step.asset_id.clone(),
+                route_steps_count: route_steps.len() as i32,
+                route_steps,
+            });
+        }
+
+        Ok(individual_swaps)
+    }
+
+    /// Insert batch swap into database and return the ID
+    pub async fn insert(&self, dbtx: &mut PgTransaction<'_>) -> Result<i32> {
+        let batch_id: i32 = sqlx::query_scalar(
+            r"
+            INSERT INTO dex_batch_swaps (
+                block_height,
+                block_timestamp,
+                execution_type,
+                total_input_amount,
+                total_input_asset_id,
+                total_output_amount,
+                total_output_asset_id,
+                individual_swaps_count,
+                raw_execution_data
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+            ",
+        )
+        .bind(self.block_height)
+        .bind(self.block_timestamp)
+        .bind(&self.execution_type)
+        .bind(&self.total_input_amount)
+        .bind(&self.total_input_asset_id)
+        .bind(&self.total_output_amount)
+        .bind(&self.total_output_asset_id)
+        .bind(self.individual_swaps_count)
+        .bind(&self.raw_execution_data)
+        .fetch_one(dbtx.as_mut())
+        .await?;
+
+        Ok(batch_id)
+    }
+
+    /// Insert all individual swaps for this batch
+    pub async fn insert_individual_swaps(
+        &self,
+        batch_id: i32,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        for swap in &self.individual_swaps {
+            // Insert individual swap and get the ID
+            let individual_swap_id: i32 = sqlx::query_scalar(
+                r"
+                INSERT INTO dex_individual_swaps (
+                    batch_swap_id,
+                    swap_index,
+                    input_amount,
+                    input_asset_id,
+                    output_amount,
+                    output_asset_id,
+                    route_steps_count
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING id
+                ",
+            )
+            .bind(batch_id)
+            .bind(swap.swap_index)
+            .bind(&swap.input_amount)
+            .bind(&swap.input_asset_id)
+            .bind(&swap.output_amount)
+            .bind(&swap.output_asset_id)
+            .bind(swap.route_steps_count)
+            .fetch_one(dbtx.as_mut())
+            .await?;
+
+            for route_step in &swap.route_steps {
+                sqlx::query(
+                    r"
+                    INSERT INTO dex_individual_swap_routes (
+                        individual_swap_id,
+                        route_step,
+                        amount,
+                        asset_id
+                    ) VALUES ($1, $2, $3, $4)
+                    ",
+                )
+                .bind(individual_swap_id)
+                .bind(route_step.route_step)
+                .bind(&route_step.amount)
+                .bind(&route_step.asset_id)
+                .execute(dbtx.as_mut())
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Event processor for DEX operations
 pub struct Processor;
 
@@ -487,14 +786,27 @@ impl Processor {
                         error!("Error processing EventPositionWithdraw: {}", e);
                     }
                 }
-                _ => {} // Ignore other events
+                "penumbra.core.component.dex.v1.EventBatchSwap" => {
+                    debug!("Processing EventBatchSwap");
+                    if let Err(e) =
+                        Self::process_batch_swap_event(event, height, timestamp, dbtx).await
+                    {
+                        error!("Error processing EventBatchSwap: {}", e);
+                    }
+                }
+                "penumbra.core.component.dex.v1.EventArbExecution" => {
+                    debug!("Processing EventArbExecution");
+                    if let Err(e) =
+                        Self::process_arb_execution_event(event, height, timestamp, dbtx).await
+                    {
+                        error!("Error processing EventArbExecution: {}", e);
+                    }
+                }
+                _ => {}
             }
         }
 
-        // Save all cached positions to database
-        // Note: New positions are already inserted, so we only update existing ones
         for position in positions_cache.values() {
-            // Only update if this position existed before this block (not newly created)
             if position.created_height < i64::try_from(height).unwrap_or(i64::MAX) {
                 if let Err(e) = position.update(dbtx).await {
                     error!("Error updating position {}: {}", position.position_id, e);
@@ -515,35 +827,29 @@ impl Processor {
     ) -> Result<()> {
         let position = LiquidityPosition::from_position_open_event(event, height, timestamp)?;
 
-        // Ensure both assets exist in explorer_assets table
+        // For positions (only 2 assets), individual calls are simpler and just as fast
         let decoded_asset1 = asset_id_to_denom(&position.trading_pair_asset1)
             .unwrap_or_else(|_| position.trading_pair_asset1.clone());
-        
         AssetManager::ensure_asset_exists(
             &position.trading_pair_asset1,
             &decoded_asset1,
             height,
             timestamp,
             dbtx,
-        )
-        .await?;
+        ).await?;
 
         let decoded_asset2 = asset_id_to_denom(&position.trading_pair_asset2)
             .unwrap_or_else(|_| position.trading_pair_asset2.clone());
-
         AssetManager::ensure_asset_exists(
             &position.trading_pair_asset2,
             &decoded_asset2,
             height,
             timestamp,
             dbtx,
-        )
-        .await?;
+        ).await?;
 
-        // Insert the new position
         position.insert(dbtx).await?;
 
-        // Add to cache for potential future updates in the same block
         positions_cache.insert(position.position_id.clone(), position);
 
         Ok(())
@@ -562,7 +868,6 @@ impl Processor {
 
         let position_id = LiquidityPosition::extract_position_id(&position_id_json)?;
 
-        // Try to get from cache first, otherwise load from database
         let mut position = if let Some(cached_position) = positions_cache.get(&position_id).cloned()
         {
             cached_position
@@ -593,7 +898,6 @@ impl Processor {
 
         let position_id = LiquidityPosition::extract_position_id(&position_id_json)?;
 
-        // Try to get from cache first, otherwise load from database
         let mut position = if let Some(cached_position) = positions_cache.get(&position_id).cloned()
         {
             cached_position
@@ -622,7 +926,6 @@ impl Processor {
 
         let position_id = LiquidityPosition::extract_position_id(&position_id_json)?;
 
-        // Try to get from cache first, otherwise load from database
         let mut position = if let Some(cached_position) = positions_cache.get(&position_id).cloned()
         {
             cached_position
@@ -637,28 +940,199 @@ impl Processor {
 
         Ok(())
     }
+
+    /// Process EventBatchSwap event (handles multiple execution directions)
+    async fn process_batch_swap_event(
+        event: &ContextualizedEvent<'_>,
+        height: u64,
+        timestamp: DateTime<Utc>,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        let swap_executions = match BatchSwap::find_all_batch_swap_executions(event) {
+            Ok(executions) => executions,
+            Err(_) => {
+                debug!(
+                    "Skipping EventBatchSwap at height {} - no actual swap execution",
+                    height
+                );
+                return Ok(());
+            }
+        };
+
+        let mut processed_count = 0;
+
+        for swap_execution_json in swap_executions {
+            let batch_swap = match BatchSwap::parse_batch_swap(
+                &swap_execution_json,
+                height,
+                timestamp,
+                "Swap",
+            ) {
+                Ok(batch) => batch,
+                Err(e) => {
+                    error!(
+                        "Failed to parse batch swap execution at height {}: {}",
+                        height, e
+                    );
+                    continue;
+                }
+            };
+
+            if let Err(e) =
+                Processor::ensure_batch_swap_assets(&batch_swap, height, timestamp, dbtx).await
+            {
+                error!(
+                    "Failed to ensure assets for batch swap at height {}: {}",
+                    height, e
+                );
+                continue;
+            }
+
+            let batch_id = match batch_swap.insert(dbtx).await {
+                Ok(id) => id,
+                Err(e) => {
+                    error!("Failed to insert batch swap at height {}: {}", height, e);
+                    continue;
+                }
+            };
+
+            if let Err(e) = batch_swap.insert_individual_swaps(batch_id, dbtx).await {
+                error!(
+                    "Failed to insert individual swaps for batch {} at height {}: {}",
+                    batch_id, height, e
+                );
+                continue;
+            }
+
+            debug!(
+                "Processed EventBatchSwap: batch_id={}, individual_swaps_count={}",
+                batch_id, batch_swap.individual_swaps_count
+            );
+            processed_count += 1;
+        }
+
+        if processed_count == 0 {
+            error!("Failed to process any swap executions at height {}", height);
+        } else {
+            debug!(
+                "Successfully processed {} swap executions at height {}",
+                processed_count, height
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Process EventArbExecution event
+    async fn process_arb_execution_event(
+        event: &ContextualizedEvent<'_>,
+        height: u64,
+        timestamp: DateTime<Utc>,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        let batch_swap = BatchSwap::from_arb_execution_event(event, height, timestamp)?;
+
+        Self::ensure_batch_swap_assets(&batch_swap, height, timestamp, dbtx).await?;
+
+        let batch_id = batch_swap.insert(dbtx).await?;
+
+        batch_swap.insert_individual_swaps(batch_id, dbtx).await?;
+
+        debug!(
+            "Processed EventArbExecution: batch_id={}, individual_swaps_count={}",
+            batch_id, batch_swap.individual_swaps_count
+        );
+
+        Ok(())
+    }
+
+    /// Ensure all assets from a batch swap exist in explorer_assets table
+    async fn ensure_batch_swap_assets(
+        batch_swap: &BatchSwap,
+        height: u64,
+        timestamp: DateTime<Utc>,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        let decoded_input_asset = asset_id_to_denom(&batch_swap.total_input_asset_id)
+            .unwrap_or_else(|_| batch_swap.total_input_asset_id.clone());
+        AssetManager::ensure_asset_exists(
+            &batch_swap.total_input_asset_id,
+            &decoded_input_asset,
+            height,
+            timestamp,
+            dbtx,
+        )
+        .await?;
+
+        let decoded_output_asset = asset_id_to_denom(&batch_swap.total_output_asset_id)
+            .unwrap_or_else(|_| batch_swap.total_output_asset_id.clone());
+        AssetManager::ensure_asset_exists(
+            &batch_swap.total_output_asset_id,
+            &decoded_output_asset,
+            height,
+            timestamp,
+            dbtx,
+        )
+        .await?;
+
+        for swap in &batch_swap.individual_swaps {
+            let decoded_input = asset_id_to_denom(&swap.input_asset_id)
+                .unwrap_or_else(|_| swap.input_asset_id.clone());
+            AssetManager::ensure_asset_exists(
+                &swap.input_asset_id,
+                &decoded_input,
+                height,
+                timestamp,
+                dbtx,
+            )
+            .await?;
+
+            let decoded_output = asset_id_to_denom(&swap.output_asset_id)
+                .unwrap_or_else(|_| swap.output_asset_id.clone());
+            AssetManager::ensure_asset_exists(
+                &swap.output_asset_id,
+                &decoded_output,
+                height,
+                timestamp,
+                dbtx,
+            )
+            .await?;
+
+            for route_step in &swap.route_steps {
+                let decoded_route_asset = asset_id_to_denom(&route_step.asset_id)
+                    .unwrap_or_else(|_| route_step.asset_id.clone());
+                AssetManager::ensure_asset_exists(
+                    &route_step.asset_id,
+                    &decoded_route_asset,
+                    height,
+                    timestamp,
+                    dbtx,
+                )
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_fee_percentage_calculation() {
-        // Test the fee conversion logic directly
         fn convert_bps_to_percentage(fee_bps: i32) -> f64 {
             let percentage = fee_bps as f64 / 100.0;
             (percentage * 100.0).round() / 100.0
         }
 
-        // Test cases based on user requirements
         assert_eq!(convert_bps_to_percentage(100), 1.00); // 100 bps → 1.00%
-        assert_eq!(convert_bps_to_percentage(10), 0.10);  // 10 bps → 0.10%
-        assert_eq!(convert_bps_to_percentage(0), 0.00);   // 0 bps → 0.00%
-        assert_eq!(convert_bps_to_percentage(50), 0.50);  // 50 bps → 0.50%
-        assert_eq!(convert_bps_to_percentage(1), 0.01);   // 1 bps → 0.01%
+        assert_eq!(convert_bps_to_percentage(10), 0.10); // 10 bps → 0.10%
+        assert_eq!(convert_bps_to_percentage(0), 0.00); // 0 bps → 0.00%
+        assert_eq!(convert_bps_to_percentage(50), 0.50); // 50 bps → 0.50%
+        assert_eq!(convert_bps_to_percentage(1), 0.01); // 1 bps → 0.01%
         assert_eq!(convert_bps_to_percentage(250), 2.50); // 250 bps → 2.50%
-        
+
         println!("✅ Fee percentage calculations work correctly:");
         println!("  100 bps → {}%", convert_bps_to_percentage(100));
         println!("   10 bps → {}%", convert_bps_to_percentage(10));
