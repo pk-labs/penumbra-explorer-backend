@@ -1397,6 +1397,164 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             }
         }
 
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS dex_batch_swaps (
+                id SERIAL PRIMARY KEY,
+                block_height BIGINT NOT NULL REFERENCES explorer_block_details(height),
+                block_timestamp TIMESTAMPTZ NOT NULL,
+                execution_type TEXT NOT NULL CHECK (execution_type IN ('Swap', 'Arb')),
+                total_input_amount NUMERIC(39, 0) NOT NULL,
+                total_input_asset_id TEXT NOT NULL REFERENCES explorer_assets(asset_id),
+                total_output_amount NUMERIC(39, 0) NOT NULL,
+                total_output_asset_id TEXT NOT NULL REFERENCES explorer_assets(asset_id),
+                individual_swaps_count INTEGER NOT NULL DEFAULT 0,
+                raw_execution_data JSONB
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS dex_individual_swaps (
+                id SERIAL PRIMARY KEY,
+                batch_swap_id INTEGER NOT NULL REFERENCES dex_batch_swaps(id) ON DELETE CASCADE,
+                swap_index INTEGER NOT NULL,
+                input_amount NUMERIC(39, 0) NOT NULL,
+                input_asset_id TEXT NOT NULL REFERENCES explorer_assets(asset_id),
+                output_amount NUMERIC(39, 0) NOT NULL,
+                output_asset_id TEXT NOT NULL REFERENCES explorer_assets(asset_id),
+                route_steps_count INTEGER NOT NULL DEFAULT 0
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS dex_individual_swap_routes (
+                id SERIAL PRIMARY KEY,
+                individual_swap_id INTEGER NOT NULL REFERENCES dex_individual_swaps(id) ON DELETE CASCADE,
+                route_step INTEGER NOT NULL,
+                amount NUMERIC(39, 0) NOT NULL,
+                asset_id TEXT NOT NULL REFERENCES explorer_assets(asset_id)
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_batch_swaps_block_height
+            ON dex_batch_swaps(block_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_batch_swaps_timestamp
+            ON dex_batch_swaps(block_timestamp DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_batch_swaps_type
+            ON dex_batch_swaps(execution_type)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_batch_swaps_input_asset
+            ON dex_batch_swaps(total_input_asset_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_batch_swaps_output_asset
+            ON dex_batch_swaps(total_output_asset_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swaps_batch_id
+            ON dex_individual_swaps(batch_swap_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swaps_input_asset
+            ON dex_individual_swaps(input_asset_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swaps_output_asset
+            ON dex_individual_swaps(output_asset_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swaps_batch_index
+            ON dex_individual_swaps(batch_swap_id, swap_index)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swap_routes_swap_id
+            ON dex_individual_swap_routes(individual_swap_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swap_routes_asset_id
+            ON dex_individual_swap_routes(asset_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swap_routes_swap_step
+            ON dex_individual_swap_routes(individual_swap_id, route_step)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
         tracing::info!("Reading genesis file to initialize validators");
         if let Err(e) = self.initialize_validators_from_genesis(dbtx).await {
             tracing::error!("Failed to initialize validators from genesis: {}", e);
@@ -1418,7 +1576,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         let block_results = block::process_block_events(&batch).await?;
         let num_blocks = block_results.len();
 
-        // Capture first block height before consuming the vector
         let first_block_height = if block_results.is_empty() {
             None
         } else {
