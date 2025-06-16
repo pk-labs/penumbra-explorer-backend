@@ -51,7 +51,6 @@ impl AssetManager {
 
         Ok(())
     }
-
 }
 
 /// Liquidity position data structure
@@ -517,17 +516,33 @@ impl BatchSwap {
     ) -> Result<Self> {
         let execution_data: Value = serde_json::from_str(swap_execution_json)?;
 
-        let total_input_amount_str = execution_data["input"]["amount"]["lo"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing input.amount.lo"))?;
+        let total_input_amount_str = if execution_data["input"]["amount"].is_object()
+            && execution_data["input"]["amount"]
+                .as_object()
+                .map_or(false, serde_json::Map::is_empty)
+        {
+            "0"
+        } else {
+            execution_data["input"]["amount"]["lo"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing input.amount.lo"))?
+        };
 
         let total_input_asset_id = execution_data["input"]["assetId"]["inner"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing input.assetId.inner"))?;
 
-        let total_output_amount_str = execution_data["output"]["amount"]["lo"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing output.amount.lo"))?;
+        let total_output_amount_str = if execution_data["output"]["amount"].is_object()
+            && execution_data["output"]["amount"]
+                .as_object()
+                .map_or(false, serde_json::Map::is_empty)
+        {
+            "0"
+        } else {
+            execution_data["output"]["amount"]["lo"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing output.amount.lo"))?
+        };
 
         let total_output_asset_id = execution_data["output"]["assetId"]["inner"]
             .as_str()
@@ -573,13 +588,21 @@ impl BatchSwap {
 
             let mut route_steps = Vec::new();
             for (step_index, step_value) in value_array.iter().enumerate() {
-                let amount_str = step_value["amount"]["lo"].as_str().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Missing amount.lo in swap {} step {}",
-                        swap_index,
-                        step_index
-                    )
-                })?;
+                let amount_str = if step_value["amount"].is_object()
+                    && step_value["amount"]
+                        .as_object()
+                        .map_or(false, serde_json::Map::is_empty)
+                {
+                    "0"
+                } else {
+                    step_value["amount"]["lo"].as_str().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Missing amount.lo in swap {} step {}",
+                            swap_index,
+                            step_index
+                        )
+                    })?
+                };
 
                 let asset_id = step_value["assetId"]["inner"].as_str().ok_or_else(|| {
                     anyhow::anyhow!(
@@ -831,7 +854,8 @@ impl Processor {
             height,
             timestamp,
             dbtx,
-        ).await?;
+        )
+        .await?;
 
         let decoded_asset2 = asset_id_to_denom(&position.trading_pair_asset2)
             .unwrap_or_else(|_| position.trading_pair_asset2.clone());
@@ -841,7 +865,8 @@ impl Processor {
             height,
             timestamp,
             dbtx,
-        ).await?;
+        )
+        .await?;
 
         position.insert(dbtx).await?;
 
@@ -1113,24 +1138,41 @@ impl Processor {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use sqlx::types::chrono::Utc;
+
+    #[test]
+    fn test_empty_amount_parsing() {
+        let swap_with_empty_output = r#"{"input":{"amount":{"lo":"1000000"},"assetId":{"inner":"drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="}},"output":{"amount":{},"assetId":{"inner":"KeqcLzNx9qSH5+lcJHBB9KNW+YPrBk5dKzvPMiypahA="}},"traces":[{"value":[{"amount":{"lo":"1000000"},"assetId":{"inner":"drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="}},{"amount":{},"assetId":{"inner":"KeqcLzNx9qSH5+lcJHBB9KNW+YPrBk5dKzvPMiypahA="}}]}]}"#;
+
+        let result =
+            BatchSwap::parse_batch_swap(swap_with_empty_output, 412203, Utc::now(), "Swap");
+
+        assert!(
+            result.is_ok(),
+            "Should successfully parse swap with empty amounts"
+        );
+
+        let batch_swap = result.unwrap();
+        assert_eq!(batch_swap.total_output_amount, BigDecimal::from(0));
+        assert_eq!(
+            batch_swap.individual_swaps[0].output_amount,
+            BigDecimal::from(0)
+        );
+    }
 
     #[test]
     fn test_fee_percentage_calculation() {
         fn convert_bps_to_percentage(fee_bps: i32) -> f64 {
-            let percentage = fee_bps as f64 / 100.0;
+            let percentage = f64::from(fee_bps) / 100.0;
             (percentage * 100.0).round() / 100.0
         }
 
-        assert_eq!(convert_bps_to_percentage(100), 1.00); // 100 bps → 1.00%
-        assert_eq!(convert_bps_to_percentage(10), 0.10); // 10 bps → 0.10%
-        assert_eq!(convert_bps_to_percentage(0), 0.00); // 0 bps → 0.00%
-        assert_eq!(convert_bps_to_percentage(50), 0.50); // 50 bps → 0.50%
-        assert_eq!(convert_bps_to_percentage(1), 0.01); // 1 bps → 0.01%
-        assert_eq!(convert_bps_to_percentage(250), 2.50); // 250 bps → 2.50%
-
-        println!("✅ Fee percentage calculations work correctly:");
-        println!("  100 bps → {}%", convert_bps_to_percentage(100));
-        println!("   10 bps → {}%", convert_bps_to_percentage(10));
-        println!("    0 bps → {}%", convert_bps_to_percentage(0));
+        assert!((convert_bps_to_percentage(100) - 1.00).abs() < f64::EPSILON);
+        assert!((convert_bps_to_percentage(10) - 0.10).abs() < f64::EPSILON);
+        assert!((convert_bps_to_percentage(0) - 0.00).abs() < f64::EPSILON);
+        assert!((convert_bps_to_percentage(50) - 0.50).abs() < f64::EPSILON);
+        assert!((convert_bps_to_percentage(1) - 0.01).abs() < f64::EPSILON);
+        assert!((convert_bps_to_percentage(250) - 2.50).abs() < f64::EPSILON);
     }
 }
