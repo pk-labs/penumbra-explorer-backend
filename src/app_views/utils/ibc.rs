@@ -304,7 +304,6 @@ pub async fn record_transfers_batch(
 
     debug!("Batch recording {} IBC transfers", transfers.len());
 
-    // Build dynamic VALUES clauses for bulk insert
     let mut values_clauses = Vec::new();
     for i in 0..transfers.len() {
         let param_base = i * 8;
