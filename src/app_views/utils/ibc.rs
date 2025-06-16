@@ -466,11 +466,11 @@ async fn update_client_stats(
     Ok(())
 }
 
-async fn process_candlestick_data(
-    dbtx: &mut PgTransaction<'_>,
+fn process_candlestick_data(
+    _dbtx: &mut PgTransaction<'_>,
     event: &ContextualizedEvent<'_>,
-    timestamp: DateTime<Utc>,
-) -> Result<(), anyhow::Error> {
+    _timestamp: DateTime<Utc>,
+) {
     debug!(
         "Event kind: {} at height {}",
         event.event.kind.as_str(),
@@ -478,7 +478,7 @@ async fn process_candlestick_data(
     );
 
     if event.event.kind.as_str() != "penumbra.core.component.dex.v1.EventCandlestickData" {
-        return Ok(());
+        return;
     }
 
     debug!(
@@ -605,7 +605,7 @@ async fn process_candlestick_data(
     {
         if *price <= 0.0 {
             debug!("Skipping invalid non-positive price: {}", price);
-            return Ok(());
+            return;
         }
 
         debug!(
@@ -633,8 +633,6 @@ async fn process_candlestick_data(
             close_price
         );
     }
-
-    Ok(())
 }
 
 fn extract_asset_id(meta: &Value, value: &Value) -> Option<Vec<u8>> {
@@ -983,9 +981,7 @@ pub async fn process_events(
         if event.event.kind.as_str() == "penumbra.core.component.dex.v1.EventCandlestickData" {
             debug!("Found candlestick event in block {}", height);
             candlestick_count += 1;
-            if let Err(e) = process_candlestick_data(dbtx, event, timestamp).await {
-                error!("Failed to process candlestick data: {}", e);
-            }
+            process_candlestick_data(dbtx, event, timestamp);
         }
     }
 
