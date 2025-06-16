@@ -107,7 +107,6 @@ impl LiquidityPosition {
         if reserves.as_object().map_or(true, serde_json::Map::is_empty) {
             BigDecimal::from(0)
         } else {
-            // Extract the "lo" field and parse it as a BigDecimal
             let amount_str = match &reserves["lo"] {
                 Value::String(s) => s.clone(),
                 Value::Number(n) => n.to_string(),
@@ -124,9 +123,7 @@ impl LiquidityPosition {
             .and_then(|fee_str| fee_str.parse().ok())
             .unwrap_or(0);
 
-        // Convert basis points to percentage: 100 bps = 1.00%, 10 bps = 0.10%
         let percentage = f64::from(fee_bps) / 100.0;
-        // Round to 2 decimal places
         (percentage * 100.0).round() / 100.0
     }
 
@@ -244,7 +241,6 @@ impl LiquidityPosition {
         height: u64,
         timestamp: DateTime<Utc>,
     ) -> Result<()> {
-        // Update reserves if provided in withdraw event
         if let Some(reserves1_json) = Self::find_attribute_value(event, "reserves1") {
             self.reserves1_amount = Self::extract_reserves_amount(&reserves1_json);
         }
@@ -827,7 +823,6 @@ impl Processor {
     ) -> Result<()> {
         let position = LiquidityPosition::from_position_open_event(event, height, timestamp)?;
 
-        // For positions (only 2 assets), individual calls are simpler and just as fast
         let decoded_asset1 = asset_id_to_denom(&position.trading_pair_asset1)
             .unwrap_or_else(|_| position.trading_pair_asset1.clone());
         AssetManager::ensure_asset_exists(
