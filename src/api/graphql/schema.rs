@@ -32,7 +32,10 @@ pub async fn create_schema(db_pool: PgPool) -> anyhow::Result<PenumbraSchema> {
     let pubsub_clone_for_triggers = pubsub.clone();
     let pool_clone_for_triggers = db_pool.clone();
     tokio::spawn(async move {
-        if let Err(e) = pubsub_clone_for_triggers.setup_triggers(&pool_clone_for_triggers).await {
+        if let Err(e) = pubsub_clone_for_triggers
+            .setup_triggers(&pool_clone_for_triggers)
+            .await
+        {
             warn!("Failed to setup triggers during startup: {}", e);
         }
     });
