@@ -269,7 +269,10 @@ impl TransferData {
                     value
                 }
                 Err(e) => {
-                    debug!("Failed to parse amount string '{}' as u128: {}", value_str, e);
+                    debug!(
+                        "Failed to parse amount string '{}' as u128: {}",
+                        value_str, e
+                    );
                     0
                 }
             }
@@ -2818,9 +2821,16 @@ pub async fn process_events(
 
     // Batch process all collected transfers
     if !transfers_to_record.is_empty() {
-        debug!("Batch processing {} IBC transfers for block {}", transfers_to_record.len(), height);
+        debug!(
+            "Batch processing {} IBC transfers for block {}",
+            transfers_to_record.len(),
+            height
+        );
         if let Err(e) = record_transfers_batch(dbtx, &transfers_to_record).await {
-            error!("Failed to batch record transfers for block {}: {}", height, e);
+            error!(
+                "Failed to batch record transfers for block {}: {}",
+                height, e
+            );
         }
     }
 
