@@ -827,6 +827,92 @@ impl Validator {
         }
     }
 
+    /// Record ACTIVE validators as signed=true (except those already recorded as missed)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
+    pub async fn record_active_validators_as_signed(
+        dbtx: &mut PgTransaction<'_>,
+        height: u64,
+        timestamp: DateTime<Utc>,
+    ) -> Result<()> {
+        let block_height = i64::try_from(height).unwrap_or(i64::MAX);
+
+        // Get all ACTIVE validators
+        let active_state: Option<String> = sqlx::query_scalar(
+            "SELECT DISTINCT state FROM validators WHERE state LIKE '%ACTIVE%' LIMIT 1",
+        )
+        .fetch_optional(dbtx.as_mut())
+        .await?;
+
+        let Some(state) = active_state else {
+            debug!("No active validator state found, skipping signed block recording");
+            return Ok(());
+        };
+
+        let active_validators: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT identity_key FROM validators WHERE state = '{state}'"
+        ))
+        .fetch_all(dbtx.as_mut())
+        .await?;
+
+        if active_validators.is_empty() {
+            debug!("No active validators found, skipping signed block recording");
+            return Ok(());
+        }
+
+        // Insert active validators as signed=true, but only if not already recorded
+        // (MissedBlock events would have already inserted them as signed=false)
+        let mut values_clauses = Vec::new();
+        for i in 0..active_validators.len() {
+            let param_base = i * 4;
+            values_clauses.push(format!(
+                "(${}, ${}, ${}, ${})",
+                param_base + 1,
+                param_base + 2,
+                param_base + 3,
+                param_base + 4
+            ));
+        }
+
+        let query = format!(
+            r"
+            INSERT INTO validator_blocks (identity_key, block_height, timestamp, signed)
+            VALUES {}
+            ON CONFLICT (identity_key, block_height) DO NOTHING
+            ",
+            values_clauses.join(", ")
+        );
+
+        let mut sqlx_query = sqlx::query(&query);
+        for identity_key in active_validators {
+            sqlx_query = sqlx_query
+                .bind(identity_key)
+                .bind(block_height)
+                .bind(timestamp)
+                .bind(true); // signed = true
+        }
+
+        match sqlx_query.execute(dbtx.as_mut()).await {
+            Ok(result) => {
+                debug!(
+                    "Recorded {} active validators as signed for block {}",
+                    result.rows_affected(),
+                    height
+                );
+                Ok(())
+            }
+            Err(e) => {
+                error!(
+                    "Failed to record active validators as signed for block {}: {}",
+                    height, e
+                );
+                Ok(()) // Don't fail the entire process for this
+            }
+        }
+    }
+
     /// Calculate total voting power across ACTIVE validators only
     ///
     /// # Errors
@@ -1614,6 +1700,12 @@ impl Validator {
                     identity_key, e
                 );
             }
+        }
+
+        // After processing all events (including MissedBlock events),
+        // record remaining ACTIVE validators as signed=true
+        if let Err(e) = Self::record_active_validators_as_signed(dbtx, height, timestamp).await {
+            error!("Failed to record active validators as signed: {}", e);
         }
 
         Ok(())

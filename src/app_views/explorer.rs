@@ -273,7 +273,7 @@ impl Explorer {
         &self,
         dbtx: &mut PgTransaction<'_>,
         height: u64,
-        timestamp: DateTime<Utc>,
+        _timestamp: DateTime<Utc>,
         _ctx: &EventBatchContext,
     ) -> Result<(), anyhow::Error> {
         let block_exists: i64 = match sqlx::query_scalar(
@@ -357,25 +357,16 @@ impl Explorer {
             return Ok(());
         }
 
+        // Don't record any validator blocks here
+        // Let the validator event processing handle everything:
+        // 1. First: MissedBlock events record validators with signed=false
+        // 2. Then: Record remaining ACTIVE validators with signed=true
+
         tracing::debug!(
-            "Recording signed blocks for {} active validators at height {}",
+            "Found {} active validators at height {} - validator event processing will handle block recording",
             active_validators.len(),
             height
         );
-
-        let validator_records: Vec<(String, i64, DateTime<Utc>, bool)> = active_validators
-            .iter()
-            .map(|identity_key| {
-                (
-                    identity_key.clone(),
-                    i64::try_from(height).unwrap_or(i64::MAX),
-                    timestamp,
-                    true,
-                )
-            })
-            .collect();
-
-        let _ = validator::Validator::record_validator_blocks_bulk(&validator_records, dbtx).await;
 
         Ok(())
     }
