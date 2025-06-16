@@ -442,7 +442,11 @@ pub struct RouteStep {
 }
 
 impl BatchSwap {
-    /// Create BatchSwap from EventBatchSwap
+    /// Create `BatchSwap` from `EventBatchSwap`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event data is missing or invalid.
     pub fn from_batch_swap_event(
         event: &ContextualizedEvent,
         height: u64,
@@ -453,7 +457,11 @@ impl BatchSwap {
         Self::parse_batch_swap(&swap_execution_json, height, timestamp, "Swap")
     }
 
-    /// Create BatchSwap from EventArbExecution
+    /// Create `BatchSwap` from `EventArbExecution`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event data is missing or invalid.
     pub fn from_arb_execution_event(
         event: &ContextualizedEvent,
         height: u64,
@@ -466,7 +474,7 @@ impl BatchSwap {
         Self::parse_batch_swap(&swap_execution_json, height, timestamp, "Arb")
     }
 
-    /// Find all swap executions in EventBatchSwap (both directions if present)
+    /// Find all swap executions in `EventBatchSwap` (both directions if present)
     fn find_all_batch_swap_executions(event: &ContextualizedEvent) -> Result<Vec<String>> {
         let mut executions = Vec::new();
 
@@ -490,7 +498,7 @@ impl BatchSwap {
         }
     }
 
-    /// Find swapExecution1For2 or swapExecution2For1 in EventBatchSwap (legacy method)
+    /// Find swapExecution1For2 or swapExecution2For1 in `EventBatchSwap` (legacy method)
     fn find_batch_swap_execution(event: &ContextualizedEvent) -> Result<String> {
         if let Some(execution) =
             LiquidityPosition::find_attribute_value(event, "swapExecution1For2")
@@ -507,7 +515,7 @@ impl BatchSwap {
         ))
     }
 
-    /// Parse batch swap JSON into BatchSwap struct
+    /// Parse batch swap JSON into `BatchSwap` struct
     fn parse_batch_swap(
         swap_execution_json: &str,
         height: u64,
@@ -552,7 +560,7 @@ impl BatchSwap {
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Missing or invalid traces array"))?;
 
-        let individual_swaps_count = traces_array.len() as i32;
+        let individual_swaps_count = i32::try_from(traces_array.len())?;
         let individual_swaps = Self::parse_individual_swaps(traces_array)?;
 
         Ok(Self {
@@ -613,7 +621,7 @@ impl BatchSwap {
                 })?;
 
                 route_steps.push(RouteStep {
-                    route_step: step_index as i32,
+                    route_step: i32::try_from(step_index)?,
                     amount: BigDecimal::from_str(amount_str)?,
                     asset_id: asset_id.to_string(),
                 });
@@ -623,12 +631,12 @@ impl BatchSwap {
             let output_step = &route_steps[route_steps.len() - 1];
 
             individual_swaps.push(IndividualSwap {
-                swap_index: swap_index as i32,
+                swap_index: i32::try_from(swap_index)?,
                 input_amount: input_step.amount.clone(),
                 input_asset_id: input_step.asset_id.clone(),
                 output_amount: output_step.amount.clone(),
                 output_asset_id: output_step.asset_id.clone(),
-                route_steps_count: route_steps.len() as i32,
+                route_steps_count: i32::try_from(route_steps.len())?,
                 route_steps,
             });
         }
@@ -637,6 +645,11 @@ impl BatchSwap {
     }
 
     /// Insert batch swap into database and return the ID
+    /// Insert batch swap into database and return the ID
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
     pub async fn insert(&self, dbtx: &mut PgTransaction<'_>) -> Result<i32> {
         let batch_id: i32 = sqlx::query_scalar(
             r"
@@ -670,6 +683,10 @@ impl BatchSwap {
     }
 
     /// Insert all individual swaps for this batch
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database operation fails.
     pub async fn insert_individual_swaps(
         &self,
         batch_id: i32,
@@ -961,22 +978,19 @@ impl Processor {
         Ok(())
     }
 
-    /// Process EventBatchSwap event (handles multiple execution directions)
+    /// Process `EventBatchSwap` event (handles multiple execution directions)
     async fn process_batch_swap_event(
         event: &ContextualizedEvent<'_>,
         height: u64,
         timestamp: DateTime<Utc>,
         dbtx: &mut PgTransaction<'_>,
     ) -> Result<()> {
-        let swap_executions = match BatchSwap::find_all_batch_swap_executions(event) {
-            Ok(executions) => executions,
-            Err(_) => {
-                debug!(
-                    "Skipping EventBatchSwap at height {} - no actual swap execution",
-                    height
-                );
-                return Ok(());
-            }
+        let Ok(swap_executions) = BatchSwap::find_all_batch_swap_executions(event) else {
+            debug!(
+                "Skipping EventBatchSwap at height {} - no actual swap execution",
+                height
+            );
+            return Ok(());
         };
 
         let mut processed_count = 0;
@@ -1043,7 +1057,7 @@ impl Processor {
         Ok(())
     }
 
-    /// Process EventArbExecution event
+    /// Process `EventArbExecution` event
     async fn process_arb_execution_event(
         event: &ContextualizedEvent<'_>,
         height: u64,
@@ -1066,7 +1080,7 @@ impl Processor {
         Ok(())
     }
 
-    /// Ensure all assets from a batch swap exist in explorer_assets table
+    /// Ensure all assets from a batch swap exist in `explorer_assets` table
     async fn ensure_batch_swap_assets(
         batch_swap: &BatchSwap,
         height: u64,
@@ -1146,7 +1160,7 @@ mod tests {
         let swap_with_empty_output = r#"{"input":{"amount":{"lo":"1000000"},"assetId":{"inner":"drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="}},"output":{"amount":{},"assetId":{"inner":"KeqcLzNx9qSH5+lcJHBB9KNW+YPrBk5dKzvPMiypahA="}},"traces":[{"value":[{"amount":{"lo":"1000000"},"assetId":{"inner":"drPksQaBNYwSOzgfkGOEdrd4kEDkeALeh58Ps+7cjQs="}},{"amount":{},"assetId":{"inner":"KeqcLzNx9qSH5+lcJHBB9KNW+YPrBk5dKzvPMiypahA="}}]}]}"#;
 
         let result =
-            BatchSwap::parse_batch_swap(swap_with_empty_output, 412203, Utc::now(), "Swap");
+            BatchSwap::parse_batch_swap(swap_with_empty_output, 412_203, Utc::now(), "Swap");
 
         assert!(
             result.is_ok(),
