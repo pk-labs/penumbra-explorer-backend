@@ -1822,7 +1822,6 @@ impl Validator {
 
             debug!("Skipping normal cleanup for initial transition - all validators are newly initialized");
         } else {
-
             let mut deleted_count = 0;
             for identity_key in &validators_in_uptime_stats {
                 if !validators_in_block.contains(identity_key) {
