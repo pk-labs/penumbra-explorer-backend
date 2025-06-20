@@ -221,8 +221,33 @@ impl PubSub {
         ctx.data_opt::<Self>()
     }
 
+    /// Setup database triggers for real-time notifications
+    ///
+    /// # Errors
+    /// Returns an error only in case of critical database connection issues.
+    /// Missing tables result in graceful fallback to polling mode.
+    pub async fn setup_triggers(&self, pool: &Pool<Postgres>) -> Result<(), anyhow::Error> {
+        info!("Setting up database triggers with retry logic");
+
+        match triggers::setup_notification_triggers_with_retry(pool).await {
+            Ok(()) => {
+                info!("Database triggers setup completed successfully");
+                Ok(())
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to set up database triggers: {}. Continuing with polling-only mode.",
+                    e
+                );
+                // Don't return error - this allows the application to continue with polling
+                // This is especially important for fresh deployments where tables don't exist yet
+                Ok(())
+            }
+        }
+    }
+
     pub fn start_subscriptions(&self, pool: &Pool<Postgres>) {
-        info!("Starting subscription triggers");
+        info!("Starting subscription listeners");
 
         let pubsub_clone = self.clone();
         let pool_clone = pool.clone();

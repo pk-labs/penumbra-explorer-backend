@@ -476,15 +476,15 @@ impl Validator {
     pub async fn update_metadata_only(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
         sqlx::query(
             r"
-            UPDATE validators 
-            SET 
+            UPDATE validators
+            SET
                 name = $2,
                 website = $3,
                 description = $4,
                 consensus_key = $5,
                 governance_key = $6,
                 last_updated = $7
-            WHERE 
+            WHERE
                 identity_key = $1
             ",
         )
@@ -530,12 +530,12 @@ impl Validator {
 
                         sqlx::query(
                             r"
-                            UPDATE validators 
-                            SET 
+                            UPDATE validators
+                            SET
                                 state = $1,
                                 last_updated = $2,
                                 first_seen_time = $2
-                            WHERE 
+                            WHERE
                                 identity_key = $3
                             ",
                         )
@@ -570,12 +570,12 @@ impl Validator {
 
                         sqlx::query(
                             r"
-                            UPDATE validators 
-                            SET 
+                            UPDATE validators
+                            SET
                                 state = $1,
                                 last_updated = $2,
                                 first_seen_height = $3
-                            WHERE 
+                            WHERE
                                 identity_key = $4
                             ",
                         )
@@ -600,11 +600,11 @@ impl Validator {
 
         sqlx::query(
             r"
-            UPDATE validators 
-            SET 
+            UPDATE validators
+            SET
                 state = $1,
                 last_updated = $2
-            WHERE 
+            WHERE
                 identity_key = $3
             ",
         )
@@ -635,11 +635,11 @@ impl Validator {
 
         sqlx::query(
             r"
-            UPDATE validators 
-            SET 
+            UPDATE validators
+            SET
                 bonding_state = $1,
                 last_updated = $2
-            WHERE 
+            WHERE
                 identity_key = $3
             ",
         )
@@ -666,12 +666,12 @@ impl Validator {
     ) -> Result<()> {
         sqlx::query(
             r"
-            UPDATE validators 
-            SET 
+            UPDATE validators
+            SET
                 voting_power = $1,
                 voting_power_active_percentage = $2,
                 last_updated = $3
-            WHERE 
+            WHERE
                 identity_key = $4
             ",
         )
@@ -930,8 +930,8 @@ impl Validator {
                 sqlx::query_scalar::<_, i64>(
                     &format!("SELECT COALESCE(SUM(voting_power)::BIGINT, 0) FROM validators WHERE state = '{state}'")
                 )
-                .fetch_one(dbtx.as_mut())
-                .await?
+                    .fetch_one(dbtx.as_mut())
+                    .await?
             },
             None => 0,
         };
@@ -963,7 +963,7 @@ impl Validator {
             let query = format!(
                 r"
                 UPDATE validators
-                SET 
+                SET
                     voting_power_active_percentage = ROUND(((voting_power::float8 / $1::float8) * 100.0)::numeric, 2)
                 WHERE
                     state = '{state}'
@@ -978,7 +978,7 @@ impl Validator {
             let clear_inactive_query = format!(
                 r"
                 UPDATE validators
-                SET 
+                SET
                     voting_power_active_percentage = 0.0
                 WHERE
                     state != '{state}'
@@ -1727,10 +1727,10 @@ impl Validator {
         sqlx::query(
             r"
             INSERT INTO validator_uptime_stats (
-                identity_key, 
-                total_blocks, 
-                signed_blocks, 
-                missed_blocks, 
+                identity_key,
+                total_blocks,
+                signed_blocks,
+                missed_blocks,
                 uptime_percentage,
                 last_calculated_height,
                 window_start_height,
@@ -1795,23 +1795,23 @@ impl Validator {
         sqlx::query(
             r"
             WITH validator_block_counts AS (
-                SELECT 
+                SELECT
                     vb.identity_key,
                     COUNT(*) as total_blocks,
                     SUM(CASE WHEN vb.signed THEN 1 ELSE 0 END) as signed_blocks,
                     SUM(CASE WHEN NOT vb.signed THEN 1 ELSE 0 END) as missed_blocks
                 FROM validator_blocks vb
                 WHERE vb.identity_key = ANY($1)
-                  AND vb.block_height >= $2 
+                  AND vb.block_height >= $2
                   AND vb.block_height <= $3
                 GROUP BY vb.identity_key
             )
             UPDATE validator_uptime_stats us
-            SET 
+            SET
                 total_blocks = COALESCE(vbc.total_blocks, 0),
                 signed_blocks = COALESCE(vbc.signed_blocks, 0),
                 missed_blocks = COALESCE(vbc.missed_blocks, 0),
-                uptime_percentage = CASE 
+                uptime_percentage = CASE
                     WHEN COALESCE(vbc.total_blocks, 0) > 0 THEN
                         ROUND((COALESCE(vbc.signed_blocks, 0)::numeric / vbc.total_blocks::numeric) * 100.0, 2)
                     ELSE 0.00
@@ -1824,11 +1824,11 @@ impl Validator {
                AND us.identity_key = ANY($1)
             ",
         )
-        .bind(&validators_in_block)
-        .bind(window_start)
-        .bind(height)
-        .execute(dbtx.as_mut())
-        .await?;
+            .bind(&validators_in_block)
+            .bind(window_start)
+            .bind(height)
+            .execute(dbtx.as_mut())
+            .await?;
 
         debug!(
             "Recalculated uptime stats for {} validators at block {} (window: {} to {})",
@@ -1856,7 +1856,7 @@ impl Validator {
         sqlx::query(
             r"
             WITH validator_block_counts AS (
-                SELECT 
+                SELECT
                     vb.identity_key,
                     COUNT(*) as total_blocks,
                     SUM(CASE WHEN vb.signed THEN 1 ELSE 0 END) as signed_blocks,
@@ -1875,12 +1875,12 @@ impl Validator {
                 window_start_height,
                 updated_at
             )
-            SELECT 
+            SELECT
                 vbc.identity_key,
                 vbc.total_blocks,
                 vbc.signed_blocks,
                 vbc.missed_blocks,
-                CASE 
+                CASE
                     WHEN vbc.total_blocks > 0 THEN
                         ROUND((vbc.signed_blocks::numeric / vbc.total_blocks::numeric) * 100.0, 2)
                     ELSE 0.00
@@ -1926,21 +1926,21 @@ impl Validator {
         sqlx::query(
             r"
             WITH validator_block_counts AS (
-                SELECT 
+                SELECT
                     COUNT(*) as total_blocks,
                     SUM(CASE WHEN signed THEN 1 ELSE 0 END) as signed_blocks,
                     SUM(CASE WHEN NOT signed THEN 1 ELSE 0 END) as missed_blocks
                 FROM validator_blocks
-                WHERE identity_key = $1 
-                  AND block_height > $2 
+                WHERE identity_key = $1
+                  AND block_height > $2
                   AND block_height <= $3
             )
             UPDATE validator_uptime_stats
-            SET 
+            SET
                 total_blocks = vbc.total_blocks,
                 signed_blocks = vbc.signed_blocks,
                 missed_blocks = vbc.missed_blocks,
-                uptime_percentage = CASE 
+                uptime_percentage = CASE
                     WHEN vbc.total_blocks > 0 THEN
                         ROUND((vbc.signed_blocks::numeric / vbc.total_blocks::numeric) * 100.0, 2)
                     ELSE 0.00
@@ -1991,23 +1991,23 @@ impl Validator {
         sqlx::query(
             r"
             WITH validator_block_counts AS (
-                SELECT 
+                SELECT
                     vb.identity_key,
                     COUNT(*) as total_blocks,
                     SUM(CASE WHEN vb.signed THEN 1 ELSE 0 END) as signed_blocks,
                     SUM(CASE WHEN NOT vb.signed THEN 1 ELSE 0 END) as missed_blocks
                 FROM validator_blocks vb
-                WHERE vb.identity_key = ANY($1) 
-                  AND vb.block_height > $2 
+                WHERE vb.identity_key = ANY($1)
+                  AND vb.block_height > $2
                   AND vb.block_height <= $3
                 GROUP BY vb.identity_key
             )
             UPDATE validator_uptime_stats us
-            SET 
+            SET
                 total_blocks = COALESCE(vbc.total_blocks, 0),
                 signed_blocks = COALESCE(vbc.signed_blocks, 0),
                 missed_blocks = COALESCE(vbc.missed_blocks, 0),
-                uptime_percentage = CASE 
+                uptime_percentage = CASE
                     WHEN COALESCE(vbc.total_blocks, 0) > 0 THEN
                         ROUND((COALESCE(vbc.signed_blocks, 0)::numeric / vbc.total_blocks::numeric) * 100.0, 2)
                     ELSE 0.00
@@ -2020,11 +2020,11 @@ impl Validator {
                AND us.identity_key = ANY($1)
             ",
         )
-        .bind(&identity_list)
-        .bind(window_start)
-        .bind(current_height)
-        .execute(dbtx.as_mut())
-        .await?;
+            .bind(&identity_list)
+            .bind(window_start)
+            .bind(current_height)
+            .execute(dbtx.as_mut())
+            .await?;
 
         debug!(
             "Bulk updated uptime stats for {} validators at height {}",
@@ -2350,11 +2350,11 @@ impl ValidatorParams {
         sqlx::query(
             r"
             INSERT INTO validator_staking_parameters (
-                chain_id, 
-                active_validator_limit, 
-                min_validator_stake, 
-                total_staked, 
-                uptime_blocks_window, 
+                chain_id,
+                active_validator_limit,
+                min_validator_stake,
+                total_staked,
+                uptime_blocks_window,
                 uptime_min_required,
                 slashing_penalty_downtime,
                 slashing_penalty_misbehavior,
@@ -2419,8 +2419,8 @@ impl ValidatorParams {
         let table_exists: i64 = match sqlx::query_scalar(
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'validator_staking_parameters'"
         )
-        .fetch_one(dbtx.as_mut())
-        .await {
+            .fetch_one(dbtx.as_mut())
+            .await {
             Ok(count) => count,
             Err(e) => {
                 error!("Failed to check if validator_staking_parameters table exists: {}", e);
@@ -2616,9 +2616,9 @@ impl ValidatorParams {
                                 let chain_exists: i64 = match sqlx::query_scalar(
                                     "SELECT COUNT(*) FROM validator_staking_parameters WHERE chain_id = $1"
                                 )
-                                .bind(&chain_id)
-                                .fetch_one(dbtx.as_mut())
-                                .await {
+                                    .bind(&chain_id)
+                                    .fetch_one(dbtx.as_mut())
+                                    .await {
                                     Ok(count) => count,
                                     Err(e) => {
                                         error!("Failed to check if chain_id exists: {}", e);
@@ -2796,17 +2796,17 @@ impl ChainParameters {
 
         let epoch_for_height: Option<i64> = sqlx::query_scalar(
             r"
-            SELECT epoch_index 
-            FROM epochs 
-            WHERE chain_id = $1 
+            SELECT epoch_index
+            FROM epochs
+            WHERE chain_id = $1
             AND (
                 SELECT COALESCE(
-                    LAG(end_height) OVER (ORDER BY epoch_index), 
+                    LAG(end_height) OVER (ORDER BY epoch_index),
                     0
                 ) + 1
-            ) <= $2 
+            ) <= $2
             AND end_height >= $2
-            ORDER BY epoch_index 
+            ORDER BY epoch_index
             LIMIT 1
             ",
         )
@@ -2837,9 +2837,9 @@ impl ChainParameters {
         let (current_epoch, epoch_duration): (i64, i64) = if let Some((epoch, duration)) = sqlx::query_as::<_, (i64, i64)>(
             "SELECT current_epoch, epoch_duration FROM validator_chain_parameters WHERE chain_id = $1",
         )
-        .bind(chain_id)
-        .fetch_optional(dbtx.as_mut())
-        .await? {
+            .bind(chain_id)
+            .fetch_optional(dbtx.as_mut())
+            .await? {
             (epoch, duration)
         } else {
             tracing::info!("No validator_chain_parameters found for chain {}, using epoch 0 (first batch)", chain_id);
@@ -2850,9 +2850,9 @@ impl ChainParameters {
             let last_epoch_end_height: Option<i64> = sqlx::query_scalar(
                 "SELECT end_height FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1",
             )
-            .bind(chain_id)
-            .fetch_optional(dbtx.as_mut())
-            .await?;
+                .bind(chain_id)
+                .fetch_optional(dbtx.as_mut())
+                .await?;
 
             if let Some(last_end_height) = last_epoch_end_height {
                 let next_epoch_end = last_end_height + epoch_duration;
@@ -2940,9 +2940,9 @@ impl ChainParameters {
                                                 let current_info: Option<(i64, i64)> = sqlx::query_as(
                                                     "SELECT current_epoch, current_block_height FROM validator_chain_parameters WHERE chain_id = $1"
                                                 )
-                                                .bind(chain_id)
-                                                .fetch_optional(dbtx.as_mut())
-                                                .await?;
+                                                    .bind(chain_id)
+                                                    .fetch_optional(dbtx.as_mut())
+                                                    .await?;
 
                                                 let next_epoch_in = if let Some((
                                                     _current_epoch,
@@ -2952,9 +2952,9 @@ impl ChainParameters {
                                                     let last_epoch_end_height: Option<i64> = sqlx::query_scalar(
                                                         "SELECT end_height FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1"
                                                     )
-                                                    .bind(chain_id)
-                                                    .fetch_optional(dbtx.as_mut())
-                                                    .await?;
+                                                        .bind(chain_id)
+                                                        .fetch_optional(dbtx.as_mut())
+                                                        .await?;
 
                                                     if let Some(last_end_height) =
                                                         last_epoch_end_height
@@ -2982,12 +2982,12 @@ impl ChainParameters {
                                                 sqlx::query(
                                                     "UPDATE validator_chain_parameters SET epoch_duration = $1, next_epoch_in = $2, last_updated = $3 WHERE chain_id = $4"
                                                 )
-                                                .bind(epoch_duration)
-                                                .bind(next_epoch_in)
-                                                .bind(timestamp)
-                                                .bind(chain_id)
-                                                .execute(dbtx.as_mut())
-                                                .await?;
+                                                    .bind(epoch_duration)
+                                                    .bind(next_epoch_in)
+                                                    .bind(timestamp)
+                                                    .bind(chain_id)
+                                                    .execute(dbtx.as_mut())
+                                                    .await?;
                                             }
                                             Err(e) => {
                                                 tracing::error!(
@@ -3042,9 +3042,9 @@ impl ChainParameters {
         let (current_epoch, epoch_duration): (i64, i64) = if let Some((epoch, duration)) = sqlx::query_as::<_, (i64, i64)>(
             "SELECT current_epoch, epoch_duration FROM validator_chain_parameters WHERE chain_id = $1",
         )
-        .bind(chain_id)
-        .fetch_optional(dbtx.as_mut())
-        .await? {
+            .bind(chain_id)
+            .fetch_optional(dbtx.as_mut())
+            .await? {
             (epoch, duration)
         } else {
             tracing::info!("No validator_chain_parameters found for chain {}, using epoch 0 (first batch)", chain_id);
@@ -3058,9 +3058,9 @@ impl ChainParameters {
             let last_epoch_end_height: Option<i64> = sqlx::query_scalar(
                 "SELECT end_height FROM epochs WHERE chain_id = $1 ORDER BY epoch_index DESC LIMIT 1",
             )
-            .bind(chain_id)
-            .fetch_optional(dbtx.as_mut())
-            .await?;
+                .bind(chain_id)
+                .fetch_optional(dbtx.as_mut())
+                .await?;
 
             if let Some(last_end_height) = last_epoch_end_height {
                 let next_epoch_end = last_end_height + epoch_duration;
@@ -3195,8 +3195,8 @@ impl Epoch {
                                         .await?;
 
                                         let current_info: Option<(i64, i64)> = sqlx::query_as(
-                                                "SELECT epoch_duration, current_block_height FROM validator_chain_parameters WHERE chain_id = $1"
-                                            )
+                                            "SELECT epoch_duration, current_block_height FROM validator_chain_parameters WHERE chain_id = $1"
+                                        )
                                             .bind(&chain_id)
                                             .fetch_optional(dbtx.as_mut())
                                             .await?;
@@ -3231,12 +3231,12 @@ impl Epoch {
                                             );
 
                                         sqlx::query(
-                                                r"
-                                                UPDATE validator_chain_parameters 
-                                                SET current_epoch = $1, next_epoch_in = $2, last_updated = $3 
+                                            r"
+                                                UPDATE validator_chain_parameters
+                                                SET current_epoch = $1, next_epoch_in = $2, last_updated = $3
                                                 WHERE chain_id = $4
                                                 ",
-                                            )
+                                        )
                                             .bind(current_epoch)
                                             .bind(next_epoch_in)
                                             .bind(timestamp)

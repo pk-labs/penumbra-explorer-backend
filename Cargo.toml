@@ -10,6 +10,8 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 cometindex = { git = "https://github.com/penumbra-zone/penumbra", rev = "f09cf0e123cb8c2f33124cd07c3e78260581ffe6", package = "cometindex" }
 penumbra-sdk-proto = { git = "https://github.com/penumbra-zone/penumbra", rev = "f09cf0e123cb8c2f33124cd07c3e78260581ffe6", package = "penumbra-sdk-proto" }
+penumbra-sdk-asset = { git = "https://github.com/penumbra-zone/penumbra", rev = "f09cf0e123cb8c2f33124cd07c3e78260581ffe6", package = "penumbra-sdk-asset" }
+penumbra-sdk-dex = { git = "https://github.com/penumbra-zone/penumbra", rev = "f09cf0e123cb8c2f33124cd07c3e78260581ffe6", package = "penumbra-sdk-dex" }
 prost = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

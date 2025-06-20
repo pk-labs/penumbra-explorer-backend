@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::app_views::utils::block::Metadata as BlockMetadata;
 use crate::app_views::utils::transaction::Metadata as TransactionMetadata;
 use crate::app_views::utils::validator::ValidatorParams;
-use crate::app_views::utils::{block, ibc, transaction, validator};
+use crate::app_views::utils::{block, dex, ibc, transaction, validator};
 use crate::parsing::encode_to_base64;
 
 #[derive(Debug)]
@@ -574,19 +574,6 @@ impl AppView for Explorer {
 
         sqlx::query(
             r"
-    CREATE TABLE IF NOT EXISTS asset_prices (
-        asset_id BYTEA PRIMARY KEY,
-        price_usd DOUBLE PRECISION NOT NULL DEFAULT 0.0,
-        last_updated TIMESTAMP WITH TIME ZONE NOT NULL,
-        symbol TEXT
-    )
-    ",
-        )
-        .execute(dbtx.as_mut())
-        .await?;
-
-        sqlx::query(
-            r"
 CREATE TABLE IF NOT EXISTS ibc_transfers (
     id SERIAL PRIMARY KEY,
     client_id TEXT NOT NULL REFERENCES ibc_clients(client_id),
@@ -594,7 +581,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
     direction TEXT NOT NULL,
     amount NUMERIC NOT NULL DEFAULT 0,
     asset_id BYTEA,
-    usd_amount DOUBLE PRECISION, -- New field for storing USD amount
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
     tx_hash BYTEA,
     status TEXT
@@ -889,6 +875,75 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         sqlx::query(
             r"
+            CREATE TABLE IF NOT EXISTS explorer_assets (
+                asset_id TEXT PRIMARY KEY,
+                decoded_passet TEXT NOT NULL,
+                first_seen_height BIGINT NOT NULL,
+                first_seen_time TIMESTAMPTZ NOT NULL
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_explorer_assets_first_seen_height
+            ON explorer_assets(first_seen_height)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS dex_liquidity_positions (
+                position_id TEXT PRIMARY KEY,
+                trading_pair_asset1 TEXT NOT NULL REFERENCES explorer_assets(asset_id),
+                trading_pair_asset2 TEXT NOT NULL REFERENCES explorer_assets(asset_id),
+                reserves1_amount NUMERIC(39, 0) DEFAULT 0,
+                reserves2_amount NUMERIC(39, 0) DEFAULT 0,
+                state TEXT NOT NULL,
+                fee_percentage DECIMAL(5,2) DEFAULT 0.00,
+                created_height BIGINT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL,
+                updated_height BIGINT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_liquidity_positions_state
+            ON dex_liquidity_positions(state)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_liquidity_positions_updated_height
+            ON dex_liquidity_positions(updated_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_liquidity_positions_assets
+            ON dex_liquidity_positions(trading_pair_asset1, trading_pair_asset2)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
             CREATE TABLE IF NOT EXISTS ibc_stats (
                 client_id TEXT PRIMARY KEY REFERENCES ibc_clients(client_id),
                 shielded_volume BIGINT NOT NULL DEFAULT 0,
@@ -936,14 +991,12 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 t.client_id,
                 SUM(CASE
                     WHEN t.direction = 'inbound' AND t.status = 'completed'
-                    -- Add upper bound to prevent extreme values
-                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    THEN COALESCE(t.amount, 0)
                     ELSE 0
                 END) as shielded_volume,
                 SUM(CASE
                     WHEN t.direction = 'outbound' AND t.status = 'completed'
-                    -- Add upper bound to prevent extreme values
-                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    THEN COALESCE(t.amount, 0)
                     ELSE 0
                 END) as unshielded_volume
             FROM
@@ -1008,12 +1061,12 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 t.client_id,
                 SUM(CASE
                     WHEN t.direction = 'inbound' AND t.status = 'completed'
-                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    THEN COALESCE(t.amount, 0)
                     ELSE 0
                 END) as shielded_volume,
                 SUM(CASE
                     WHEN t.direction = 'outbound' AND t.status = 'completed'
-                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    THEN COALESCE(t.amount, 0)
                     ELSE 0
                 END) as unshielded_volume
             FROM
@@ -1081,12 +1134,12 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 t.client_id,
                 SUM(CASE
                     WHEN t.direction = 'inbound' AND t.status = 'completed'
-                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    THEN COALESCE(t.amount, 0)
                     ELSE 0
                 END) as shielded_volume,
                 SUM(CASE
                     WHEN t.direction = 'outbound' AND t.status = 'completed'
-                    THEN LEAST(COALESCE(t.usd_amount, 0), 1000000000)
+                    THEN COALESCE(t.amount, 0)
                     ELSE 0
                 END) as unshielded_volume
             FROM
@@ -1170,8 +1223,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             LEFT JOIN (
                 SELECT
                     t.client_id,
-                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.amount, 0) ELSE 0 END) as shielded_volume,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.amount, 0) ELSE 0 END) as unshielded_volume
                 FROM
                     ibc_transfers t
                 GROUP BY
@@ -1223,8 +1276,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             LEFT JOIN (
                 SELECT
                     t.client_id,
-                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.amount, 0) ELSE 0 END) as shielded_volume,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.amount, 0) ELSE 0 END) as unshielded_volume
                 FROM
                     ibc_transfers t
                 WHERE
@@ -1279,8 +1332,8 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             LEFT JOIN (
                 SELECT
                     t.client_id,
-                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as shielded_volume,
-                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.usd_amount, 0) ELSE 0 END) as unshielded_volume
+                    SUM(CASE WHEN t.direction = 'inbound' AND t.status = 'completed' THEN COALESCE(t.amount, 0) ELSE 0 END) as shielded_volume,
+                    SUM(CASE WHEN t.direction = 'outbound' AND t.status = 'completed' THEN COALESCE(t.amount, 0) ELSE 0 END) as unshielded_volume
                 FROM
                     ibc_transfers t
                 WHERE
@@ -1335,6 +1388,164 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             }
         }
 
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS dex_batch_swaps (
+                id SERIAL PRIMARY KEY,
+                block_height BIGINT NOT NULL REFERENCES explorer_block_details(height),
+                block_timestamp TIMESTAMPTZ NOT NULL,
+                execution_type TEXT NOT NULL CHECK (execution_type IN ('Swap', 'Arb')),
+                total_input_amount NUMERIC(39, 0) NOT NULL,
+                total_input_asset_id TEXT NOT NULL REFERENCES explorer_assets(asset_id),
+                total_output_amount NUMERIC(39, 0) NOT NULL,
+                total_output_asset_id TEXT NOT NULL REFERENCES explorer_assets(asset_id),
+                individual_swaps_count INTEGER NOT NULL DEFAULT 0,
+                raw_execution_data JSONB
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS dex_individual_swaps (
+                id SERIAL PRIMARY KEY,
+                batch_swap_id INTEGER NOT NULL REFERENCES dex_batch_swaps(id) ON DELETE CASCADE,
+                swap_index INTEGER NOT NULL,
+                input_amount NUMERIC(39, 0) NOT NULL,
+                input_asset_id TEXT NOT NULL REFERENCES explorer_assets(asset_id),
+                output_amount NUMERIC(39, 0) NOT NULL,
+                output_asset_id TEXT NOT NULL REFERENCES explorer_assets(asset_id),
+                route_steps_count INTEGER NOT NULL DEFAULT 0
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS dex_individual_swap_routes (
+                id SERIAL PRIMARY KEY,
+                individual_swap_id INTEGER NOT NULL REFERENCES dex_individual_swaps(id) ON DELETE CASCADE,
+                route_step INTEGER NOT NULL,
+                amount NUMERIC(39, 0) NOT NULL,
+                asset_id TEXT NOT NULL REFERENCES explorer_assets(asset_id)
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_batch_swaps_block_height
+            ON dex_batch_swaps(block_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_batch_swaps_timestamp
+            ON dex_batch_swaps(block_timestamp DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_batch_swaps_type
+            ON dex_batch_swaps(execution_type)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_batch_swaps_input_asset
+            ON dex_batch_swaps(total_input_asset_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_batch_swaps_output_asset
+            ON dex_batch_swaps(total_output_asset_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swaps_batch_id
+            ON dex_individual_swaps(batch_swap_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swaps_input_asset
+            ON dex_individual_swaps(input_asset_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swaps_output_asset
+            ON dex_individual_swaps(output_asset_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swaps_batch_index
+            ON dex_individual_swaps(batch_swap_id, swap_index)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swap_routes_swap_id
+            ON dex_individual_swap_routes(individual_swap_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swap_routes_asset_id
+            ON dex_individual_swap_routes(asset_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_dex_individual_swap_routes_swap_step
+            ON dex_individual_swap_routes(individual_swap_id, route_step)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
         tracing::info!("Reading genesis file to initialize validators");
         if let Err(e) = self.initialize_validators_from_genesis(dbtx).await {
             tracing::error!("Failed to initialize validators from genesis: {}", e);
@@ -1356,7 +1567,6 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         let block_results = block::process_block_events(&batch).await?;
         let num_blocks = block_results.len();
 
-        // Capture first block height before consuming the vector
         let first_block_height = if block_results.is_empty() {
             None
         } else {
@@ -1531,6 +1741,12 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                         height,
                         e
                     );
+                }
+
+                if let Err(e) =
+                    dex::Processor::process_events(dbtx, &events, height, timestamp).await
+                {
+                    tracing::error!("Error processing DEX events for block {}: {:?}", height, e);
                 }
             }
         }

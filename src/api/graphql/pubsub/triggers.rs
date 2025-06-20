@@ -1,25 +1,91 @@
 use sqlx::{Pool, Postgres};
-use tokio::time::{interval, Duration};
-use tracing::{debug, error, info};
+use tokio::time::{interval, sleep, Duration};
+use tracing::{debug, error, info, warn};
 
 use super::ibc;
 use super::PubSub;
 
 pub async fn start(pubsub: PubSub, pool: Pool<Postgres>) {
-    info!("Starting real-time subscription triggers");
+    info!("Starting polling mechanism for subscriptions");
 
-    if let Err(e) = setup_notification_triggers(&pool).await {
-        error!("Failed to set up database notification triggers: {}", e);
-        info!("Falling back to polling mechanism only");
-    } else {
-        info!("Database notification triggers set up successfully");
-    }
-
-    fallback_polling(pubsub, pool).await;
+    // Triggers are already set up synchronously in schema creation,
+    // so we just start the polling mechanism
+    start_polling(pubsub, pool).await;
 }
 
-#[allow(clippy::too_many_lines)]
-async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
+async fn check_required_tables_exist(pool: &Pool<Postgres>) -> Result<bool, sqlx::Error> {
+    let required_tables = vec![
+        "explorer_block_details",
+        "explorer_transactions",
+        "validator_blocks",
+        "validator_chain_parameters",
+    ];
+
+    for table_name in required_tables {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = $1
+            )",
+        )
+        .bind(table_name)
+        .fetch_one(pool)
+        .await?;
+
+        if !exists {
+            info!("Required table '{}' does not exist yet", table_name);
+            return Ok(false);
+        }
+    }
+
+    info!("All required tables exist for trigger creation");
+    Ok(true)
+}
+
+pub async fn setup_notification_triggers_with_retry(
+    pool: &Pool<Postgres>,
+) -> Result<(), anyhow::Error> {
+    const MAX_RETRIES: u32 = 6; // 6 retries = ~30 seconds total wait time
+    const RETRY_DELAY_SECONDS: u64 = 5;
+
+    for attempt in 1..=MAX_RETRIES {
+        match check_required_tables_exist(pool).await {
+            Ok(true) => {
+                // Tables exist, proceed with trigger creation
+                info!("Creating database triggers (attempt {})", attempt);
+                return setup_notification_triggers(pool)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to create triggers: {}", e));
+            }
+            Ok(false) => {
+                if attempt == MAX_RETRIES {
+                    warn!("Required tables still don't exist after {} attempts. This might be a fresh deployment where indexer hasn't started yet.", MAX_RETRIES);
+                    return Err(anyhow::anyhow!(
+                        "Required tables do not exist after {} retry attempts. The indexer may need to run first to create tables.",
+                        MAX_RETRIES
+                    ));
+                }
+
+                info!("Required tables don't exist yet (attempt {}/{}). Waiting {} seconds for indexer to create them...", 
+                      attempt, MAX_RETRIES, RETRY_DELAY_SECONDS);
+                sleep(Duration::from_secs(RETRY_DELAY_SECONDS)).await;
+            }
+            Err(e) => {
+                error!("Error checking table existence: {}", e);
+                return Err(anyhow::anyhow!(
+                    "Database error while checking tables: {}",
+                    e
+                ));
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!("Exhausted all retry attempts"))
+}
+
+#[allow(clippy::too_many_lines, clippy::module_name_repetitions)]
+pub async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
     sqlx::query(
         r"
         CREATE OR REPLACE FUNCTION notify_block_update()
@@ -215,7 +281,7 @@ async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sqlx::
     Ok(())
 }
 
-async fn fallback_polling(pubsub: PubSub, pool: Pool<Postgres>) {
+async fn start_polling(pubsub: PubSub, pool: Pool<Postgres>) {
     info!("Starting polling mechanism");
 
     let blocks_interval = interval(Duration::from_secs(1));
