@@ -1,5 +1,6 @@
 mod asset;
 mod block;
+mod dex;
 mod event;
 pub mod ibc;
 pub mod inputs;
@@ -12,6 +13,7 @@ pub mod validator;
 
 pub use asset::*;
 pub use block::*;
+pub use dex::*;
 pub use event::*;
 pub use ibc::Stats as IbcStats;
 pub use inputs::{
