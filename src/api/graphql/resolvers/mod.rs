@@ -1,4 +1,5 @@
 mod block;
+mod dex;
 mod ibc;
 mod search;
 mod stats;
@@ -10,6 +11,7 @@ use crate::api::graphql::types::inputs::TimePeriod;
 use async_graphql::Object;
 
 pub use block::{get as resolve_block, resolve_blocks_collection};
+pub use dex::resolve_liquidity_positions;
 pub use ibc::{resolve_ibc_stats, resolve_total_shielded_volume};
 pub use search::resolve_search;
 pub use stats::resolve_stats;
@@ -144,5 +146,13 @@ impl QueryRoot {
     ) -> async_graphql::Result<Option<crate::api::graphql::types::validator::ValidatorDetails>>
     {
         resolve_validator_details(ctx, id).await
+    }
+
+    async fn liquidity_positions(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+        limit: crate::api::graphql::types::CollectionLimit,
+    ) -> async_graphql::Result<crate::api::graphql::types::LiquidityPositionCollection> {
+        resolve_liquidity_positions(ctx, limit).await
     }
 }
