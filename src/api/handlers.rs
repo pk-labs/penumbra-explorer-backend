@@ -46,7 +46,7 @@ pub async fn graphiql() -> impl IntoResponse {
         React.createElement(GraphiQL, {
           fetcher: GraphiQL.createFetcher({
             url: '/graphql',
-            subscriptionUrl: 'ws://' + window.location.host + '/graphql/ws',
+            subscriptionUrl: (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/graphql/ws',
           }),
         }),
         document.getElementById('graphiql'),
