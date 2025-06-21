@@ -189,8 +189,8 @@ impl ValidatorHomepageData {
         filter: Option<ValidatorFilter>,
     ) -> async_graphql::Result<Vec<Validator>> {
         let where_clause = match filter.as_ref().and_then(|f| f.state) {
-            Some(ValidatorStateFilter::Active) => "WHERE state LIKE '%ACTIVE%'",
-            Some(ValidatorStateFilter::Inactive) => "WHERE state NOT LIKE '%ACTIVE%'",
+            Some(ValidatorStateFilter::Active) => "WHERE state = 'VALIDATOR_STATE_ENUM_ACTIVE'",
+            Some(ValidatorStateFilter::Inactive) => "WHERE state != 'VALIDATOR_STATE_ENUM_ACTIVE'",
             Some(ValidatorStateFilter::All) | None => "",
         };
 
@@ -260,7 +260,7 @@ impl ValidatorHomepageData {
             r"
             SELECT COUNT(*)
             FROM validators 
-            WHERE state LIKE '%ACTIVE%'
+            WHERE state = 'VALIDATOR_STATE_ENUM_ACTIVE'
             ",
         )
         .fetch_one(pool)
