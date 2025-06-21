@@ -11,7 +11,7 @@ use crate::api::graphql::types::inputs::TimePeriod;
 use async_graphql::Object;
 
 pub use block::{get as resolve_block, resolve_blocks_collection};
-pub use dex::resolve_liquidity_positions;
+pub use dex::{resolve_latest_executions, resolve_liquidity_positions};
 pub use ibc::{resolve_ibc_stats, resolve_total_shielded_volume};
 pub use search::resolve_search;
 pub use stats::resolve_stats;
@@ -154,5 +154,13 @@ impl QueryRoot {
         limit: crate::api::graphql::types::CollectionLimit,
     ) -> async_graphql::Result<crate::api::graphql::types::LiquidityPositionCollection> {
         resolve_liquidity_positions(ctx, limit).await
+    }
+
+    async fn latest_executions(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+        filter: Option<crate::api::graphql::types::SwapExecutionFilter>,
+    ) -> async_graphql::Result<Vec<crate::api::graphql::types::SwapExecution>> {
+        resolve_latest_executions(ctx, filter).await
     }
 }
