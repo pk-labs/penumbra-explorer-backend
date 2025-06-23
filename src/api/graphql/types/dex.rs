@@ -14,13 +14,13 @@ pub enum LiquidityPositionState {
 }
 
 impl LiquidityPositionState {
+    #[must_use]
     pub fn from_string(state: &str) -> Self {
         match state {
-            "Open" => Self::Open,
             "Executing" => Self::Executing,
             "Closed" => Self::Closed,
             "Withdrawn" => Self::Withdrawn,
-            _ => Self::Open, // Default fallback
+            _ => Self::Open, // Default fallback for "Open" and unknown states
         }
     }
 }
@@ -207,6 +207,7 @@ impl SwapExecution {
 }
 
 #[derive(Debug, Clone, SimpleObject)]
+#[allow(clippy::module_name_repetitions)]
 pub struct DexStats {
     pub total_executions: i64,
     pub open_positions: i64,
