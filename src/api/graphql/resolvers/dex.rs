@@ -2,13 +2,13 @@ use crate::api::graphql::{
     context::ApiContext,
     scalars::DateTime,
     types::{
-        BatchSwap, CollectionLimit, IndividualSwap, LiquidityPosition, LiquidityPositionCollection,
-        LiquidityPositionState, RouteStep, SwapExecution, SwapExecutionFilter,
+        BatchSwap, CollectionLimit, DexStats, IndividualSwap, LiquidityPosition,
+        LiquidityPositionCollection, LiquidityPositionState, RouteStep, SwapExecution,
+        SwapExecutionFilter,
     },
 };
 use async_graphql::Result;
 use sqlx::Row;
-use std::collections::HashMap;
 
 /// Resolves liquidity positions with pagination
 ///
@@ -248,4 +248,26 @@ pub async fn resolve_latest_executions(
     }
 
     Ok(swap_executions)
+}
+
+/// Resolves DEX statistics
+///
+/// # Errors
+/// Returns an error if the database query fails
+pub async fn resolve_dex_stats(ctx: &async_graphql::Context<'_>) -> Result<DexStats> {
+    let db = &ctx.data_unchecked::<ApiContext>().db;
+
+    let total_executions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dex_batch_swaps")
+        .fetch_one(db)
+        .await?;
+
+    let open_positions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM dex_liquidity_positions WHERE state = 'Open'")
+            .fetch_one(db)
+            .await?;
+
+    Ok(DexStats {
+        total_executions,
+        open_positions,
+    })
 }
