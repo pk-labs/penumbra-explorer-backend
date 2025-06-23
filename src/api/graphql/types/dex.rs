@@ -205,3 +205,9 @@ impl SwapExecution {
         &self.batch_swaps
     }
 }
+
+#[derive(Debug, Clone, SimpleObject)]
+pub struct DexStats {
+    pub total_executions: i64,
+    pub open_positions: i64,
+}
