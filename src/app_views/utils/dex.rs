@@ -173,8 +173,8 @@ impl LiquidityPosition {
         let fee_percentage = Self::extract_trading_fee(event);
 
         // Decode the position ID to bech32 format for storage
-        let decoded_position_id = position_id_to_bech32(&position_id)
-            .unwrap_or_else(|_| position_id.clone());
+        let decoded_position_id =
+            position_id_to_bech32(&position_id).unwrap_or_else(|_| position_id.clone());
 
         Ok(Self {
             position_id,
