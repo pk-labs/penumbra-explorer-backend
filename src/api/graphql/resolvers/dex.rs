@@ -31,6 +31,7 @@ pub async fn resolve_liquidity_positions(
         r"
         SELECT 
             position_id,
+            decoded_position_id,
             trading_pair_asset1,
             trading_pair_asset2,
             reserves1_amount::TEXT as reserves1_amount,
@@ -59,8 +60,10 @@ pub async fn resolve_liquidity_positions(
                 .parse::<f64>()
                 .unwrap_or(0.0);
 
+            let position_id: String = row.get("decoded_position_id");
+
             LiquidityPosition {
-                position_id: row.get("position_id"),
+                position_id,
                 trading_pair_asset1: row.get("trading_pair_asset1"),
                 trading_pair_asset2: row.get("trading_pair_asset2"),
                 reserves1_amount: row.get("reserves1_amount"),
