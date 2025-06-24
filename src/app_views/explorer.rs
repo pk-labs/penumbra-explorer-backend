@@ -899,6 +899,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             r"
             CREATE TABLE IF NOT EXISTS dex_liquidity_positions (
                 position_id TEXT PRIMARY KEY,
+                decoded_position_id TEXT,
                 trading_pair_asset1 TEXT NOT NULL REFERENCES explorer_assets(asset_id),
                 trading_pair_asset2 TEXT NOT NULL REFERENCES explorer_assets(asset_id),
                 reserves1_amount NUMERIC(39, 0) DEFAULT 0,
