@@ -155,23 +155,23 @@ mod tests {
         // Test with the provided position ID
         let position_id = "27S9rrw/+D3RtBLMjxg/MO0r6v/T/dNN5+yq8IzVDjI=";
         let result = position_id_to_bech32(position_id);
-        
+
         assert!(result.is_ok(), "Failed to convert position ID to bech32");
-        
+
         let bech32_position = result.unwrap();
         println!("Position ID (base64): {position_id}");
         println!("Position ID (bech32): {bech32_position}");
-        
+
         assert!(bech32_position.starts_with("plpid"));
         assert!(!bech32_position.is_empty());
-        
+
         // Test with additional position IDs from the examples
         let test_cases = vec![
             "2L4wPX3DjTXxUMYk5FzyzIuqkWIzOgF5bGJRU85xkLw=",
             "NtBIGstYNfl6AJLM+ZEsAvD5FkpiO0td4RLSJ+ahTM0=",
             "4+ph5vxoqV/kTxMe0hajmhbpe/WqbKYYc5VfZpxYvrc=",
         ];
-        
+
         for position_id in test_cases {
             let result = position_id_to_bech32(position_id);
             assert!(result.is_ok());
@@ -180,7 +180,7 @@ mod tests {
             println!("Position ID (bech32): {bech32_position}");
             assert!(bech32_position.starts_with("plpid"));
         }
-        
+
         // Test with invalid base64
         let invalid_position = "invalid-base64!@#";
         let result_err = position_id_to_bech32(invalid_position);
