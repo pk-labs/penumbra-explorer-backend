@@ -17,7 +17,6 @@ impl LiquidityPositionState {
     #[must_use]
     pub fn from_string(state: &str) -> Self {
         match state {
-            "Open" => Self::Open,
             "Executing" => Self::Executing,
             "Closed" => Self::Closed,
             "Withdrawn" => Self::Withdrawn,
