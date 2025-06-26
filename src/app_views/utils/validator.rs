@@ -1702,8 +1702,6 @@ impl Validator {
             }
         }
 
-        // After processing all events (including MissedBlock events),
-        // record remaining ACTIVE validators as signed=true
         if let Err(e) = Self::record_active_validators_as_signed(dbtx, height, timestamp).await {
             error!("Failed to record active validators as signed: {}", e);
         }
@@ -1721,7 +1719,7 @@ impl Validator {
         current_height: i64,
         dbtx: &mut PgTransaction<'_>,
     ) -> Result<()> {
-        let uptime_window = Self::get_uptime_blocks_window(dbtx).await.unwrap_or(10000);
+        let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
         let window_start = std::cmp::max(0, current_height - uptime_window);
 
         sqlx::query(
@@ -1765,17 +1763,12 @@ impl Validator {
     /// # Errors
     ///
     /// Returns an error if the database operation fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn update_uptime_stats_incrementally(
         height: i64,
         dbtx: &mut PgTransaction<'_>,
     ) -> Result<()> {
         let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
-
-        let window_start = if height < uptime_window {
-            1
-        } else {
-            height - uptime_window + 1
-        };
 
         let validators_in_block: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT identity_key FROM validator_blocks WHERE block_height = $1",
@@ -1784,27 +1777,143 @@ impl Validator {
         .fetch_all(dbtx.as_mut())
         .await?;
 
-        if validators_in_block.is_empty() {
-            return Ok(());
-        }
+        let validators_in_uptime_stats: Vec<String> =
+            sqlx::query_scalar("SELECT identity_key FROM validator_uptime_stats")
+                .fetch_all(dbtx.as_mut())
+                .await?;
 
-        for identity_key in &validators_in_block {
-            Self::initialize_uptime_stats(identity_key, height, dbtx).await?;
-        }
+        let is_initial_transition =
+            validators_in_uptime_stats.is_empty() && !validators_in_block.is_empty();
 
+        if is_initial_transition {
+            debug!(
+                "Initial transition from reindexing to live mode detected at height {} - initializing {} active validators with historical window",
+                height, validators_in_block.len()
+            );
+
+            let traditional_window_start = std::cmp::max(0, height - uptime_window);
+            for identity_key in &validators_in_block {
+                sqlx::query(
+                    r"
+                    INSERT INTO validator_uptime_stats (
+                        identity_key,
+                        total_blocks,
+                        signed_blocks,
+                        missed_blocks,
+                        uptime_percentage,
+                        last_calculated_height,
+                        window_start_height,
+                        updated_at
+                    ) VALUES ($1, 0, 0, 0, 0.00, $2, $3, NOW())
+                    ON CONFLICT (identity_key) DO NOTHING
+                    ",
+                )
+                .bind(identity_key)
+                .bind(height)
+                .bind(traditional_window_start)
+                .execute(dbtx.as_mut())
+                .await?;
+
+                debug!(
+                    "Initialized validator {} with traditional window start {} (historical window: {} blocks)",
+                    identity_key, traditional_window_start, uptime_window
+                );
+            }
+
+            debug!("Skipping normal cleanup for initial transition - all validators are newly initialized");
+        } else {
+            let mut deleted_count = 0;
+            for identity_key in &validators_in_uptime_stats {
+                if !validators_in_block.contains(identity_key) {
+                    sqlx::query("DELETE FROM validator_uptime_stats WHERE identity_key = $1")
+                        .bind(identity_key)
+                        .execute(dbtx.as_mut())
+                        .await?;
+                    deleted_count += 1;
+                    debug!(
+                        "Deleted uptime stats for inactive validator: {}",
+                        identity_key
+                    );
+                }
+            }
+
+            if deleted_count > 0 {
+                debug!(
+                    "Deleted {} inactive validators from uptime stats",
+                    deleted_count
+                );
+            }
+
+            if validators_in_block.is_empty() {
+                return Ok(());
+            }
+
+            let mut initialized_count = 0;
+            for identity_key in &validators_in_block {
+                if !validators_in_uptime_stats.contains(identity_key) {
+                    sqlx::query(
+                        r"
+                    INSERT INTO validator_uptime_stats (
+                        identity_key,
+                        total_blocks,
+                        signed_blocks,
+                        missed_blocks,
+                        uptime_percentage,
+                        last_calculated_height,
+                        window_start_height,
+                        updated_at
+                    ) VALUES ($1, 0, 0, 0, 0.00, $2, $2, NOW())
+                    ON CONFLICT (identity_key) DO NOTHING
+                    ",
+                    )
+                    .bind(identity_key)
+                    .bind(height)
+                    .execute(dbtx.as_mut())
+                    .await?;
+                    initialized_count += 1;
+                    debug!(
+                        "Initialized fresh uptime stats for new active validator: {} at height {}",
+                        identity_key, height
+                    );
+                }
+            }
+
+            if initialized_count > 0 {
+                debug!(
+                    "Initialized {} new active validators in uptime stats",
+                    initialized_count
+                );
+            }
+        }
         sqlx::query(
             r"
             WITH validator_block_counts AS (
                 SELECT
                     vb.identity_key,
+                    us.window_start_height,
+                    -- Calculate new window start height to maintain rolling window
+                    CASE 
+                        WHEN ($1 - us.window_start_height) >= $2 THEN
+                            -- Window has reached max size, slide it forward
+                            $1 - $2 + 1
+                        ELSE
+                            -- Window is still within limits, keep original start
+                            us.window_start_height
+                    END as new_window_start_height,
                     COUNT(*) as total_blocks,
                     SUM(CASE WHEN vb.signed THEN 1 ELSE 0 END) as signed_blocks,
                     SUM(CASE WHEN NOT vb.signed THEN 1 ELSE 0 END) as missed_blocks
                 FROM validator_blocks vb
-                WHERE vb.identity_key = ANY($1)
-                  AND vb.block_height >= $2
-                  AND vb.block_height <= $3
-                GROUP BY vb.identity_key
+                JOIN validator_uptime_stats us ON vb.identity_key = us.identity_key
+                WHERE vb.identity_key = ANY($3)
+                  AND vb.block_height >= (
+                      CASE 
+                          WHEN ($1 - us.window_start_height) >= $2 THEN $1 - $2 + 1
+                          ELSE us.window_start_height
+                      END
+                  )
+                  AND vb.block_height <= $1
+                GROUP BY vb.identity_key, us.window_start_height
             )
             UPDATE validator_uptime_stats us
             SET
@@ -1816,26 +1925,25 @@ impl Validator {
                         ROUND((COALESCE(vbc.signed_blocks, 0)::numeric / vbc.total_blocks::numeric) * 100.0, 2)
                     ELSE 0.00
                 END,
-                last_calculated_height = $3,
-                window_start_height = $2,
+                last_calculated_height = $1,
+                window_start_height = vbc.new_window_start_height,  -- Update window start for rolling
                 updated_at = NOW()
             FROM validator_block_counts vbc
             WHERE us.identity_key = vbc.identity_key
-               AND us.identity_key = ANY($1)
+               AND us.identity_key = ANY($3)
             ",
         )
-            .bind(&validators_in_block)
-            .bind(window_start)
-            .bind(height)
+            .bind(height)                           // $1 = current height
+            .bind(uptime_window)                    // $2 = uptime window parameter  
+            .bind(&validators_in_block)             // $3 = validators in current block
             .execute(dbtx.as_mut())
             .await?;
 
         debug!(
-            "Recalculated uptime stats for {} validators at block {} (window: {} to {})",
+            "Recalculated uptime stats for {} validators at block {} using rolling window (max {} blocks)",
             validators_in_block.len(),
             height,
-            window_start,
-            height
+            uptime_window
         );
         Ok(())
     }

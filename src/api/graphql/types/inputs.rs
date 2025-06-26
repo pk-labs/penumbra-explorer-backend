@@ -89,3 +89,8 @@ pub enum ValidatorStateFilter {
 pub struct ValidatorFilter {
     pub state: Option<ValidatorStateFilter>,
 }
+
+#[derive(InputObject)]
+pub struct SwapExecutionFilter {
+    pub height: Option<i64>,
+}

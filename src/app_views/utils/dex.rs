@@ -1,4 +1,4 @@
-use crate::parsing::asset_id_to_denom;
+use crate::parsing::{asset_id_to_denom, position_id_to_bech32};
 use anyhow::Result;
 use cometindex::ContextualizedEvent;
 use serde_json::Value;
@@ -57,6 +57,7 @@ impl AssetManager {
 #[derive(Debug, Clone)]
 pub struct LiquidityPosition {
     pub position_id: String,
+    pub decoded_position_id: String,
     pub trading_pair_asset1: String,
     pub trading_pair_asset2: String,
     pub reserves1_amount: BigDecimal,
@@ -171,8 +172,13 @@ impl LiquidityPosition {
 
         let fee_percentage = Self::extract_trading_fee(event);
 
+        // Decode the position ID to bech32 format for storage
+        let decoded_position_id =
+            position_id_to_bech32(&position_id).unwrap_or_else(|_| position_id.clone());
+
         Ok(Self {
             position_id,
+            decoded_position_id,
             trading_pair_asset1,
             trading_pair_asset2,
             reserves1_amount,
@@ -264,6 +270,7 @@ impl LiquidityPosition {
             r"
             INSERT INTO dex_liquidity_positions (
                 position_id,
+                decoded_position_id,
                 trading_pair_asset1,
                 trading_pair_asset2,
                 reserves1_amount,
@@ -274,10 +281,11 @@ impl LiquidityPosition {
                 created_at,
                 updated_height,
                 updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ",
         )
         .bind(&self.position_id)
+        .bind(&self.decoded_position_id)
         .bind(&self.trading_pair_asset1)
         .bind(&self.trading_pair_asset2)
         .bind(&self.reserves1_amount)
@@ -340,6 +348,7 @@ impl LiquidityPosition {
             _,
             (
                 String,
+                Option<String>,
                 String,
                 String,
                 BigDecimal,
@@ -355,6 +364,7 @@ impl LiquidityPosition {
             r"
             SELECT 
                 position_id,
+                decoded_position_id,
                 trading_pair_asset1,
                 trading_pair_asset2,
                 reserves1_amount,
@@ -375,6 +385,7 @@ impl LiquidityPosition {
 
         if let Some((
             position_id,
+            decoded_position_id,
             trading_pair_asset1,
             trading_pair_asset2,
             reserves1_amount,
@@ -387,8 +398,14 @@ impl LiquidityPosition {
             updated_at,
         )) = row
         {
+            // If decoded_position_id is None, generate it from the base64 position_id
+            let decoded_position_id = decoded_position_id
+                .or_else(|| position_id_to_bech32(&position_id).ok())
+                .unwrap_or_else(|| position_id.clone());
+
             Ok(Some(Self {
                 position_id,
+                decoded_position_id,
                 trading_pair_asset1,
                 trading_pair_asset2,
                 reserves1_amount,
