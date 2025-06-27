@@ -152,8 +152,9 @@ impl QueryRoot {
         &self,
         ctx: &async_graphql::Context<'_>,
         limit: crate::api::graphql::types::CollectionLimit,
+        filter: Option<crate::api::graphql::types::LiquidityPositionFilter>,
     ) -> async_graphql::Result<crate::api::graphql::types::LiquidityPositionCollection> {
-        resolve_liquidity_positions(ctx, limit).await
+        resolve_liquidity_positions(ctx, limit, filter).await
     }
 
     async fn latest_executions(

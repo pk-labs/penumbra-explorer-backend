@@ -18,8 +18,9 @@ pub use event::*;
 pub use ibc::Stats as IbcStats;
 pub use inputs::{
     BlockFilter, BlockHeightRange, BlocksSelector, CollectionLimit, IbcStatsFilter, LatestBlock,
-    LatestTransactions, SwapExecutionFilter, TransactionFilter, TransactionRange,
-    TransactionsSelector, ValidatorFilter, ValidatorStateFilter,
+    LatestTransactions, LiquidityPositionFilter, LiquidityPositionStateFilter, SwapExecutionFilter,
+    TransactionFilter, TransactionRange, TransactionsSelector, ValidatorFilter,
+    ValidatorStateFilter,
 };
 pub use stats::*;
 pub use subscription::*;
