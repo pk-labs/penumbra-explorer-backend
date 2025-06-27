@@ -3,8 +3,8 @@ use crate::api::graphql::{
     scalars::DateTime,
     types::{
         BatchSwap, CollectionLimit, DexStats, IndividualSwap, LiquidityPosition,
-        LiquidityPositionCollection, LiquidityPositionState, RouteStep, SwapExecution,
-        SwapExecutionFilter,
+        LiquidityPositionCollection, LiquidityPositionFilter, LiquidityPositionState,
+        LiquidityPositionStateFilter, RouteStep, SwapExecution, SwapExecutionFilter,
     },
 };
 use async_graphql::Result;
@@ -17,17 +17,23 @@ use sqlx::Row;
 pub async fn resolve_liquidity_positions(
     ctx: &async_graphql::Context<'_>,
     limit: CollectionLimit,
+    filter: Option<LiquidityPositionFilter>,
 ) -> Result<LiquidityPositionCollection> {
     let db = &ctx.data_unchecked::<ApiContext>().db;
 
-    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dex_liquidity_positions")
-        .fetch_one(db)
-        .await?;
+    let where_clause = match filter.as_ref().and_then(|f| f.state) {
+        Some(LiquidityPositionStateFilter::Open) => "WHERE state IN ('Open', 'Executing')",
+        Some(LiquidityPositionStateFilter::Closed) => "WHERE state IN ('Closed', 'Withdrawn')",
+        None => "",
+    };
+
+    let count_query = format!("SELECT COUNT(*) FROM dex_liquidity_positions {where_clause}");
+    let total_count: i64 = sqlx::query_scalar(&count_query).fetch_one(db).await?;
 
     let length = limit.length.unwrap_or(10);
     let offset = limit.offset.unwrap_or(0);
 
-    let rows = sqlx::query(
+    let query = format!(
         r"
         SELECT 
             position_id,
@@ -41,15 +47,18 @@ pub async fn resolve_liquidity_positions(
             updated_at
         FROM 
             dex_liquidity_positions
+        {where_clause}
         ORDER BY 
             updated_at DESC
         LIMIT $1 OFFSET $2
-        ",
-    )
-    .bind(i64::from(length))
-    .bind(i64::from(offset))
-    .fetch_all(db)
-    .await?;
+        "
+    );
+
+    let rows = sqlx::query(&query)
+        .bind(i64::from(length))
+        .bind(i64::from(offset))
+        .fetch_all(db)
+        .await?;
 
     let positions = rows
         .into_iter()
@@ -281,7 +290,7 @@ pub async fn resolve_dex_stats(ctx: &async_graphql::Context<'_>) -> Result<DexSt
         .await?;
 
     let open_positions: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM dex_liquidity_positions WHERE state = 'Open'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM dex_liquidity_positions WHERE state IN ('Open', 'Executing')")
             .fetch_one(db)
             .await?;
 
