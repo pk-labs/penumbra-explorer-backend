@@ -289,10 +289,11 @@ pub async fn resolve_dex_stats(ctx: &async_graphql::Context<'_>) -> Result<DexSt
         .fetch_one(db)
         .await?;
 
-    let open_positions: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM dex_liquidity_positions WHERE state IN ('Open', 'Executing')")
-            .fetch_one(db)
-            .await?;
+    let open_positions: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM dex_liquidity_positions WHERE state IN ('Open', 'Executing')",
+    )
+    .fetch_one(db)
+    .await?;
 
     Ok(DexStats {
         total_executions,
