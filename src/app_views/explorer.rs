@@ -945,6 +945,15 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         sqlx::query(
             r"
+            CREATE INDEX IF NOT EXISTS idx_dex_liquidity_positions_state_updated_at
+            ON dex_liquidity_positions(state, updated_at DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
             CREATE TABLE IF NOT EXISTS ibc_stats (
                 client_id TEXT PRIMARY KEY REFERENCES ibc_clients(client_id),
                 shielded_volume BIGINT NOT NULL DEFAULT 0,
