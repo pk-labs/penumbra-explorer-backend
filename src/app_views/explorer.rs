@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::app_views::utils::block::Metadata as BlockMetadata;
 use crate::app_views::utils::transaction::Metadata as TransactionMetadata;
 use crate::app_views::utils::validator::ValidatorParams;
-use crate::app_views::utils::{block, dex, ibc, transaction, validator};
+use crate::app_views::utils::{block, dex, governance, ibc, transaction, validator};
 use crate::parsing::encode_to_base64;
 
 #[derive(Debug)]
@@ -1556,6 +1556,33 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
 
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS governance_parameters (
+                chain_id TEXT PRIMARY KEY,
+                deposit_amount NUMERIC(39, 0) NOT NULL,
+                passing_threshold DECIMAL(5,2) NOT NULL,
+                slashing_threshold DECIMAL(5,2) NOT NULL,
+                validator_quorum DECIMAL(5,2) NOT NULL,
+                proposal_voting_blocks BIGINT NOT NULL,
+                updated_height BIGINT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                raw_params JSONB
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_parameters_updated_height
+            ON governance_parameters(updated_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
         tracing::info!("Reading genesis file to initialize validators");
         if let Err(e) = self.initialize_validators_from_genesis(dbtx).await {
             tracing::error!("Failed to initialize validators from genesis: {}", e);
@@ -1757,6 +1784,12 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     dex::Processor::process_events(dbtx, &events, height, timestamp).await
                 {
                     tracing::error!("Error processing DEX events for block {}: {:?}", height, e);
+                }
+
+                if let Err(e) =
+                    governance::process_events(dbtx, &events, height, timestamp, self.get_chain_id()).await
+                {
+                    tracing::error!("Error processing governance events for block {}: {:?}", height, e);
                 }
             }
         }
