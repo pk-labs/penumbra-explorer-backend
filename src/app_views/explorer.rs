@@ -1563,7 +1563,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 deposit_amount NUMERIC(39, 0) NOT NULL,
                 passing_threshold DECIMAL(5,2) NOT NULL,
                 slashing_threshold DECIMAL(5,2) NOT NULL,
-                validator_quorum DECIMAL(5,2) NOT NULL,
+                valid_quorum DECIMAL(5,2) NOT NULL,
                 proposal_voting_blocks BIGINT NOT NULL,
                 updated_height BIGINT NOT NULL,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1583,9 +1583,56 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
 
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS governance_proposals (
+                proposal_id BIGINT PRIMARY KEY,
+                title TEXT,
+                description TEXT,
+                kind TEXT,
+                state TEXT DEFAULT 'Voting',
+                outcome TEXT,
+                deposit_amount NUMERIC(39, 0),
+                start_block_height BIGINT,
+                end_block_height BIGINT,
+                start_timestamp TIMESTAMPTZ,
+                end_timestamp TIMESTAMPTZ,
+                quorum NUMERIC(39, 0),
+                payload JSONB,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_proposals_state
+            ON governance_proposals(state)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_proposals_start_height
+            ON governance_proposals(start_block_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
         tracing::info!("Reading genesis file to initialize validators");
         if let Err(e) = self.initialize_validators_from_genesis(dbtx).await {
             tracing::error!("Failed to initialize validators from genesis: {}", e);
+        }
+
+        tracing::info!("Initializing governance parameters from genesis");
+        if let Err(e) = governance::GovernanceParameters::initialize_from_genesis_if_needed(dbtx).await {
+            tracing::error!("Failed to initialize governance parameters from genesis: {}", e);
         }
 
         Ok(())
