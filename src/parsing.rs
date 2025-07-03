@@ -1,4 +1,6 @@
+use anyhow::Error;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use penumbra_sdk_asset::asset;
 use std::fmt::Write;
 
 /// Helper function to convert bytes to a hexadecimal string
@@ -43,6 +45,42 @@ pub fn identity_key_to_validator_address(
     );
 
     Ok(validator_address)
+}
+
+/// Convert a base64-encoded position ID to a bech32 "plpid" address
+///
+/// Takes a base64 string like "27S9rrw/+D3RtBLMjxg/MO0r6v/T/dNN5+yq8IzVDjI="
+/// and returns a bech32 address like "plpid1..."
+///
+/// # Errors
+///
+/// Returns an error if the base64 string cannot be decoded.
+pub fn position_id_to_bech32(base64_position_id: &str) -> Result<String, anyhow::Error> {
+    let position_id_bytes = BASE64
+        .decode(base64_position_id)
+        .map_err(|e| anyhow::anyhow!("Failed to decode base64 position ID: {}", e))?;
+
+    let bech32_position = penumbra_sdk_proto::serializers::bech32str::encode(
+        &position_id_bytes,
+        penumbra_sdk_proto::serializers::bech32str::lp_id::BECH32_PREFIX,
+        penumbra_sdk_proto::serializers::bech32str::Bech32m,
+    );
+
+    Ok(bech32_position)
+}
+
+/// Convert a base64-encoded asset ID into its human-readable denomination string.
+///
+/// Takes a base64 string like "WdHeHDmklWKxFf0g86MiYy6Mt6lUQza5g+NfNuK2oAE=" and returns, e.g., "passet...".
+///
+/// # Errors
+///
+/// Returns an error if the base64 string cannot be decoded or the bytes do not form a valid `asset::Id`.
+pub fn asset_id_to_denom(base64_asset_id: &str) -> Result<String, Error> {
+    let raw = BASE64.decode(base64_asset_id)?;
+    let bytes: [u8; 32] = raw.as_slice().try_into()?;
+    let id = asset::Id::try_from(bytes)?;
+    Ok(id.to_string())
 }
 
 #[cfg(test)]
@@ -111,4 +149,54 @@ mod tests {
         assert!(validator_address.starts_with("penumbravalid1"));
         assert!(!validator_address.is_empty());
     }
+
+    #[test]
+    fn test_position_id_to_bech32() {
+        // Test with the provided position ID
+        let position_id = "27S9rrw/+D3RtBLMjxg/MO0r6v/T/dNN5+yq8IzVDjI=";
+        let result = position_id_to_bech32(position_id);
+
+        assert!(result.is_ok(), "Failed to convert position ID to bech32");
+
+        let bech32_position = result.unwrap();
+        println!("Position ID (base64): {position_id}");
+        println!("Position ID (bech32): {bech32_position}");
+
+        assert!(bech32_position.starts_with("plpid"));
+        assert!(!bech32_position.is_empty());
+
+        // Test with additional position IDs from the examples
+        let test_cases = vec![
+            "2L4wPX3DjTXxUMYk5FzyzIuqkWIzOgF5bGJRU85xkLw=",
+            "NtBIGstYNfl6AJLM+ZEsAvD5FkpiO0td4RLSJ+ahTM0=",
+            "4+ph5vxoqV/kTxMe0hajmhbpe/WqbKYYc5VfZpxYvrc=",
+        ];
+
+        for position_id in test_cases {
+            let result = position_id_to_bech32(position_id);
+            assert!(result.is_ok());
+            let bech32_position = result.unwrap();
+            println!("Position ID (base64): {position_id}");
+            println!("Position ID (bech32): {bech32_position}");
+            assert!(bech32_position.starts_with("plpid"));
+        }
+
+        // Test with invalid base64
+        let invalid_position = "invalid-base64!@#";
+        let result_err = position_id_to_bech32(invalid_position);
+        assert!(result_err.is_err());
+    }
+}
+
+#[test]
+fn test_asset_id_to_denom() {
+    let id1 = "WdHeHDmklWKxFf0g86MiYy6Mt6lUQza5g+NfNuK2oAE=";
+    let denom1 = asset_id_to_denom(id1).expect("decoding id1");
+    println!("Decoded denom1: {denom1}");
+    assert!(!denom1.is_empty(), "denom1 should not be empty");
+
+    let id2 = "B+9mATKkwyNfqyctQ9m5dSqDN7LRCFl6v/r/XyRtDw8=";
+    let denom2 = asset_id_to_denom(id2).expect("decoding id2");
+    println!("Decoded denom2: {denom2}");
+    assert!(!denom2.is_empty(), "denom2 should not be empty");
 }

@@ -1,4 +1,5 @@
 mod block;
+mod dex;
 mod ibc;
 mod search;
 mod stats;
@@ -10,6 +11,7 @@ use crate::api::graphql::types::inputs::TimePeriod;
 use async_graphql::Object;
 
 pub use block::{get as resolve_block, resolve_blocks_collection};
+pub use dex::{resolve_dex_stats, resolve_latest_executions, resolve_liquidity_positions};
 pub use ibc::{resolve_ibc_stats, resolve_total_shielded_volume};
 pub use search::resolve_search;
 pub use stats::resolve_stats;
@@ -144,5 +146,29 @@ impl QueryRoot {
     ) -> async_graphql::Result<Option<crate::api::graphql::types::validator::ValidatorDetails>>
     {
         resolve_validator_details(ctx, id).await
+    }
+
+    async fn liquidity_positions(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+        limit: crate::api::graphql::types::CollectionLimit,
+        filter: Option<crate::api::graphql::types::LiquidityPositionFilter>,
+    ) -> async_graphql::Result<crate::api::graphql::types::LiquidityPositionCollection> {
+        resolve_liquidity_positions(ctx, limit, filter).await
+    }
+
+    async fn latest_executions(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+        filter: Option<crate::api::graphql::types::SwapExecutionFilter>,
+    ) -> async_graphql::Result<Vec<crate::api::graphql::types::SwapExecution>> {
+        resolve_latest_executions(ctx, filter).await
+    }
+
+    async fn dex_stats(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+    ) -> async_graphql::Result<crate::api::graphql::types::DexStats> {
+        resolve_dex_stats(ctx).await
     }
 }

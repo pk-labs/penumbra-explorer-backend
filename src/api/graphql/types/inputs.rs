@@ -89,3 +89,21 @@ pub enum ValidatorStateFilter {
 pub struct ValidatorFilter {
     pub state: Option<ValidatorStateFilter>,
 }
+
+#[derive(InputObject)]
+pub struct SwapExecutionFilter {
+    pub height: Option<i64>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum LiquidityPositionStateFilter {
+    #[graphql(name = "OPEN")]
+    Open,
+    #[graphql(name = "CLOSED")]
+    Closed,
+}
+
+#[derive(InputObject)]
+pub struct LiquidityPositionFilter {
+    pub state: Option<LiquidityPositionStateFilter>,
+}
