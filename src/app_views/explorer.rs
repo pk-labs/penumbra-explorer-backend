@@ -357,11 +357,6 @@ impl Explorer {
             return Ok(());
         }
 
-        // Don't record any validator blocks here
-        // Let the validator event processing handle everything:
-        // 1. First: MissedBlock events record validators with signed=false
-        // 2. Then: Record remaining ACTIVE validators with signed=true
-
         tracing::debug!(
             "Found {} active validators at height {} - validator event processing will handle block recording",
             active_validators.len(),
@@ -1620,6 +1615,40 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             r"
             CREATE INDEX IF NOT EXISTS idx_governance_proposals_start_height
             ON governance_proposals(start_block_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS governance_votes (
+                id SERIAL PRIMARY KEY,
+                proposal_id BIGINT,
+                validator_identity_key TEXT,
+                vote TEXT,
+                voting_power NUMERIC(39, 0),
+                voted_at TIMESTAMPTZ,
+                tx_hash BYTEA
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_id
+            ON governance_votes(proposal_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_validator_identity_key
+            ON governance_votes(validator_identity_key)
             ",
         )
         .execute(dbtx.as_mut())
