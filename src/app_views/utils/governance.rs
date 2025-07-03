@@ -39,13 +39,227 @@ pub struct GovernanceProposal {
     pub payload: Value,
 }
 
+/// Governance vote structure for both validator and delegator votes
+#[derive(Debug, Clone)]
+pub struct GovernanceVote {
+    pub proposal_id: i64,
+    pub validator_identity_key: Option<String>,
+    pub vote: String,
+    pub voting_power: BigDecimal,
+    pub voted_at: DateTime<Utc>,
+    pub tx_hash: Option<Vec<u8>>,
+}
+
+impl GovernanceVote {
+    /// Convert vote enum to string
+    fn parse_vote_value(vote_data: &Value) -> Option<String> {
+        let vote_str = vote_data["vote"].as_str()?;
+        match vote_str {
+            "VOTE_YES" => Some("Yes".to_string()),
+            "VOTE_NO" => Some("No".to_string()),  
+            "VOTE_ABSTAIN" => Some("Abstain".to_string()),
+            "VOTE_UNSPECIFIED" => Some("Unspecified".to_string()),
+            _ => {
+                debug!("Unknown vote value: {}", vote_str);
+                None
+            }
+        }
+    }
+    
+    /// Extract proposal ID from vote data, returns 0 if missing (first proposal)
+    fn extract_proposal_id_from_vote(vote_data: &Value) -> i64 {
+        if let Some(proposal_str) = vote_data.get("proposal").and_then(|v| v.as_str()) {
+            proposal_str.parse::<i64>().unwrap_or(0)
+        } else {
+            0
+        }
+    }
+    
+    /// Create validator vote from EventValidatorVote
+    pub fn from_validator_vote_event(
+        event: &ContextualizedEvent<'_>,
+        timestamp: DateTime<Utc>,
+        tx_hash: Option<Vec<u8>>,
+    ) -> Option<Self> {
+        let vote_str = event.event.attributes
+            .iter()
+            .find(|attr| attr.key_str().ok() == Some("vote"))
+            .and_then(|attr| attr.value_str().ok());
+        
+        if vote_str.is_none() {
+            error!("Failed to extract 'vote' attribute from EventValidatorVote");
+            return None;
+        }
+        
+        let vote_str = vote_str.unwrap();
+        debug!("Raw vote_str: {}", vote_str);
+        
+        let vote_data: Value = match serde_json::from_str(vote_str) {
+            Ok(data) => data,
+            Err(e) => {
+                error!("Failed to parse vote JSON: {}", e);
+                return None;
+            }
+        };
+        
+        let voting_power_str = event.event.attributes
+            .iter()
+            .find(|attr| attr.key_str().ok() == Some("votingPower"))
+            .and_then(|attr| attr.value_str().ok());
+            
+        if voting_power_str.is_none() {
+            error!("Failed to extract 'votingPower' attribute from EventValidatorVote");
+            return None;
+        }
+        
+        let voting_power_str = voting_power_str.unwrap();
+        debug!("Raw voting_power_str: {}", voting_power_str);
+        
+        let clean_power_str = voting_power_str.trim_matches('"');
+        let voting_power_raw = match BigDecimal::from_str(clean_power_str) {
+            Ok(power) => power,
+            Err(e) => {
+                error!("Failed to parse voting power '{}': {}", clean_power_str, e);
+                return None;
+            }
+        };
+        let voting_power = voting_power_raw / BigDecimal::from(1_000_000); // Convert from microunits
+        
+        let vote_body = match vote_data.get("body") {
+            Some(body) => body,
+            None => {
+                error!("Failed to extract 'body' from vote data");
+                return None;
+            }
+        };
+
+        let proposal_id = if let Some(proposal_str) = vote_body.get("proposal").and_then(|v| v.as_str()) {
+            proposal_str.parse::<i64>().unwrap_or(0)
+        } else {
+            debug!("No proposal field found in EventValidatorVote, assuming proposal ID = 0");
+            0
+        };
+        
+        let vote_value = match Self::parse_vote_value(&vote_body["vote"]) {
+            Some(val) => val,
+            None => {
+                error!("Failed to parse vote value from EventValidatorVote");
+                debug!("Vote section: {}", serde_json::to_string_pretty(&vote_body["vote"]).unwrap_or_default());
+                return None;
+            }
+        };
+        
+        let validator_identity_key = vote_body["identityKey"]["ik"].as_str().map(|s| s.to_string());
+        
+        debug!(
+            "EventValidatorVote: proposal_id={}, vote={}, voting_power={}, validator_identity_key={:?}",
+            proposal_id, vote_value, voting_power, validator_identity_key
+        );
+        
+        if validator_identity_key.is_none() {
+            error!("Failed to extract validator identity key from EventValidatorVote");
+            debug!("Full vote_str: {}", vote_str);
+            debug!("Vote body: {}", serde_json::to_string_pretty(vote_body).unwrap_or_default());
+            return None; // Fail completely if we can't get the validator identity key
+        }
+        
+        Some(Self {
+            proposal_id,
+            validator_identity_key,
+            vote: vote_value,
+            voting_power,
+            voted_at: timestamp,
+            tx_hash,
+        })
+    }
+    
+    /// Create delegator vote from EventDelegatorVote  
+    pub fn from_delegator_vote_event(
+        event: &ContextualizedEvent<'_>,
+        timestamp: DateTime<Utc>,
+        tx_hash: Option<Vec<u8>>,
+    ) -> Option<Self> {
+        let vote_str = event.event.attributes
+            .iter()
+            .find(|attr| attr.key_str().ok() == Some("vote"))
+            .and_then(|attr| attr.value_str().ok())?;
+        
+        let vote_data: Value = serde_json::from_str(vote_str).ok()?;
+        
+        let vote_body = vote_data.get("body")?;
+        let proposal_id = Self::extract_proposal_id_from_vote(vote_body);
+        let vote_value = Self::parse_vote_value(&vote_body["vote"])?;
+        
+        let unbonded_amount_str = vote_body["unbondedAmount"]["lo"].as_str()?;
+        let unbonded_amount_raw = BigDecimal::from_str(unbonded_amount_str).ok()?;
+        let voting_power = unbonded_amount_raw / BigDecimal::from(1_000_000); // Convert from microunits
+        
+        Some(Self {
+            proposal_id,
+            validator_identity_key: None, // NULL for delegator votes
+            vote: vote_value,
+            voting_power,
+            voted_at: timestamp,
+            tx_hash,
+        })
+    }
+    
+    /// Insert vote into database
+    pub async fn insert(&self, dbtx: &mut PgTransaction<'_>) -> Result<()> {
+        sqlx::query(
+            r"
+            INSERT INTO governance_votes (
+                proposal_id, validator_identity_key, vote, voting_power, voted_at, tx_hash
+            ) VALUES ($1, $2, $3, $4, $5, $6)
+            ",
+        )
+        .bind(self.proposal_id)
+        .bind(&self.validator_identity_key)
+        .bind(&self.vote)
+        .bind(&self.voting_power)
+        .bind(self.voted_at)
+        .bind(&self.tx_hash)
+        .execute(dbtx.as_mut())
+        .await?;
+        
+        if let (Some(validator_identity_key), Some(tx_hash)) = (&self.validator_identity_key, &self.tx_hash) {
+            sqlx::query(
+                r"
+                UPDATE explorer_transactions 
+                SET validator_identity_key = $1 
+                WHERE tx_hash = $2
+                ",
+            )
+            .bind(validator_identity_key)
+            .bind(tx_hash)
+            .execute(dbtx.as_mut())
+            .await?;
+            
+            debug!(
+                "Updated explorer_transactions with validator identity key {} for tx_hash {:?}",
+                validator_identity_key,
+                tx_hash
+            );
+        }
+        
+        info!(
+            "Inserted {} vote for proposal {}: {} (voting power: {})",
+            if self.validator_identity_key.is_some() { "validator" } else { "delegator" },
+            self.proposal_id,
+            self.vote,
+            self.voting_power
+        );
+        
+        Ok(())
+    }
+}
+
 impl GovernanceProposal {
     /// Extract proposal ID, assigning 0 for proposals without ID
     fn extract_proposal_id(submit_data: &Value) -> i64 {
         if let Some(id_str) = submit_data["proposal"]["id"].as_str() {
             id_str.parse::<i64>().unwrap_or(0)
         } else {
-            // No ID field = first proposal on blockchain = assign ID 0
             0
         }
     }
@@ -77,7 +291,6 @@ impl GovernanceProposal {
     ) -> Result<BigDecimal> {
         debug!("Starting quorum calculation for chain_id: {}", chain_id);
         
-        // Get TOTAL voting power from ALL validators (not just active)
         let total_voting_power: Option<BigDecimal> = sqlx::query_scalar(
             "SELECT SUM(voting_power) FROM validators"
         )
@@ -99,7 +312,6 @@ impl GovernanceProposal {
             return Err(anyhow::anyhow!("Total voting power is zero"));
         }
         
-        // Get quorum percentage from governance_parameters
         let quorum_percentage: Option<BigDecimal> = sqlx::query_scalar(
             "SELECT valid_quorum FROM governance_parameters WHERE chain_id = $1"
         )
@@ -117,7 +329,6 @@ impl GovernanceProposal {
         let quorum_percentage = quorum_percentage.unwrap();
         debug!("Valid quorum percentage: {}%", quorum_percentage);
         
-        // Calculate required quorum: total_voting_power * (valid_quorum / 100)
         let hundred = BigDecimal::from(100);
         let required_quorum = &total_power * &quorum_percentage / &hundred;
         
@@ -137,7 +348,6 @@ impl GovernanceProposal {
         chain_id: &str,
         dbtx: &mut PgTransaction<'_>,
     ) -> Option<Self> {
-        // Extract submit data
         let submit_str = event.event.attributes
             .iter()
             .find(|attr| attr.key_str().ok() == Some("submit"))
@@ -145,7 +355,6 @@ impl GovernanceProposal {
         
         let submit_data: Value = serde_json::from_str(submit_str).ok()?;
         
-        // Extract start and end heights from attributes
         let start_height_str = event.event.attributes
             .iter()
             .find(|attr| attr.key_str().ok() == Some("startHeight"))
@@ -156,23 +365,19 @@ impl GovernanceProposal {
             .find(|attr| attr.key_str().ok() == Some("endHeight"))
             .and_then(|attr| attr.value_str().ok())?;
         
-        // Parse heights (remove quotes)
         let start_height = start_height_str.trim_matches('"').parse::<i64>().ok()?;
         let end_height = end_height_str.trim_matches('"').parse::<i64>().ok()?;
         
-        // Extract proposal details
         let proposal = submit_data.get("proposal")?;
         let proposal_id = Self::extract_proposal_id(&submit_data);
         let title = proposal["title"].as_str()?.to_string();
         let description = proposal["description"].as_str()?.to_string();
         let kind = Self::determine_proposal_kind(proposal);
         
-        // Extract deposit amount (divide by 1M)
         let deposit_str = submit_data["depositAmount"]["lo"].as_str()?;
         let deposit_base = BigDecimal::from_str(deposit_str).ok()?;
         let deposit_amount = deposit_base / BigDecimal::from(1_000_000);
         
-        // Calculate quorum
         let quorum = match Self::calculate_quorum(chain_id, dbtx).await {
             Ok(q) => q,
             Err(e) => {
@@ -447,7 +652,6 @@ impl GovernanceParameters {
         let deposit_amount_base = BigDecimal::from_str(deposit_amount_str).ok()?;
         let deposit_amount = deposit_amount_base / BigDecimal::from(1_000_000);
         
-        // Parse thresholds
         let passing_threshold = Self::parse_fraction_to_percentage(
             gov_params["proposalPassThreshold"].as_str()?
         ).ok()?;
@@ -564,7 +768,6 @@ async fn update_proposals_end_timestamp(
     timestamp: DateTime<Utc>,
     dbtx: &mut PgTransaction<'_>,
 ) -> Result<()> {
-    // Get all proposals that end at this height and don't have end_timestamp set yet
     let proposals: Vec<i64> = sqlx::query_scalar(
         r"
         SELECT proposal_id 
@@ -594,7 +797,6 @@ pub async fn process_events(
 ) -> Result<()> {
     debug!("Processing governance events for block {}", height);
     
-    // First, check if any proposals reach their end_block_height at this height
     if let Err(e) = update_proposals_end_timestamp(height, timestamp, dbtx).await {
         error!("Error updating proposal end timestamps for block {}: {}", height, e);
     }
@@ -641,6 +843,18 @@ pub async fn process_events(
                 debug!("Processing EventProposalDepositClaim");
                 if let Err(e) = process_proposal_deposit_claim(event, height, timestamp, chain_id, dbtx).await {
                     error!("Error processing EventProposalDepositClaim: {}", e);
+                }
+            }
+            "penumbra.core.component.governance.v1.EventValidatorVote" => {
+                debug!("Processing EventValidatorVote");
+                if let Err(e) = process_validator_vote(event, height, timestamp, dbtx).await {
+                    error!("Error processing EventValidatorVote: {}", e);
+                }
+            }
+            "penumbra.core.component.governance.v1.EventDelegatorVote" => {
+                debug!("Processing EventDelegatorVote");
+                if let Err(e) = process_delegator_vote(event, height, timestamp, dbtx).await {
+                    error!("Error processing EventDelegatorVote: {}", e);
                 }
             }
             _ => {}
@@ -811,6 +1025,54 @@ async fn process_proposal_deposit_claim(
             GovernanceProposal::update_state_only(proposal_id, "Claimed", timestamp, dbtx).await?;
             debug!("Proposal {} deposit claimed at height {}", proposal_id, height);
         }
+    }
+    
+    Ok(())
+}
+
+/// Process EventValidatorVote
+async fn process_validator_vote(
+    event: &ContextualizedEvent<'_>,
+    height: u64,
+    timestamp: DateTime<Utc>,
+    dbtx: &mut PgTransaction<'_>,
+) -> Result<()> {
+    debug!("Processing EventValidatorVote at height {}", height);
+    
+    let tx_hash = event.tx_hash().map(|hash| hash.to_vec());
+    
+    if let Some(vote) = GovernanceVote::from_validator_vote_event(event, timestamp, tx_hash) {
+        debug!("Successfully parsed validator vote: proposal_id={}, identity_key={:?}, vote={}", 
+               vote.proposal_id, vote.validator_identity_key, vote.vote);
+        vote.insert(dbtx).await?;
+        debug!("Successfully processed validator vote for proposal {}", vote.proposal_id);
+    } else {
+        error!("Failed to parse EventValidatorVote at height {} - from_validator_vote_event returned None", height);
+        
+        for attr in &event.event.attributes {
+            if let (Ok(key), Ok(value)) = (attr.key_str(), attr.value_str()) {
+                debug!("EventValidatorVote attribute: {} = {}", key, value);
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+/// Process EventDelegatorVote  
+async fn process_delegator_vote(
+    event: &ContextualizedEvent<'_>,
+    _height: u64,
+    timestamp: DateTime<Utc>,
+    dbtx: &mut PgTransaction<'_>,
+) -> Result<()> {
+    let tx_hash = event.tx_hash().map(|hash| hash.to_vec());
+    
+    if let Some(vote) = GovernanceVote::from_delegator_vote_event(event, timestamp, tx_hash) {
+        vote.insert(dbtx).await?;
+        debug!("Successfully processed delegator vote for proposal {}", vote.proposal_id);
+    } else {
+        debug!("Skipping EventDelegatorVote - missing required fields");
     }
     
     Ok(())
