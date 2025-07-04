@@ -1628,6 +1628,10 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 validator_identity_key TEXT,
                 vote TEXT,
                 voting_power NUMERIC(39, 0),
+                effective_voting_power NUMERIC(39, 0),
+                voting_power_percentage NUMERIC(5, 2),
+                parent_validator_identity_key TEXT,
+                block_height BIGINT NOT NULL REFERENCES explorer_block_details(height) DEFERRABLE INITIALLY DEFERRED,
                 voted_at TIMESTAMPTZ,
                 tx_hash BYTEA
             )
@@ -1654,14 +1658,64 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
 
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_parent_validator_identity_key
+            ON governance_votes(parent_validator_identity_key)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_block_height
+            ON governance_votes(block_height)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_validator
+            ON governance_votes(proposal_id, validator_identity_key) WHERE validator_identity_key IS NOT NULL
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_parent_validator
+            ON governance_votes(proposal_id, parent_validator_identity_key) WHERE parent_validator_identity_key IS NOT NULL
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_percentage
+            ON governance_votes(proposal_id, voting_power_percentage DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
         tracing::info!("Reading genesis file to initialize validators");
         if let Err(e) = self.initialize_validators_from_genesis(dbtx).await {
             tracing::error!("Failed to initialize validators from genesis: {}", e);
         }
 
         tracing::info!("Initializing governance parameters from genesis");
-        if let Err(e) = governance::GovernanceParameters::initialize_from_genesis_if_needed(dbtx).await {
-            tracing::error!("Failed to initialize governance parameters from genesis: {}", e);
+        if let Err(e) =
+            governance::GovernanceParameters::initialize_from_genesis_if_needed(dbtx).await
+        {
+            tracing::error!(
+                "Failed to initialize governance parameters from genesis: {}",
+                e
+            );
         }
 
         Ok(())
@@ -1862,10 +1916,20 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     tracing::error!("Error processing DEX events for block {}: {:?}", height, e);
                 }
 
-                if let Err(e) =
-                    governance::process_events(dbtx, &events, height, timestamp, self.get_chain_id()).await
+                if let Err(e) = governance::process_events(
+                    dbtx,
+                    &events,
+                    height,
+                    timestamp,
+                    self.get_chain_id(),
+                )
+                .await
                 {
-                    tracing::error!("Error processing governance events for block {}: {:?}", height, e);
+                    tracing::error!(
+                        "Error processing governance events for block {}: {:?}",
+                        height,
+                        e
+                    );
                 }
             }
         }
