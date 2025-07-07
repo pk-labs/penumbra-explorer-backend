@@ -1594,6 +1594,13 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                 end_timestamp TIMESTAMPTZ,
                 quorum NUMERIC(39, 6),
                 payload JSONB,
+                total_votes NUMERIC(39, 6) DEFAULT 0,
+                yes_votes NUMERIC(39, 6) DEFAULT 0,
+                yes_votes_percentage NUMERIC(5, 2) DEFAULT 0,
+                abstain_votes NUMERIC(39, 6) DEFAULT 0,
+                abstain_votes_percentage NUMERIC(5, 2) DEFAULT 0,
+                no_votes NUMERIC(39, 6) DEFAULT 0,
+                no_votes_percentage NUMERIC(5, 2) DEFAULT 0,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
