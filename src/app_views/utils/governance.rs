@@ -473,10 +473,7 @@ impl GovernanceVote {
         .execute(dbtx.as_mut())
         .await?;
 
-        debug!(
-            "Updated vote statistics for proposal {}",
-            proposal_id
-        );
+        debug!("Updated vote statistics for proposal {}", proposal_id);
         Ok(())
     }
 }
@@ -1149,12 +1146,16 @@ pub async fn process_events(
                 "Error recalculating effective voting power for proposal {}: {}",
                 proposal_id, e
             );
-        } else if let Err(e) = GovernanceVote::recalculate_voting_power_percentages(proposal_id, dbtx).await {
+        } else if let Err(e) =
+            GovernanceVote::recalculate_voting_power_percentages(proposal_id, dbtx).await
+        {
             error!(
                 "Error recalculating voting power percentages for proposal {}: {}",
                 proposal_id, e
             );
-        } else if let Err(e) = GovernanceVote::update_proposal_vote_statistics(proposal_id, dbtx).await {
+        } else if let Err(e) =
+            GovernanceVote::update_proposal_vote_statistics(proposal_id, dbtx).await
+        {
             error!(
                 "Error updating proposal vote statistics for proposal {}: {}",
                 proposal_id, e
@@ -1401,7 +1402,6 @@ async fn process_validator_vote(
         );
         let proposal_id = vote.proposal_id;
         vote.insert(dbtx).await?;
-        
 
         debug!(
             "Successfully processed validator vote for proposal {}",
@@ -1433,13 +1433,17 @@ async fn process_delegator_vote(
     {
         let proposal_id = vote.proposal_id;
         let parent_validator = vote.parent_validator_identity_key.clone();
-        
+
         vote.insert(dbtx).await?;
-        
+
         if let Some(validator_key) = parent_validator {
-            GovernanceVote::recalculate_validator_effective_power(proposal_id, &validator_key, dbtx).await?;
+            GovernanceVote::recalculate_validator_effective_power(
+                proposal_id,
+                &validator_key,
+                dbtx,
+            )
+            .await?;
         }
-        
 
         debug!(
             "Successfully processed delegator vote for proposal {}",
