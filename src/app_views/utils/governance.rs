@@ -427,6 +427,58 @@ impl GovernanceVote {
 
         Ok(())
     }
+
+    /// Update vote statistics for a proposal (total votes, yes/no/abstain counts and percentages)
+    pub async fn update_proposal_vote_statistics(
+        proposal_id: i64,
+        dbtx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        sqlx::query(
+            r"
+            UPDATE governance_proposals
+            SET 
+                total_votes = vote_stats.total_sum,
+                yes_votes = vote_stats.yes_sum,
+                yes_votes_percentage = CASE 
+                    WHEN vote_stats.total_sum > 0 THEN 
+                        ROUND((vote_stats.yes_sum * 100.0) / vote_stats.total_sum, 2)
+                    ELSE 0 
+                END,
+                abstain_votes = vote_stats.abstain_sum,
+                abstain_votes_percentage = CASE 
+                    WHEN vote_stats.total_sum > 0 THEN 
+                        ROUND((vote_stats.abstain_sum * 100.0) / vote_stats.total_sum, 2)
+                    ELSE 0 
+                END,
+                no_votes = vote_stats.no_sum,
+                no_votes_percentage = CASE 
+                    WHEN vote_stats.total_sum > 0 THEN 
+                        ROUND((vote_stats.no_sum * 100.0) / vote_stats.total_sum, 2)
+                    ELSE 0 
+                END,
+                updated_at = NOW()
+            FROM (
+                SELECT 
+                    COALESCE(SUM(effective_voting_power), 0) as total_sum,
+                    COALESCE(SUM(CASE WHEN vote = 'Yes' THEN effective_voting_power ELSE 0 END), 0) as yes_sum,
+                    COALESCE(SUM(CASE WHEN vote = 'No' THEN effective_voting_power ELSE 0 END), 0) as no_sum,
+                    COALESCE(SUM(CASE WHEN vote = 'Abstain' THEN effective_voting_power ELSE 0 END), 0) as abstain_sum
+                FROM governance_votes
+                WHERE proposal_id = $1
+            ) AS vote_stats
+            WHERE proposal_id = $1
+            ",
+        )
+        .bind(proposal_id)
+        .execute(dbtx.as_mut())
+        .await?;
+
+        debug!(
+            "Updated vote statistics for proposal {}",
+            proposal_id
+        );
+        Ok(())
+    }
 }
 
 impl GovernanceProposal {
@@ -453,8 +505,6 @@ impl GovernanceProposal {
             "Unfreeze IBC Client".to_string()
         } else if proposal.get("emergency").is_some() {
             "Emergency".to_string()
-        } else if proposal.get("signaling").is_some() {
-            "Signaling".to_string()
         } else {
             "Signaling".to_string()
         }
@@ -1099,13 +1149,16 @@ pub async fn process_events(
                 "Error recalculating effective voting power for proposal {}: {}",
                 proposal_id, e
             );
-        } else {
-            if let Err(e) = GovernanceVote::recalculate_voting_power_percentages(proposal_id, dbtx).await {
-                error!(
-                    "Error recalculating voting power percentages for proposal {}: {}",
-                    proposal_id, e
-                );
-            }
+        } else if let Err(e) = GovernanceVote::recalculate_voting_power_percentages(proposal_id, dbtx).await {
+            error!(
+                "Error recalculating voting power percentages for proposal {}: {}",
+                proposal_id, e
+            );
+        } else if let Err(e) = GovernanceVote::update_proposal_vote_statistics(proposal_id, dbtx).await {
+            error!(
+                "Error updating proposal vote statistics for proposal {}: {}",
+                proposal_id, e
+            );
         }
     }
 
