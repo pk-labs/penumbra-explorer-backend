@@ -1,5 +1,6 @@
 mod block;
 mod dex;
+mod governance;
 mod ibc;
 mod search;
 mod stats;
@@ -12,6 +13,7 @@ use async_graphql::Object;
 
 pub use block::{get as resolve_block, resolve_blocks_collection};
 pub use dex::{resolve_dex_stats, resolve_latest_executions, resolve_liquidity_positions};
+pub use governance::resolve_governance_parameters;
 pub use ibc::{resolve_ibc_stats, resolve_total_shielded_volume};
 pub use search::resolve_search;
 pub use stats::resolve_stats;
@@ -170,5 +172,12 @@ impl QueryRoot {
         ctx: &async_graphql::Context<'_>,
     ) -> async_graphql::Result<crate::api::graphql::types::DexStats> {
         resolve_dex_stats(ctx).await
+    }
+
+    async fn governance_parameters(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+    ) -> async_graphql::Result<Option<crate::api::graphql::types::GovernanceParameters>> {
+        resolve_governance_parameters(ctx).await
     }
 }
