@@ -1773,6 +1773,61 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
 
+        // Critical missing indexes for governance performance
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_voted_at
+            ON governance_votes(proposal_id, voted_at DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_vote_effective_power
+            ON governance_votes(proposal_id, vote, effective_voting_power DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_proposals_state_id_desc
+            ON governance_proposals(state, proposal_id DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_proposals_past_states_id
+            ON governance_proposals(proposal_id DESC) WHERE state IN ('Finished', 'Withdrawn', 'Claimed')
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_validator_proposal_power
+            ON governance_votes(validator_identity_key, proposal_id, effective_voting_power DESC) WHERE validator_identity_key IS NOT NULL
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_parent_validator_proposal_power
+            ON governance_votes(parent_validator_identity_key, proposal_id, effective_voting_power DESC) WHERE parent_validator_identity_key IS NOT NULL
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
         tracing::info!("Reading genesis file to initialize validators");
         if let Err(e) = self.initialize_validators_from_genesis(dbtx).await {
             tracing::error!("Failed to initialize validators from genesis: {}", e);
