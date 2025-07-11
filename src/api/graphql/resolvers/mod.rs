@@ -13,7 +13,10 @@ use async_graphql::Object;
 
 pub use block::{get as resolve_block, resolve_blocks_collection};
 pub use dex::{resolve_dex_stats, resolve_latest_executions, resolve_liquidity_positions};
-pub use governance::resolve_governance_parameters;
+pub use governance::{
+    resolve_active_proposals, resolve_governance_parameters, resolve_past_proposals,
+    resolve_proposal_detail, resolve_vote_for_transaction,
+};
 pub use ibc::{resolve_ibc_stats, resolve_total_shielded_volume};
 pub use search::resolve_search;
 pub use stats::resolve_stats;
@@ -179,5 +182,37 @@ impl QueryRoot {
         ctx: &async_graphql::Context<'_>,
     ) -> async_graphql::Result<Option<crate::api::graphql::types::GovernanceParameters>> {
         resolve_governance_parameters(ctx).await
+    }
+
+    async fn past_proposals(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+        limit: crate::api::graphql::types::CollectionLimit,
+    ) -> async_graphql::Result<crate::api::graphql::types::PastProposalCollection> {
+        resolve_past_proposals(ctx, limit).await
+    }
+
+    async fn active_proposals(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+    ) -> async_graphql::Result<Vec<crate::api::graphql::types::ActiveProposal>> {
+        resolve_active_proposals(ctx).await
+    }
+
+    async fn proposal_detail(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+        id: i64,
+    ) -> async_graphql::Result<Option<crate::api::graphql::types::ProposalDetail>> {
+        resolve_proposal_detail(ctx, id).await
+    }
+
+    #[graphql(name = "getVoteForTransaction")]
+    async fn get_vote_for_transaction(
+        &self,
+        ctx: &async_graphql::Context<'_>,
+        tx_hash: String,
+    ) -> async_graphql::Result<Option<crate::api::graphql::types::VoteForTransaction>> {
+        resolve_vote_for_transaction(ctx, tx_hash).await
     }
 }
