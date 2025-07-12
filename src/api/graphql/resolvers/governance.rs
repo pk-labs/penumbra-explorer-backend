@@ -6,7 +6,7 @@ use crate::api::graphql::context::ApiContext;
 use crate::api::graphql::scalars::{DateTime, Decimal};
 use crate::api::graphql::types::governance::{
     ActiveProposal, GovernanceParameters, PastProposal, PastProposalCollection, ProposalDetail,
-    ProposalKind, ProposalOutcome, ProposalState, Vote, VoteValue, VoteForTransaction,
+    ProposalKind, ProposalOutcome, ProposalState, Vote, VoteForTransaction, VoteValue,
 };
 use crate::api::graphql::types::CollectionLimit;
 use async_graphql::{Context, Result};
@@ -272,7 +272,10 @@ pub async fn resolve_proposal_detail(ctx: &Context<'_>, id: i64) -> Result<Optio
 
     let proposal_id: i64 = proposal_row.get("proposal_id");
     let title: String = proposal_row.get("title");
-    let description: String = proposal_row.get::<String, _>("description").trim().to_string();
+    let description: String = proposal_row
+        .get::<String, _>("description")
+        .trim()
+        .to_string();
     let kind_str: String = proposal_row.get("kind");
     let state_str: String = proposal_row.get("state");
     let outcome_str: Option<String> = proposal_row.get("outcome");
@@ -290,10 +293,10 @@ pub async fn resolve_proposal_detail(ctx: &Context<'_>, id: i64) -> Result<Optio
     let yes_votes: sqlx::types::BigDecimal = proposal_row.get("yes_votes");
     let yes_votes_percentage: sqlx::types::BigDecimal = proposal_row.get("yes_votes_percentage");
     let abstain_votes: sqlx::types::BigDecimal = proposal_row.get("abstain_votes");
-    let abstain_votes_percentage: sqlx::types::BigDecimal = proposal_row.get("abstain_votes_percentage");
+    let abstain_votes_percentage: sqlx::types::BigDecimal =
+        proposal_row.get("abstain_votes_percentage");
     let no_votes: sqlx::types::BigDecimal = proposal_row.get("no_votes");
     let no_votes_percentage: sqlx::types::BigDecimal = proposal_row.get("no_votes_percentage");
-
 
     let kind = ProposalKind::from_database_string(&kind_str);
     let state = ProposalState::from_database_string(&state_str);
