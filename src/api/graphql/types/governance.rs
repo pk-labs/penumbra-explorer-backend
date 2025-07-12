@@ -289,16 +289,20 @@ impl ProposalDetail {
         &self.no_votes_percentage
     }
 
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap
+    )]
     async fn votes(&self, limit: Option<CollectionLimit>) -> VoteCollection {
         let limit = limit.unwrap_or(CollectionLimit {
             length: Some(10),
             offset: Some(0),
         });
-        
+
         let length = limit.length.unwrap_or(10) as usize;
         let offset = limit.offset.unwrap_or(0) as usize;
-        
+
         let total = self.votes.len() as i32;
         let items = if offset < self.votes.len() {
             let end = std::cmp::min(offset + length, self.votes.len());
@@ -306,7 +310,7 @@ impl ProposalDetail {
         } else {
             Vec::new()
         };
-        
+
         VoteCollection { items, total }
     }
 }
