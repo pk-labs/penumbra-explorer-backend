@@ -832,6 +832,33 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
 
         sqlx::query(
             r"
+            CREATE INDEX IF NOT EXISTS idx_validator_blocks_identity_height
+            ON validator_blocks(identity_key, block_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_blocks_uptime_coverage
+            ON validator_blocks(identity_key, block_height DESC, signed)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_uptime_stats_identity_window
+            ON validator_uptime_stats(identity_key, window_start_height)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
             CREATE OR REPLACE VIEW validator_performance AS
             WITH commission_rates AS (
                 SELECT
