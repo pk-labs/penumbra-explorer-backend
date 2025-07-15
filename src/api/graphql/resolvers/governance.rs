@@ -81,7 +81,7 @@ pub async fn resolve_past_proposals(
             kind,
             state,
             outcome,
-            quorum as total_votes,
+            total_votes,
             end_block_height,
             end_timestamp
         FROM governance_proposals
