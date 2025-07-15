@@ -226,7 +226,7 @@ pub async fn resolve_proposal_detail(ctx: &Context<'_>, id: i64) -> Result<Optio
         FROM governance_votes gv
         LEFT JOIN validators v ON gv.validator_identity_key = v.identity_key
         WHERE gv.proposal_id = $1
-        ORDER BY gv.voted_at DESC
+        ORDER BY gv.effective_voting_power DESC
         ",
     )
     .bind(id)
