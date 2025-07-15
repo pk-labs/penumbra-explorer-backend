@@ -8,12 +8,94 @@
 
 use anyhow::Result;
 use cometindex::ContextualizedEvent;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sqlx::types::chrono::{DateTime, Utc};
 use sqlx::types::BigDecimal;
 use sqlx::PgTransaction;
 use std::str::FromStr;
 use tracing::{debug, error, info};
+
+/// Process a raw value to handle potential JSON objects
+fn process_value(raw_value: &str) -> Value {
+    if raw_value.contains("\\\"") {
+        let unescaped = raw_value.replace("\\\"", "\"").replace("\\\\", "\\");
+
+        if unescaped.trim().starts_with('{') || unescaped.trim().starts_with('[') {
+            let balanced = ensure_balanced_json(&unescaped);
+            if let Ok(json_value) = serde_json::from_str::<Value>(&balanced) {
+                return json_value;
+            }
+        }
+
+        if unescaped.starts_with('"') && unescaped.ends_with('"') {
+            return json!(unescaped.trim_matches('"'));
+        }
+
+        json!(unescaped)
+    } else if raw_value.trim().starts_with('{') || raw_value.trim().starts_with('[') {
+        let balanced = ensure_balanced_json(raw_value);
+        match serde_json::from_str::<Value>(&balanced) {
+            Ok(json_value) => json_value,
+            Err(_) => json!(raw_value),
+        }
+    } else if raw_value.starts_with('"') && raw_value.ends_with('"') {
+        json!(raw_value.trim_matches('"'))
+    } else {
+        json!(raw_value)
+    }
+}
+
+/// Ensure JSON strings have balanced braces
+fn ensure_balanced_json(json_str: &str) -> String {
+    let mut balanced = json_str.to_string();
+
+    let open_curly = balanced.chars().filter(|&c| c == '{').count();
+    let close_curly = balanced.chars().filter(|&c| c == '}').count();
+    if open_curly > close_curly {
+        for _ in 0..(open_curly - close_curly) {
+            balanced.push('}');
+        }
+    }
+
+    let open_bracket = balanced.chars().filter(|&c| c == '[').count();
+    let close_bracket = balanced.chars().filter(|&c| c == ']').count();
+    if open_bracket > close_bracket {
+        for _ in 0..(open_bracket - close_bracket) {
+            balanced.push(']');
+        }
+    }
+
+    balanced
+}
+
+/// Process proposal payload to handle nested JSON structures
+fn process_proposal_payload(payload: &Value) -> Value {
+    match payload {
+        Value::Object(obj) => {
+            let mut processed_obj = serde_json::Map::new();
+            for (key, value) in obj {
+                processed_obj.insert(key.clone(), process_proposal_payload(value));
+            }
+            Value::Object(processed_obj)
+        }
+        Value::Array(arr) => {
+            let processed_arr: Vec<Value> = arr.iter().map(process_proposal_payload).collect();
+            Value::Array(processed_arr)
+        }
+        Value::String(s) => {
+            // Try to parse string values that might be JSON
+            if s.trim().starts_with('{') || s.trim().starts_with('[') {
+                match serde_json::from_str::<Value>(s) {
+                    Ok(parsed) => process_proposal_payload(&parsed),
+                    Err(_) => process_value(s),
+                }
+            } else {
+                process_value(s)
+            }
+        }
+        _ => payload.clone(),
+    }
+}
 
 /// Governance parameters structure
 #[derive(Debug, Clone)]
@@ -631,7 +713,7 @@ impl GovernanceProposal {
             start_timestamp: timestamp,
             end_timestamp: None,
             quorum,
-            payload: proposal.clone(),
+            payload: process_proposal_payload(proposal),
         })
     }
 

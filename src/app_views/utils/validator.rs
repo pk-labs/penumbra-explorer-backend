@@ -1887,33 +1887,34 @@ impl Validator {
         }
         sqlx::query(
             r"
-            WITH validator_block_counts AS (
-                SELECT
-                    vb.identity_key,
+            WITH window_params AS (
+                SELECT 
+                    us.identity_key,
                     us.window_start_height,
-                    -- Calculate new window start height to maintain rolling window
+                    GREATEST(
+                        us.window_start_height,
+                        $1 - $2 + 1
+                    ) as effective_window_start,
                     CASE 
-                        WHEN ($1 - us.window_start_height) >= $2 THEN
-                            -- Window has reached max size, slide it forward
-                            $1 - $2 + 1
-                        ELSE
-                            -- Window is still within limits, keep original start
-                            us.window_start_height
-                    END as new_window_start_height,
+                        WHEN ($1 - us.window_start_height) >= $2 THEN $1 - $2 + 1
+                        ELSE us.window_start_height
+                    END as new_window_start_height
+                FROM validator_uptime_stats us
+                WHERE us.identity_key = ANY($3)
+            ),
+            validator_block_counts AS (
+                SELECT
+                    wp.identity_key,
+                    wp.window_start_height,
+                    wp.new_window_start_height,
                     COUNT(*) as total_blocks,
                     SUM(CASE WHEN vb.signed THEN 1 ELSE 0 END) as signed_blocks,
                     SUM(CASE WHEN NOT vb.signed THEN 1 ELSE 0 END) as missed_blocks
-                FROM validator_blocks vb
-                JOIN validator_uptime_stats us ON vb.identity_key = us.identity_key
-                WHERE vb.identity_key = ANY($3)
-                  AND vb.block_height >= (
-                      CASE 
-                          WHEN ($1 - us.window_start_height) >= $2 THEN $1 - $2 + 1
-                          ELSE us.window_start_height
-                      END
-                  )
+                FROM window_params wp
+                INNER JOIN validator_blocks vb ON vb.identity_key = wp.identity_key
+                WHERE vb.block_height >= wp.effective_window_start
                   AND vb.block_height <= $1
-                GROUP BY vb.identity_key, us.window_start_height
+                GROUP BY wp.identity_key, wp.window_start_height, wp.new_window_start_height
             )
             UPDATE validator_uptime_stats us
             SET
@@ -1926,16 +1927,16 @@ impl Validator {
                     ELSE 0.00
                 END,
                 last_calculated_height = $1,
-                window_start_height = vbc.new_window_start_height,  -- Update window start for rolling
+                window_start_height = vbc.new_window_start_height,
                 updated_at = NOW()
             FROM validator_block_counts vbc
             WHERE us.identity_key = vbc.identity_key
                AND us.identity_key = ANY($3)
             ",
         )
-            .bind(height)                           // $1 = current height
-            .bind(uptime_window)                    // $2 = uptime window parameter  
-            .bind(&validators_in_block)             // $3 = validators in current block
+            .bind(height)
+            .bind(uptime_window)
+            .bind(&validators_in_block)
             .execute(dbtx.as_mut())
             .await?;
 
