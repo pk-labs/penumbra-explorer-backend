@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::app_views::utils::block::Metadata as BlockMetadata;
 use crate::app_views::utils::transaction::Metadata as TransactionMetadata;
 use crate::app_views::utils::validator::ValidatorParams;
-use crate::app_views::utils::{block, dex, ibc, transaction, validator};
+use crate::app_views::utils::{block, dex, governance, ibc, transaction, validator};
 use crate::parsing::encode_to_base64;
 
 #[derive(Debug)]
@@ -356,11 +356,6 @@ impl Explorer {
             tracing::debug!("No active validators found, skipping block participation records");
             return Ok(());
         }
-
-        // Don't record any validator blocks here
-        // Let the validator event processing handle everything:
-        // 1. First: MissedBlock events record validators with signed=false
-        // 2. Then: Record remaining ACTIVE validators with signed=true
 
         tracing::debug!(
             "Found {} active validators at height {} - validator event processing will handle block recording",
@@ -830,6 +825,33 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             r"
             CREATE INDEX IF NOT EXISTS idx_validator_uptime_stats_updated_at
             ON validator_uptime_stats(updated_at DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_blocks_identity_height
+            ON validator_blocks(identity_key, block_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_blocks_uptime_coverage
+            ON validator_blocks(identity_key, block_height DESC, signed)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_uptime_stats_identity_window
+            ON validator_uptime_stats(identity_key, window_start_height)
             ",
         )
         .execute(dbtx.as_mut())
@@ -1556,9 +1578,296 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
 
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS governance_parameters (
+                chain_id TEXT PRIMARY KEY,
+                deposit_amount NUMERIC(39, 6) NOT NULL,
+                passing_threshold DECIMAL(5,2) NOT NULL,
+                slashing_threshold DECIMAL(5,2) NOT NULL,
+                valid_quorum DECIMAL(5,2) NOT NULL,
+                proposal_voting_blocks BIGINT NOT NULL,
+                updated_height BIGINT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                raw_params JSONB
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_parameters_updated_height
+            ON governance_parameters(updated_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS governance_proposals (
+                proposal_id BIGINT PRIMARY KEY,
+                title TEXT,
+                description TEXT,
+                kind TEXT,
+                state TEXT DEFAULT 'Voting',
+                outcome TEXT,
+                deposit_amount NUMERIC(39, 6),
+                start_block_height BIGINT,
+                end_block_height BIGINT,
+                start_timestamp TIMESTAMPTZ,
+                end_timestamp TIMESTAMPTZ,
+                quorum NUMERIC(39, 6),
+                payload JSONB,
+                total_votes NUMERIC(39, 6) DEFAULT 0,
+                yes_votes NUMERIC(39, 6) DEFAULT 0,
+                yes_votes_percentage NUMERIC(5, 2) DEFAULT 0,
+                abstain_votes NUMERIC(39, 6) DEFAULT 0,
+                abstain_votes_percentage NUMERIC(5, 2) DEFAULT 0,
+                no_votes NUMERIC(39, 6) DEFAULT 0,
+                no_votes_percentage NUMERIC(5, 2) DEFAULT 0,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_proposals_state
+            ON governance_proposals(state)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_proposals_start_height
+            ON governance_proposals(start_block_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE TABLE IF NOT EXISTS governance_votes (
+                id SERIAL PRIMARY KEY,
+                proposal_id BIGINT,
+                validator_identity_key TEXT,
+                vote TEXT,
+                voting_power NUMERIC(39, 6),
+                effective_voting_power NUMERIC(39, 6),
+                voting_power_percentage NUMERIC(5, 2),
+                parent_validator_identity_key TEXT,
+                block_height BIGINT NOT NULL REFERENCES explorer_block_details(height) DEFERRABLE INITIALLY DEFERRED,
+                voted_at TIMESTAMPTZ,
+                tx_hash BYTEA
+            )
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_id
+            ON governance_votes(proposal_id)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_validator_identity_key
+            ON governance_votes(validator_identity_key)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_parent_validator_identity_key
+            ON governance_votes(parent_validator_identity_key)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_block_height
+            ON governance_votes(block_height)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_validator
+            ON governance_votes(proposal_id, validator_identity_key) WHERE validator_identity_key IS NOT NULL
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_parent_validator
+            ON governance_votes(proposal_id, parent_validator_identity_key) WHERE parent_validator_identity_key IS NOT NULL
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_percentage
+            ON governance_votes(proposal_id, voting_power_percentage DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_proposals_state_proposal_id
+            ON governance_proposals(state, proposal_id DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_proposals_end_timestamp
+            ON governance_proposals(end_timestamp) WHERE end_timestamp IS NOT NULL
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_proposals_end_block_height
+            ON governance_proposals(end_block_height)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_effective_power
+            ON governance_votes(proposal_id, effective_voting_power)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_parent_validator_proposal
+            ON governance_votes(parent_validator_identity_key, proposal_id) WHERE parent_validator_identity_key IS NOT NULL
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_vote_power
+            ON governance_votes(proposal_id, vote, effective_voting_power)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_parameters_chain_id_height
+            ON governance_parameters(chain_id, updated_height DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        // Critical missing indexes for governance performance
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_voted_at
+            ON governance_votes(proposal_id, voted_at DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_proposal_vote_effective_power
+            ON governance_votes(proposal_id, vote, effective_voting_power DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_proposals_state_id_desc
+            ON governance_proposals(state, proposal_id DESC)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_proposals_past_states_id
+            ON governance_proposals(proposal_id DESC) WHERE state IN ('Finished', 'Withdrawn', 'Claimed')
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_validator_proposal_power
+            ON governance_votes(validator_identity_key, proposal_id, effective_voting_power DESC) WHERE validator_identity_key IS NOT NULL
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_governance_votes_parent_validator_proposal_power
+            ON governance_votes(parent_validator_identity_key, proposal_id, effective_voting_power DESC) WHERE parent_validator_identity_key IS NOT NULL
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
         tracing::info!("Reading genesis file to initialize validators");
         if let Err(e) = self.initialize_validators_from_genesis(dbtx).await {
             tracing::error!("Failed to initialize validators from genesis: {}", e);
+        }
+
+        tracing::info!("Initializing governance parameters from genesis");
+        if let Err(e) =
+            governance::GovernanceParameters::initialize_from_genesis_if_needed(dbtx).await
+        {
+            tracing::error!(
+                "Failed to initialize governance parameters from genesis: {}",
+                e
+            );
         }
 
         Ok(())
@@ -1757,6 +2066,22 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     dex::Processor::process_events(dbtx, &events, height, timestamp).await
                 {
                     tracing::error!("Error processing DEX events for block {}: {:?}", height, e);
+                }
+
+                if let Err(e) = governance::process_events(
+                    dbtx,
+                    &events,
+                    height,
+                    timestamp,
+                    self.get_chain_id(),
+                )
+                .await
+                {
+                    tracing::error!(
+                        "Error processing governance events for block {}: {:?}",
+                        height,
+                        e
+                    );
                 }
             }
         }

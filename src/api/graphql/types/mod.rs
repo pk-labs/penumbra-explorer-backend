@@ -2,6 +2,7 @@ mod asset;
 mod block;
 mod dex;
 mod event;
+pub mod governance;
 pub mod ibc;
 pub mod inputs;
 mod stats;
@@ -15,6 +16,7 @@ pub use asset::*;
 pub use block::*;
 pub use dex::*;
 pub use event::*;
+pub use governance::*;
 pub use ibc::Stats as IbcStats;
 pub use inputs::{
     BlockFilter, BlockHeightRange, BlocksSelector, CollectionLimit, IbcStatsFilter, LatestBlock,
