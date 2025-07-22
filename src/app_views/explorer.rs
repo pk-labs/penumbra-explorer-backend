@@ -857,6 +857,16 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         .execute(dbtx.as_mut())
         .await?;
 
+        // Optimized index for incremental uptime window range queries
+        sqlx::query(
+            r"
+            CREATE INDEX IF NOT EXISTS idx_validator_blocks_identity_height_range_signed
+            ON validator_blocks(identity_key, block_height, signed)
+            ",
+        )
+        .execute(dbtx.as_mut())
+        .await?;
+
         sqlx::query(
             r"
             CREATE OR REPLACE VIEW validator_performance AS
