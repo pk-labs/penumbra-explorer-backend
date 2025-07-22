@@ -1920,7 +1920,7 @@ impl Validator {
             .unwrap_or(false);
 
             // Get current stats
-            let current_stats = sqlx::query_as::<_, (i32, i32, i32, i64, i64)>(
+            let current_stats = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
                 r"
                 SELECT total_blocks, signed_blocks, missed_blocks, window_start_height, last_calculated_height
                 FROM validator_uptime_stats 
@@ -1967,10 +1967,8 @@ impl Validator {
                     .fetch_one(dbtx.as_mut())
                     .await?;
 
-                    let removed_total =
-                        i32::try_from(blocks_to_remove.0.unwrap_or(0)).unwrap_or(i32::MAX);
-                    let removed_signed =
-                        i32::try_from(blocks_to_remove.1.unwrap_or(0)).unwrap_or(i32::MAX);
+                    let removed_total = blocks_to_remove.0.unwrap_or(0);
+                    let removed_signed = blocks_to_remove.1.unwrap_or(0);
                     let removed_missed = removed_total - removed_signed;
 
                     new_total -= removed_total;
@@ -1980,7 +1978,7 @@ impl Validator {
 
                 // Calculate new uptime percentage
                 let new_uptime_percentage = if new_total > 0 {
-                    (f64::from(new_signed) / f64::from(new_total) * 100.0).round() / 100.0
+                    ((new_signed as f64) / (new_total as f64) * 100.0).round() / 100.0
                 } else {
                     0.0
                 };
