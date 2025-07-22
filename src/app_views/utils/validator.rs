@@ -1782,6 +1782,28 @@ impl Validator {
                 .fetch_all(dbtx.as_mut())
                 .await?;
 
+        // One-time cleanup for existing deployments: remove validator_blocks beyond 2x window
+        let cleanup_threshold = height - (uptime_window * 2);
+        if cleanup_threshold > 0 {
+            let deleted_count = sqlx::query(
+                r"
+                DELETE FROM validator_blocks 
+                WHERE block_height < $1
+                ",
+            )
+            .bind(cleanup_threshold)
+            .execute(dbtx.as_mut())
+            .await?
+            .rows_affected();
+
+            if deleted_count > 0 {
+                debug!(
+                    "One-time cleanup: removed {} old validator_blocks rows (height < {}) at block {}",
+                    deleted_count, cleanup_threshold, height
+                );
+            }
+        }
+
         let is_initial_transition =
             validators_in_uptime_stats.is_empty() && !validators_in_block.is_empty();
 
@@ -1885,60 +1907,132 @@ impl Validator {
                 );
             }
         }
-        sqlx::query(
-            r"
-            WITH window_params AS (
-                SELECT 
-                    us.identity_key,
-                    us.window_start_height,
-                    GREATEST(
-                        us.window_start_height,
-                        $1 - $2 + 1
-                    ) as effective_window_start,
-                    CASE 
-                        WHEN ($1 - us.window_start_height) >= $2 THEN $1 - $2 + 1
-                        ELSE us.window_start_height
-                    END as new_window_start_height
-                FROM validator_uptime_stats us
-                WHERE us.identity_key = ANY($3)
-            ),
-            validator_block_counts AS (
-                SELECT
-                    wp.identity_key,
-                    wp.window_start_height,
-                    wp.new_window_start_height,
-                    COUNT(*) as total_blocks,
-                    SUM(CASE WHEN vb.signed THEN 1 ELSE 0 END) as signed_blocks,
-                    SUM(CASE WHEN NOT vb.signed THEN 1 ELSE 0 END) as missed_blocks
-                FROM window_params wp
-                INNER JOIN validator_blocks vb ON vb.identity_key = wp.identity_key
-                WHERE vb.block_height >= wp.effective_window_start
-                  AND vb.block_height <= $1
-                GROUP BY wp.identity_key, wp.window_start_height, wp.new_window_start_height
+        // Optimized incremental update: only process validators active in this block
+        // and use incremental calculations instead of full window recalculation
+        for identity_key in &validators_in_block {
+            let current_block_signed = sqlx::query_scalar::<_, bool>(
+                "SELECT signed FROM validator_blocks WHERE identity_key = $1 AND block_height = $2",
             )
-            UPDATE validator_uptime_stats us
-            SET
-                total_blocks = COALESCE(vbc.total_blocks, 0),
-                signed_blocks = COALESCE(vbc.signed_blocks, 0),
-                missed_blocks = COALESCE(vbc.missed_blocks, 0),
-                uptime_percentage = CASE
-                    WHEN COALESCE(vbc.total_blocks, 0) > 0 THEN
-                        ROUND((COALESCE(vbc.signed_blocks, 0)::numeric / vbc.total_blocks::numeric) * 100.0, 2)
-                    ELSE 0.00
-                END,
-                last_calculated_height = $1,
-                window_start_height = vbc.new_window_start_height,
-                updated_at = NOW()
-            FROM validator_block_counts vbc
-            WHERE us.identity_key = vbc.identity_key
-               AND us.identity_key = ANY($3)
-            ",
-        )
+            .bind(identity_key)
             .bind(height)
-            .bind(uptime_window)
-            .bind(&validators_in_block)
-            .execute(dbtx.as_mut())
+            .fetch_optional(dbtx.as_mut())
+            .await?
+            .unwrap_or(false);
+
+            // Get current stats
+            let current_stats = sqlx::query_as::<_, (i32, i32, i32, i64, i64)>(
+                r"
+                SELECT total_blocks, signed_blocks, missed_blocks, window_start_height, last_calculated_height
+                FROM validator_uptime_stats 
+                WHERE identity_key = $1
+                ",
+            )
+            .bind(identity_key)
+            .fetch_optional(dbtx.as_mut())
             .await?;
+
+            if let Some(stats) = current_stats {
+                let old_window_start = stats.3;
+                let new_window_start = std::cmp::max(old_window_start, height - uptime_window + 1);
+
+                // Incremental update: add new block and remove old blocks if needed
+                let mut new_total = stats.0;
+                let mut new_signed = stats.1;
+                let mut new_missed = stats.2;
+
+                // Add current block
+                new_total += 1;
+                if current_block_signed {
+                    new_signed += 1;
+                } else {
+                    new_missed += 1;
+                }
+
+                // Remove blocks that fell out of window (if window moved)
+                if new_window_start > old_window_start {
+                    let blocks_to_remove = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+                        r"
+                        SELECT 
+                            COUNT(*) as total,
+                            SUM(CASE WHEN signed THEN 1 ELSE 0 END) as signed_count
+                        FROM validator_blocks 
+                        WHERE identity_key = $1 
+                          AND block_height >= $2 
+                          AND block_height < $3
+                        ",
+                    )
+                    .bind(identity_key)
+                    .bind(old_window_start)
+                    .bind(new_window_start)
+                    .fetch_one(dbtx.as_mut())
+                    .await?;
+
+                    let removed_total = i32::try_from(blocks_to_remove.0.unwrap_or(0)).unwrap_or(i32::MAX);
+                    let removed_signed = i32::try_from(blocks_to_remove.1.unwrap_or(0)).unwrap_or(i32::MAX);
+                    let removed_missed = removed_total - removed_signed;
+
+                    new_total -= removed_total;
+                    new_signed -= removed_signed;
+                    new_missed -= removed_missed;
+                }
+
+                // Calculate new uptime percentage
+                let new_uptime_percentage = if new_total > 0 {
+                    (f64::from(new_signed) / f64::from(new_total) * 100.0).round() / 100.0
+                } else {
+                    0.0
+                };
+
+                // Update stats with incremental values
+                sqlx::query(
+                    r"
+                    UPDATE validator_uptime_stats
+                    SET total_blocks = $1,
+                        signed_blocks = $2,
+                        missed_blocks = $3,
+                        uptime_percentage = $4,
+                        last_calculated_height = $5,
+                        window_start_height = $6,
+                        updated_at = NOW()
+                    WHERE identity_key = $7
+                    ",
+                )
+                .bind(new_total)
+                .bind(new_signed)
+                .bind(new_missed)
+                .bind(new_uptime_percentage)
+                .bind(height)
+                .bind(new_window_start)
+                .bind(identity_key)
+                .execute(dbtx.as_mut())
+                .await?;
+            }
+        }
+
+        // Cleanup: Delete validator_blocks beyond the uptime window to keep table size manageable
+        // Only run cleanup periodically (every 100 blocks) to avoid overhead
+        if height % 100 == 0 {
+            let cleanup_threshold = height - (uptime_window * 2); // Keep 2x window for safety
+            if cleanup_threshold > 0 {
+                let deleted_count = sqlx::query(
+                    r"
+                    DELETE FROM validator_blocks 
+                    WHERE block_height < $1
+                    ",
+                )
+                .bind(cleanup_threshold)
+                .execute(dbtx.as_mut())
+                .await?
+                .rows_affected();
+
+                if deleted_count > 0 {
+                    debug!(
+                        "Cleaned up {} old validator_blocks rows (height < {}) at block {}",
+                        deleted_count, cleanup_threshold, height
+                    );
+                }
+            }
+        }
 
         debug!(
             "Recalculated uptime stats for {} validators at block {} using rolling window (max {} blocks)",
