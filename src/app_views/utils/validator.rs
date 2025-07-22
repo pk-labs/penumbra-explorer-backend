@@ -1967,8 +1967,10 @@ impl Validator {
                     .fetch_one(dbtx.as_mut())
                     .await?;
 
-                    let removed_total = i32::try_from(blocks_to_remove.0.unwrap_or(0)).unwrap_or(i32::MAX);
-                    let removed_signed = i32::try_from(blocks_to_remove.1.unwrap_or(0)).unwrap_or(i32::MAX);
+                    let removed_total =
+                        i32::try_from(blocks_to_remove.0.unwrap_or(0)).unwrap_or(i32::MAX);
+                    let removed_signed =
+                        i32::try_from(blocks_to_remove.1.unwrap_or(0)).unwrap_or(i32::MAX);
                     let removed_missed = removed_total - removed_signed;
 
                     new_total -= removed_total;
