@@ -841,7 +841,7 @@ impl Validator {
     ) -> Result<()> {
         let uptime_window = Self::get_uptime_blocks_window(dbtx).await?;
         let window_start_height = latest_height.saturating_sub(uptime_window - 1);
-        
+
         let deleted_count = sqlx::query(
             r"
             DELETE FROM validator_blocks 
@@ -1801,7 +1801,7 @@ impl Validator {
         current_height: i64,
     ) -> Result<bool> {
         let has_stats: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM validator_uptime_stats WHERE last_calculated_height > 0)"
+            "SELECT EXISTS(SELECT 1 FROM validator_uptime_stats WHERE last_calculated_height > 0)",
         )
         .fetch_one(dbtx.as_mut())
         .await?;
@@ -1810,16 +1810,13 @@ impl Validator {
             return Ok(true);
         }
 
-        let max_calculated_height: Option<i64> = sqlx::query_scalar(
-            "SELECT MAX(last_calculated_height) FROM validator_uptime_stats"
-        )
-        .fetch_optional(dbtx.as_mut())
-        .await?;
+        let max_calculated_height: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(last_calculated_height) FROM validator_uptime_stats")
+                .fetch_optional(dbtx.as_mut())
+                .await?;
 
         match max_calculated_height {
-            Some(last_height) => {
-                Ok(current_height - last_height > 1000)
-            }
+            Some(last_height) => Ok(current_height - last_height > 1000),
             None => Ok(true),
         }
     }
@@ -1844,7 +1841,7 @@ impl Validator {
 
         // Get all validators that have any blocks in the window
         let validators: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT identity_key FROM validator_blocks WHERE block_height >= $1"
+            "SELECT DISTINCT identity_key FROM validator_blocks WHERE block_height >= $1",
         )
         .bind(window_start)
         .fetch_all(dbtx.as_mut())
@@ -1940,7 +1937,7 @@ impl Validator {
 
         if !skip_window_deletion {
             let window_start_height = height.saturating_sub(uptime_window - 1);
-            
+
             let deleted_count = sqlx::query(
                 r"
                 DELETE FROM validator_blocks 
@@ -2073,7 +2070,9 @@ impl Validator {
             .fetch_optional(dbtx.as_mut())
             .await?;
 
-            let (mut total, mut signed, mut missed, mut window_start) = if let Some(stats) = current_stats {
+            let (mut total, mut signed, mut missed, mut window_start) = if let Some(stats) =
+                current_stats
+            {
                 stats
             } else {
                 let window_start_height = std::cmp::max(0, height - uptime_window + 1);
@@ -2086,15 +2085,24 @@ impl Validator {
                 .fetch_one(dbtx.as_mut())
                 .await?;
 
-                let total_blocks = window_stats.0.ok_or_else(|| anyhow::anyhow!("Failed to get total_blocks count from validator_blocks query"))?;
-                let signed_blocks = window_stats.1.ok_or_else(|| anyhow::anyhow!("Failed to get signed_blocks count from validator_blocks query"))?;
+                let total_blocks = window_stats.0.ok_or_else(|| {
+                    anyhow::anyhow!("Failed to get total_blocks count from validator_blocks query")
+                })?;
+                let signed_blocks = window_stats.1.ok_or_else(|| {
+                    anyhow::anyhow!("Failed to get signed_blocks count from validator_blocks query")
+                })?;
                 let missed_blocks = total_blocks - signed_blocks;
-                
-                (total_blocks, signed_blocks, missed_blocks, window_start_height)
+
+                (
+                    total_blocks,
+                    signed_blocks,
+                    missed_blocks,
+                    window_start_height,
+                )
             };
 
             let current_block_signed = sqlx::query_scalar::<_, bool>(
-                "SELECT signed FROM validator_blocks WHERE identity_key = $1 AND block_height = $2"
+                "SELECT signed FROM validator_blocks WHERE identity_key = $1 AND block_height = $2",
             )
             .bind(identity_key)
             .bind(height)
@@ -2109,7 +2117,7 @@ impl Validator {
             }
 
             let new_window_start = height - uptime_window + 1;
-            
+
             if total > uptime_window {
                 let window_stats = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
                     "SELECT COUNT(*), SUM(CASE WHEN signed THEN 1 ELSE 0 END) FROM validator_blocks WHERE identity_key = $1 AND block_height >= $2 AND block_height <= $3"
@@ -2120,8 +2128,12 @@ impl Validator {
                 .fetch_one(dbtx.as_mut())
                 .await?;
 
-                total = window_stats.0.ok_or_else(|| anyhow::anyhow!("Failed to get total_blocks count for window recalculation"))?;
-                signed = window_stats.1.ok_or_else(|| anyhow::anyhow!("Failed to get signed_blocks count for window recalculation"))?;
+                total = window_stats.0.ok_or_else(|| {
+                    anyhow::anyhow!("Failed to get total_blocks count for window recalculation")
+                })?;
+                signed = window_stats.1.ok_or_else(|| {
+                    anyhow::anyhow!("Failed to get signed_blocks count for window recalculation")
+                })?;
                 missed = total - signed;
                 window_start = new_window_start;
             }
@@ -2146,7 +2158,7 @@ impl Validator {
                     last_calculated_height = EXCLUDED.last_calculated_height,
                     window_start_height = EXCLUDED.window_start_height,
                     updated_at = EXCLUDED.updated_at
-                "
+                ",
             )
             .bind(identity_key)
             .bind(total)
@@ -2158,7 +2170,6 @@ impl Validator {
             .execute(dbtx.as_mut())
             .await?;
         }
-
 
         debug!(
             "Recalculated uptime stats for {} validators at block {} using rolling window (max {} blocks)",
