@@ -1896,7 +1896,7 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         let block_results = block::process_block_events(&batch).await?;
         let num_blocks = block_results.len();
 
-        let first_block_height = if block_results.is_empty() {
+        let _first_block_height = if block_results.is_empty() {
             None
         } else {
             Some(block_results[0].0)
@@ -2096,29 +2096,64 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
             }
         }
 
-        // Update validator uptime stats only when we're in live mode (processing exactly 1 block)
-        // This avoids the performance overhead during reindexing
-        if num_blocks == 1 {
-            // We're in live mode, processing a single block
-            if let Some(height) = first_block_height {
+        const LIVE_MODE_THRESHOLD: usize = 100;
+        
+        if num_blocks > 0 {
+            let last_height = block_heights.last().copied().unwrap_or(0);
+            
+            if num_blocks >= LIVE_MODE_THRESHOLD {
                 tracing::debug!(
-                    "Live mode detected: updating uptime stats for block {}",
-                    height
+                    "Batch mode detected ({} blocks) - skipping uptime calculations for performance",
+                    num_blocks
                 );
-                if let Err(e) = validator::Validator::update_uptime_stats_incrementally(
-                    i64::try_from(height).unwrap_or(i64::MAX),
+                
+                if let Err(e) = validator::Validator::enforce_rolling_window_batch(
                     dbtx,
+                    i64::try_from(last_height).unwrap_or(i64::MAX),
+                    i64::try_from(num_blocks).unwrap_or(i64::MAX),
                 )
                 .await
                 {
-                    tracing::error!("Failed to update uptime stats for block {}: {}", height, e);
+                    tracing::error!("Failed to enforce rolling window for batch: {}", e);
+                }
+            } else {
+                tracing::debug!(
+                    "Live mode detected ({} blocks) - calculating uptime stats",
+                    num_blocks
+                );
+                
+                let needs_full_recalc = validator::Validator::check_needs_full_uptime_recalculation(
+                    dbtx,
+                    i64::try_from(last_height).unwrap_or(i64::MAX),
+                )
+                .await?;
+                
+                if needs_full_recalc {
+                    tracing::info!(
+                        "First time in live mode - performing full uptime calculation for all validators"
+                    );
+                    
+                    if let Err(e) = validator::Validator::recalculate_all_uptime_stats(
+                        i64::try_from(last_height).unwrap_or(i64::MAX),
+                        dbtx,
+                    )
+                    .await
+                    {
+                        tracing::error!("Failed to recalculate all uptime stats: {}", e);
+                    }
+                } else {
+                    for &height in &block_heights {
+                        if let Err(e) = validator::Validator::update_uptime_stats_incrementally(
+                            i64::try_from(height).unwrap_or(i64::MAX),
+                            dbtx,
+                        )
+                        .await
+                        {
+                            tracing::error!("Failed to update uptime stats for block {}: {}", height, e);
+                        }
+                    }
                 }
             }
-        } else {
-            tracing::debug!(
-                "Batch mode detected: skipping uptime calculation for {} blocks",
-                num_blocks
-            );
         }
 
         Ok(())
