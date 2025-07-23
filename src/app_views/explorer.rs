@@ -2097,16 +2097,16 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
         }
 
         const LIVE_MODE_THRESHOLD: usize = 100;
-        
+
         if num_blocks > 0 {
             let last_height = block_heights.last().copied().unwrap_or(0);
-            
+
             if num_blocks >= LIVE_MODE_THRESHOLD {
                 tracing::debug!(
                     "Batch mode detected ({} blocks) - skipping uptime calculations for performance",
                     num_blocks
                 );
-                
+
                 if let Err(e) = validator::Validator::enforce_rolling_window_batch(
                     dbtx,
                     i64::try_from(last_height).unwrap_or(i64::MAX),
@@ -2121,18 +2121,19 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                     "Live mode detected ({} blocks) - calculating uptime stats",
                     num_blocks
                 );
-                
-                let needs_full_recalc = validator::Validator::check_needs_full_uptime_recalculation(
-                    dbtx,
-                    i64::try_from(last_height).unwrap_or(i64::MAX),
-                )
-                .await?;
-                
+
+                let needs_full_recalc =
+                    validator::Validator::check_needs_full_uptime_recalculation(
+                        dbtx,
+                        i64::try_from(last_height).unwrap_or(i64::MAX),
+                    )
+                    .await?;
+
                 if needs_full_recalc {
                     tracing::info!(
                         "First time in live mode - performing full uptime calculation for all validators"
                     );
-                    
+
                     if let Err(e) = validator::Validator::recalculate_all_uptime_stats(
                         i64::try_from(last_height).unwrap_or(i64::MAX),
                         dbtx,
@@ -2149,7 +2150,11 @@ CREATE TABLE IF NOT EXISTS ibc_transfers (
                         )
                         .await
                         {
-                            tracing::error!("Failed to update uptime stats for block {}: {}", height, e);
+                            tracing::error!(
+                                "Failed to update uptime stats for block {}: {}",
+                                height,
+                                e
+                            );
                         }
                     }
                 }
