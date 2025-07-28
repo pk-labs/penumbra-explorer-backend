@@ -6,11 +6,33 @@ use super::ibc;
 use super::PubSub;
 
 pub async fn start(pubsub: PubSub, pool: Pool<Postgres>) {
-    info!("Starting polling mechanism for subscriptions");
+    info!("Starting subscription listeners with LISTEN/NOTIFY (polling fallback)");
 
-    // Triggers are already set up synchronously in schema creation,
-    // so we just start the polling mechanism
-    start_polling(pubsub, pool).await;
+    let pubsub_blocks = pubsub.clone();
+    let pool_blocks = pool.clone();
+    tokio::spawn(async move {
+        super::listen::blocks(pubsub_blocks, pool_blocks).await;
+    });
+
+    let pubsub_txs = pubsub.clone();
+    let pool_txs = pool.clone();
+    tokio::spawn(async move {
+        super::listen::transactions(pubsub_txs, pool_txs).await;
+    });
+
+    let pubsub_count = pubsub.clone();
+    let pool_count = pool.clone();
+    tokio::spawn(async move {
+        super::listen::transaction_count(pubsub_count, pool_count).await;
+    });
+
+    let ibc_interval = interval(Duration::from_secs(2));
+    let volume_interval = interval(Duration::from_secs(5));
+    
+    tokio::join!(
+        ibc::poll_ibc_transactions(pubsub.clone(), pool.clone(), ibc_interval),
+        poll_total_shielded_volume(pubsub, pool, volume_interval)
+    );
 }
 
 async fn check_required_tables_exist(pool: &Pool<Postgres>) -> Result<bool, sqlx::Error> {
@@ -46,13 +68,12 @@ async fn check_required_tables_exist(pool: &Pool<Postgres>) -> Result<bool, sqlx
 pub async fn setup_notification_triggers_with_retry(
     pool: &Pool<Postgres>,
 ) -> Result<(), anyhow::Error> {
-    const MAX_RETRIES: u32 = 6; // 6 retries = ~30 seconds total wait time
+    const MAX_RETRIES: u32 = 6;
     const RETRY_DELAY_SECONDS: u64 = 5;
 
     for attempt in 1..=MAX_RETRIES {
         match check_required_tables_exist(pool).await {
             Ok(true) => {
-                // Tables exist, proceed with trigger creation
                 info!("Creating database triggers (attempt {})", attempt);
                 return setup_notification_triggers(pool)
                     .await
@@ -281,26 +302,7 @@ pub async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sq
     Ok(())
 }
 
-async fn start_polling(pubsub: PubSub, pool: Pool<Postgres>) {
-    info!("Starting polling mechanism");
-
-    let blocks_interval = interval(Duration::from_secs(1));
-    let txs_interval = interval(Duration::from_secs(1));
-    let count_interval = interval(Duration::from_secs(1));
-    let ibc_txs_interval = interval(Duration::from_secs(2));
-
-    let total_shielded_volume_interval = interval(Duration::from_secs(5));
-
-    tokio::join!(
-        poll_blocks(pubsub.clone(), pool.clone(), blocks_interval),
-        poll_transactions(pubsub.clone(), pool.clone(), txs_interval),
-        poll_transaction_count(pubsub.clone(), pool.clone(), count_interval),
-        ibc::poll_ibc_transactions(pubsub.clone(), pool.clone(), ibc_txs_interval),
-        poll_total_shielded_volume(pubsub, pool, total_shielded_volume_interval)
-    );
-}
-
-async fn poll_blocks(pubsub: PubSub, pool: Pool<Postgres>, mut interval: tokio::time::Interval) {
+pub async fn poll_blocks(pubsub: PubSub, pool: Pool<Postgres>, mut interval: tokio::time::Interval) {
     let mut last_height: Option<i64> = None;
 
     loop {
@@ -320,7 +322,7 @@ async fn poll_blocks(pubsub: PubSub, pool: Pool<Postgres>, mut interval: tokio::
     }
 }
 
-async fn poll_transactions(
+pub async fn poll_transactions(
     pubsub: PubSub,
     pool: Pool<Postgres>,
     mut interval: tokio::time::Interval,
@@ -347,7 +349,7 @@ async fn poll_transactions(
     }
 }
 
-async fn poll_transaction_count(
+pub async fn poll_transaction_count(
     pubsub: PubSub,
     pool: Pool<Postgres>,
     mut interval: tokio::time::Interval,
