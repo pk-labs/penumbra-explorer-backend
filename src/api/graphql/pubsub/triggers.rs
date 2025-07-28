@@ -28,7 +28,7 @@ pub async fn start(pubsub: PubSub, pool: Pool<Postgres>) {
 
     let ibc_interval = interval(Duration::from_secs(2));
     let volume_interval = interval(Duration::from_secs(5));
-    
+
     tokio::join!(
         ibc::poll_ibc_transactions(pubsub.clone(), pool.clone(), ibc_interval),
         poll_total_shielded_volume(pubsub, pool, volume_interval)
@@ -302,7 +302,11 @@ pub async fn setup_notification_triggers(pool: &Pool<Postgres>) -> Result<(), sq
     Ok(())
 }
 
-pub async fn poll_blocks(pubsub: PubSub, pool: Pool<Postgres>, mut interval: tokio::time::Interval) {
+pub async fn poll_blocks(
+    pubsub: PubSub,
+    pool: Pool<Postgres>,
+    mut interval: tokio::time::Interval,
+) {
     let mut last_height: Option<i64> = None;
 
     loop {
