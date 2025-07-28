@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 pub mod ibc;
+mod listen;
 mod triggers;
 pub mod validator;
 use ibc::IbcTransactionEvent;
