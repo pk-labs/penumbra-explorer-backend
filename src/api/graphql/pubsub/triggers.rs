@@ -1,5 +1,5 @@
 use sqlx::{Pool, Postgres};
-use tokio::time::{interval, sleep, Duration};
+use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
 use super::ibc;
@@ -68,41 +68,29 @@ async fn check_required_tables_exist(pool: &Pool<Postgres>) -> Result<bool, sqlx
 pub async fn setup_notification_triggers_with_retry(
     pool: &Pool<Postgres>,
 ) -> Result<(), anyhow::Error> {
-    const MAX_RETRIES: u32 = 6;
-    const RETRY_DELAY_SECONDS: u64 = 5;
-
-    for attempt in 1..=MAX_RETRIES {
-        match check_required_tables_exist(pool).await {
-            Ok(true) => {
-                info!("Creating database triggers (attempt {})", attempt);
-                return setup_notification_triggers(pool)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to create triggers: {}", e));
-            }
-            Ok(false) => {
-                if attempt == MAX_RETRIES {
-                    warn!("Required tables still don't exist after {} attempts. This might be a fresh deployment where indexer hasn't started yet.", MAX_RETRIES);
-                    return Err(anyhow::anyhow!(
-                        "Required tables do not exist after {} retry attempts. The indexer may need to run first to create tables.",
-                        MAX_RETRIES
-                    ));
-                }
-
-                info!("Required tables don't exist yet (attempt {}/{}). Waiting {} seconds for indexer to create them...", 
-                      attempt, MAX_RETRIES, RETRY_DELAY_SECONDS);
-                sleep(Duration::from_secs(RETRY_DELAY_SECONDS)).await;
-            }
-            Err(e) => {
-                error!("Error checking table existence: {}", e);
-                return Err(anyhow::anyhow!(
-                    "Database error while checking tables: {}",
-                    e
-                ));
-            }
+    match check_required_tables_exist(pool).await {
+        Ok(true) => {
+            info!("Creating database triggers");
+            setup_notification_triggers(pool)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create triggers: {}", e))
+        }
+        Ok(false) => {
+            warn!(
+                "Required tables don't exist - this should not happen if indexer started properly"
+            );
+            Err(anyhow::anyhow!(
+                "Required tables do not exist, but indexer should have created them"
+            ))
+        }
+        Err(e) => {
+            error!("Error checking table existence: {}", e);
+            Err(anyhow::anyhow!(
+                "Database error while checking tables: {}",
+                e
+            ))
         }
     }
-
-    Err(anyhow::anyhow!("Exhausted all retry attempts"))
 }
 
 #[allow(clippy::too_many_lines, clippy::module_name_repetitions)]
