@@ -53,6 +53,60 @@ impl Explorer {
         Ok(pool)
     }
 
+    /// Wait for essential tables to be created by the indexer
+    ///
+    /// # Errors
+    /// Returns an error if database connection fails or timeout occurs
+    async fn wait_for_essential_tables(&self, pool: &sqlx::PgPool) -> Result<()> {
+        use tokio::time::{sleep, Duration};
+
+        let essential_tables = vec!["explorer_block_details", "explorer_transactions"];
+        let max_wait_seconds = 60;
+        let check_interval_seconds = 2;
+        let max_attempts = max_wait_seconds / check_interval_seconds;
+
+        for attempt in 1..=max_attempts {
+            let mut all_exist = true;
+
+            for table_name in &essential_tables {
+                let exists: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = $1
+                    )",
+                )
+                .bind(table_name)
+                .fetch_one(pool)
+                .await
+                .context("Failed to check table existence")?;
+
+                if !exists {
+                    all_exist = false;
+                    break;
+                }
+            }
+
+            if all_exist {
+                info!("All essential tables exist, ready to proceed");
+                return Ok(());
+            }
+
+            if attempt < max_attempts {
+                info!(
+                    "Essential tables not ready yet (attempt {}/{}), waiting {} seconds...",
+                    attempt, max_attempts, check_interval_seconds
+                );
+                sleep(Duration::from_secs(check_interval_seconds)).await;
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "Timeout waiting for essential tables to be created after {} seconds",
+            max_wait_seconds
+        ))
+    }
+
     /// Starts the explorer service
     ///
     /// # Errors
@@ -68,6 +122,31 @@ impl Explorer {
             .await
             .context("Failed to connect to destination database for API")?;
 
+        // Start indexer first to create tables
+        let index_options = cometindex::opt::IndexOptions {
+            dst_database_url: self.options.dest_db_url.clone(),
+            genesis_json: std::path::PathBuf::from(self.options.genesis_json.clone()),
+            poll_ms: Duration::from_millis(self.options.polling_interval_ms),
+            chain_id: Some("penumbra".to_string()),
+            exit_on_catchup: false,
+        };
+
+        let indexer = Indexer::new(self.options.source_db_url.clone(), index_options)
+            .with_index(Box::new(ExplorerView::new()));
+
+        info!("Starting indexer to create database tables...");
+        let indexer_task = tokio::spawn(async move {
+            if let Err(e) = indexer.run().await {
+                error!("Indexer exited with error: {:?}", e);
+            }
+        });
+
+        // Wait for essential tables to be created by indexer
+        info!("Waiting for indexer to create essential tables...");
+        self.wait_for_essential_tables(&pool).await?;
+        info!("Essential tables detected, proceeding with GraphQL setup");
+
+        // Now create GraphQL schema with pubsub system
         let schema = crate::api::graphql::schema::create_schema(pool.clone())
             .await
             .context("Failed to create GraphQL schema and setup database triggers")?;
@@ -115,26 +194,8 @@ impl Explorer {
         let addr = format!("{api_host}:{api_port}")
             .parse::<SocketAddr>()
             .expect("Invalid socket address");
+
         info!("Starting API server on {}", addr);
-
-        let index_options = cometindex::opt::IndexOptions {
-            dst_database_url: self.options.dest_db_url.clone(),
-            genesis_json: std::path::PathBuf::from(self.options.genesis_json.clone()),
-            poll_ms: Duration::from_millis(self.options.polling_interval_ms),
-            chain_id: Some("penumbra".to_string()),
-            exit_on_catchup: false,
-        };
-
-        let indexer = Indexer::new(self.options.source_db_url.clone(), index_options)
-            .with_index(Box::new(ExplorerView::new()));
-
-        let indexer_task = tokio::spawn(async move {
-            if let Err(e) = indexer.run().await {
-                error!("Indexer exited with error: {:?}", e);
-            }
-        });
-
-        info!("API server listening on {}", addr);
 
         let server_task = tokio::spawn(async move {
             if let Err(e) = axum::Server::bind(&addr)
@@ -144,6 +205,8 @@ impl Explorer {
                 error!("API server exited with error: {:?}", e);
             }
         });
+
+        info!("API server listening on {}", addr);
 
         tokio::select! {
             _ = indexer_task => {
