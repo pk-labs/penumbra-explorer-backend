@@ -112,7 +112,7 @@ async fn check_client_channels(
 
 async fn check_ibc_clients(pool: &sqlx::PgPool, grpc_url: &str) {
     info!("Running scheduled IBC client status check");
-    
+
     let (host, port) = if let Some(url) = grpc_url.strip_prefix("https://") {
         (url, 443)
     } else if let Some(url) = grpc_url.strip_prefix("http://") {
@@ -120,7 +120,7 @@ async fn check_ibc_clients(pool: &sqlx::PgPool, grpc_url: &str) {
     } else {
         (grpc_url, 443)
     };
-    
+
     let client = GrpcClient::new(host, port);
 
     let _client_statuses = match check_client_statuses(&client).await {
