@@ -38,7 +38,8 @@ Backend indexer for exploring the Penumbra blockchain built with Rust
    cargo run -- \
      -s "postgresql://user:password@source-host:5432/source-db?sslmode=require" \
      -d "postgresql://user:password@dest-host:5432/dest-db" \
-     --genesis-json genesis.json
+     --genesis-json genesis.json \
+     -g "https://penumbra-1.radiantcommons.com"
    ```
 
 ### Cargo Scripts
@@ -46,7 +47,7 @@ Backend indexer for exploring the Penumbra blockchain built with Rust
 | Script                                                                  | Description                                     |
 |-------------------------------------------------------------------------|-------------------------------------------------|
 | `cargo build --release`                                                 | Build app in release mode                       |
-| `cargo run -- -s "SOURCE_DB" -d "DEST_DB" --genesis-json genesis.json`  | Run application with required parameters        |
+| `cargo run -- -s "SOURCE_DB" -d "DEST_DB" --genesis-json genesis.json -g "GRPC_URL"`  | Run application with required parameters        |
 | `cargo test`                                                            | Run tests                                       |
 | `cargo test <test_name>`                                                | Run a specific test                             |
 | `cargo clippy --all-targets --all-features --workspace -- -W clippy::pedantic -D warnings` | Lint using strictest clippy rules |
@@ -162,6 +163,7 @@ query {
 - `-s, --source-db-url`: Source database URL (required)
 - `-d, --dest-db-url`: Destination database URL (required)
 - `--genesis-json`: Path to Genesis JSON file (required)
+- `-g, --grpc-url`: gRPC endpoint URL for IBC client status checks (default: https://penumbra-1.radiantcommons.com)
 - `--from-height`: Starting block height (optional)
 - `--to-height`: Ending block height (optional)
 - `--batch-size`: Batch size for processing blocks (default: 100)
