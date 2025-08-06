@@ -15,6 +15,7 @@ env:
   SERVER_HOST_DEV: ${{ secrets.SERVER_HOST_DEV }}
   DEST_DB_URL_DEV: ${{ secrets.DEST_DB_URL_DEV }}
   SOURCE_DB_URL_DEV: ${{ secrets.SOURCE_DB_URL_DEV }}
+  GRPC_URL_DEV: ${{ secrets.GRPC_URL_DEV }}
 
 jobs:
   code-quality:
@@ -124,6 +125,7 @@ jobs:
             -p 8080:8080 \
             -e SOURCE_DB_URL="${{ env.SOURCE_DB_URL_DEV }}" \
             -e DEST_DB_URL="${{ env.DEST_DB_URL_DEV }}" \
+            -e GRPC_URL="${{ env.GRPC_URL_DEV }}" \
             -v /home/${{ env.SERVER_USER_DEV }}/deployments/genesis.json:/app/genesis.json \
             --restart unless-stopped \
             ${{ env.APP_NAME_DEV }}:latest'

@@ -59,6 +59,12 @@ async fn main() -> Result<()> {
         }
     }
 
+    if opts.grpc_url.is_empty() {
+        if let Ok(grpc_url) = env::var("GRPC_URL") {
+            opts.grpc_url = grpc_url;
+        }
+    }
+
     tracing::info!("Configuration:");
     tracing::info!("  Source DB URL: {}", sensitive_url(&opts.source_db_url));
     tracing::info!("  Destination DB URL: {}", sensitive_url(&opts.dest_db_url));
@@ -67,9 +73,11 @@ async fn main() -> Result<()> {
     tracing::info!("  To Height: {:?}", opts.to_height);
     tracing::info!("  Batch Size: {}", opts.batch_size);
     tracing::info!("  Polling Interval (ms): {}", opts.polling_interval_ms);
+    tracing::info!("  gRPC URL: {}", opts.grpc_url);
 
     penumbra_explorer::db_migrations::run_migrations(&opts.dest_db_url)?;
 
+    let grpc_url = opts.grpc_url.clone();
     let explorer = Explorer::new(opts);
 
     let pool = PgPoolOptions::new()
@@ -77,7 +85,7 @@ async fn main() -> Result<()> {
         .connect(explorer.get_dest_db_url())
         .await?;
 
-    penumbra_explorer::grpc::start_ibc_status_scheduler(pool);
+    penumbra_explorer::grpc::start_ibc_status_scheduler(pool, grpc_url);
 
     explorer.run().await?;
 

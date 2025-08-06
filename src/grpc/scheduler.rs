@@ -110,9 +110,18 @@ async fn check_client_channels(
     }
 }
 
-async fn check_ibc_clients(pool: &sqlx::PgPool) {
+async fn check_ibc_clients(pool: &sqlx::PgPool, grpc_url: &str) {
     info!("Running scheduled IBC client status check");
-    let client = GrpcClient::new("grpc.penumbra.silentvalidator.com", 443);
+
+    let (host, port) = if let Some(url) = grpc_url.strip_prefix("https://") {
+        (url, 443)
+    } else if let Some(url) = grpc_url.strip_prefix("http://") {
+        (url, 80)
+    } else {
+        (grpc_url, 443)
+    };
+
+    let client = GrpcClient::new(host, port);
 
     let _client_statuses = match check_client_statuses(&client).await {
         Ok(statuses) => {
@@ -172,13 +181,13 @@ async fn check_ibc_clients(pool: &sqlx::PgPool) {
 }
 
 #[allow(clippy::module_name_repetitions)]
-pub fn start_ibc_status_scheduler(pool: sqlx::PgPool) {
+pub fn start_ibc_status_scheduler(pool: sqlx::PgPool, grpc_url: String) {
     tokio::spawn(async move {
-        check_ibc_clients(&pool).await;
+        check_ibc_clients(&pool, &grpc_url).await;
         let mut interval = time::interval(Duration::from_secs(3600));
         loop {
             interval.tick().await;
-            check_ibc_clients(&pool).await;
+            check_ibc_clients(&pool, &grpc_url).await;
         }
     });
     info!("Started IBC client status scheduler (running hourly)");
